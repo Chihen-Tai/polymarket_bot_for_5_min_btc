@@ -216,22 +216,49 @@ class PolymarketExchange:
             self._last_price += uniform(-40, 40)
             return max(1000, self._last_price)
 
-        # 實盤可改用市場 API；先沿用輕量 public endpoint（coingecko）
+        # 改用 Binance API 獲取即刻 CEX 價格（比 Coingecko 反應快且適合做 Oracle front-running）
         try:
             r = requests.get(
-                "https://api.coingecko.com/api/v3/simple/price",
-                params={"ids": "bitcoin", "vs_currencies": "usd"},
-                timeout=10,
+                "https://api.binance.com/api/v3/ticker/price",
+                params={"symbol": "BTCUSDT"},
+                timeout=5,
             )
             r.raise_for_status()
             data = r.json()
-            p = _to_float(data.get("bitcoin", {}).get("usd", 0), 0)
+            p = _to_float(data.get("price", 0), 0)
             if p > 0:
+                self._last_price = p
                 return p
         except Exception:
             pass
-
         return self._last_price
+
+    def get_binance_1m_candle(self) -> dict:
+        """獲取幣安最近 1 分鐘的 K 線，用來計算突發動能與趨勢"""
+        try:
+            r = requests.get(
+                "https://api.binance.com/api/v3/klines",
+                params={"symbol": "BTCUSDT", "interval": "1m", "limit": 2},
+                timeout=5,
+            )
+            r.raise_for_status()
+            data = r.json()
+            if len(data) >= 1:
+                # [Open time, Open, High, Low, Close, Volume, Close time, ...]
+                current = data[-1]
+                prev = data[-2] if len(data) >= 2 else current
+                return {
+                    "open": _to_float(current[1]),
+                    "high": _to_float(current[2]),
+                    "low": _to_float(current[3]),
+                    "close": _to_float(current[4]),
+                    "volume": _to_float(current[5]),
+                    "prev_close": _to_float(prev[4]),
+                    "change": _to_float(current[4]) - _to_float(prev[4])
+                }
+        except Exception:
+            return {}
+        return {}
 
     def place_order(self, side: str, amount_usd: float, token_id_override: str | None = None) -> dict:
         if self.dry_run:
@@ -270,6 +297,38 @@ class PolymarketExchange:
             "amount_usd": amount_usd,
             "response": resp,
         }
+
+    def get_full_orderbook(self, token_id: str) -> dict:
+        """獲取完整的 orderbook 來計算 Imbalance"""
+        if self.dry_run or not self.client:
+            return {"bids_volume": 1000, "asks_volume": 1000, "best_bid": 0.5, "best_ask": 0.51}
+        try:
+            book = self.client.get_order_book(token_id)
+            if not isinstance(book, dict):
+                return {}
+            
+            bids_vol, asks_vol = 0.0, 0.0
+            best_bid, best_ask = 0.0, 1.0
+
+            bids = book.get("bids", [])
+            for lv in (bids if isinstance(bids, list) else []):
+                price = _to_float(lv.get("price") if isinstance(lv, dict) else lv[0], 0.0)
+                sz = _to_float(lv.get("size", lv.get("amount", 0)) if isinstance(lv, dict) else lv[1], 0.0)
+                bids_vol += sz
+                if price > best_bid:
+                    best_bid = price
+
+            asks = book.get("asks", [])
+            for lv in (asks if isinstance(asks, list) else []):
+                price = _to_float(lv.get("price") if isinstance(lv, dict) else lv[0], 1.0)
+                sz = _to_float(lv.get("size", lv.get("amount", 0)) if isinstance(lv, dict) else lv[1], 0.0)
+                asks_vol += sz
+                if price < best_ask:
+                    best_ask = price
+
+            return {"bids_volume": bids_vol, "asks_volume": asks_vol, "best_bid": best_bid, "best_ask": best_ask}
+        except Exception:
+            return {}
 
     def has_exit_liquidity(self, token_id: str, shares: float) -> bool:
         if self.dry_run:
@@ -328,10 +387,10 @@ class PolymarketExchange:
                         token_id=token_id,
                         amount=float(chunk),
                         side=SELL,
-                        order_type=OrderType.FOK,
+                        order_type=OrderType.FAK,
                     )
                 )
-                last_resp = self.client.post_order(order, OrderType.FOK)
+                last_resp = self.client.post_order(order, OrderType.FAK)
                 amount_value, amount_source, amount_fields = self._extract_close_response_value(last_resp)
                 if amount_value is not None and amount_value > 0:
                     response_amount_value = (response_amount_value or 0.0) + amount_value

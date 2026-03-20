@@ -48,6 +48,23 @@ def seconds_to_market_end(market: dict) -> Optional[float]:
         return None
 
 
+def check_arbitrage(up_price: Optional[float], down_price: Optional[float]) -> bool:
+    if not SETTINGS.enable_arbitrage:
+        return False
+    if up_price and down_price:
+        if (up_price + down_price) <= SETTINGS.arbitrage_max_cost:
+            return True
+    return False
+
+
+def _check_imbalance(ob: dict) -> float:
+    bids = ob.get("bids_volume", 0.0)
+    asks = ob.get("asks_volume", 0.0)
+    if bids + asks == 0:
+        return 0.5
+    return bids / (bids + asks)
+
+
 def mean_reversion_side(yes_price: Optional[float], yes_window: deque) -> Optional[str]:
     if yes_price is None or len(yes_window) < 5:
         return None
@@ -75,7 +92,15 @@ def _has_momentum(side: str, up_window: deque, down_window: deque) -> bool:
     return move >= SETTINGS.momentum_min_move
 
 
-def explain_choose_side(market: dict, yes_window: deque, up_window: Optional[deque] = None, down_window: Optional[deque] = None) -> dict:
+def explain_choose_side(
+    market: dict, 
+    yes_window: deque, 
+    up_window: Optional[deque] = None, 
+    down_window: Optional[deque] = None,
+    binance_1m: Optional[dict] = None,
+    ob_up: Optional[dict] = None,
+    ob_down: Optional[dict] = None
+) -> dict:
     prices = get_outcome_prices(market)
     up = prices.get("up") or prices.get("漲")
     down = prices.get("down") or prices.get("跌")
@@ -104,6 +129,39 @@ def explain_choose_side(market: dict, yes_window: deque, up_window: Optional[deq
     if secs_left > SETTINGS.entry_window_max_sec:
         result["reason"] = "too_early_in_market"
         return result
+
+    # Strategy 1: Binance Oracle Front-running
+    if SETTINGS.use_cex_oracle and binance_1m:
+        change = binance_1m.get("change", 0.0)
+        if change >= SETTINGS.cex_frontrun_threshold:
+            result["ok"] = True
+            result["side"] = "UP"
+            result["reason"] = "cex_oracle_pump"
+            result["entry_price"] = up
+            return result
+        elif change <= -SETTINGS.cex_frontrun_threshold:
+            result["ok"] = True
+            result["side"] = "DOWN"
+            result["reason"] = "cex_oracle_dump"
+            result["entry_price"] = down
+            return result
+
+    # Strategy 4: Orderbook Imbalance
+    if SETTINGS.use_ob_imbalance and ob_up and ob_down:
+        up_bid_ratio = _check_imbalance(ob_up)
+        down_bid_ratio = _check_imbalance(ob_down)
+        if up_bid_ratio >= SETTINGS.imbalance_threshold:
+            result["ok"] = True
+            result["side"] = "UP"
+            result["reason"] = "orderbook_imbalance_up"
+            result["entry_price"] = up
+            return result
+        elif down_bid_ratio >= SETTINGS.imbalance_threshold:
+            result["ok"] = True
+            result["side"] = "DOWN"
+            result["reason"] = "orderbook_imbalance_down"
+            result["entry_price"] = down
+            return result
 
     mr = mean_reversion_side(up, yes_window)
     result["mr_side"] = mr
@@ -144,8 +202,16 @@ def explain_choose_side(market: dict, yes_window: deque, up_window: Optional[deq
     return result
 
 
-def choose_side(market: dict, yes_window: deque, up_window: Optional[deque] = None, down_window: Optional[deque] = None) -> Optional[str]:
-    decision = explain_choose_side(market, yes_window, up_window, down_window)
+def choose_side(
+    market: dict, 
+    yes_window: deque, 
+    up_window: Optional[deque] = None, 
+    down_window: Optional[deque] = None,
+    binance_1m: Optional[dict] = None,
+    ob_up: Optional[dict] = None,
+    ob_down: Optional[dict] = None
+) -> Optional[str]:
+    decision = explain_choose_side(market, yes_window, up_window, down_window, binance_1m, ob_up, ob_down)
     if not decision.get("ok"):
         return None
     return decision.get("side")

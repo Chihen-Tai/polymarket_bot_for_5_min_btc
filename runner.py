@@ -533,19 +533,47 @@ def main():
                     if down is not None:
                         down_price_window.append(float(down))
 
-                    model_decision = explain_choose_side(market, yes_price_window, up_price_window, down_price_window)
-                    signal_side = model_decision.get("side") if model_decision.get("ok") else None
-                    no_entry_reason = model_decision.get("reason")
-                    if signal_side:
-                        signal_origin = "model"
+                    binance_1m = ex.get_binance_1m_candle() if SETTINGS.use_cex_oracle else None
+                    ob_up = ex.get_full_orderbook(market.get("token_up", "")) if SETTINGS.use_ob_imbalance else None
+                    ob_down = ex.get_full_orderbook(market.get("token_down", "")) if SETTINGS.use_ob_imbalance else None
 
-                    if signal_side is None and secs_left is not None and 90 <= secs_left <= 240:
-                        dumped_side = should_trigger_dump(prev_up, prev_down, up, down, SETTINGS.dump_move_threshold)
-                        if dumped_side:
-                            signal_side = dumped_side
-                            signal_origin = "dump-trigger"
-                            no_entry_reason = ""
-                            log(f"dump trigger | side={dumped_side} prev_up={prev_up} up={up} prev_down={prev_down} down={down}")
+                    if SETTINGS.use_dynamic_thresholds and binance_1m:
+                        change_abs = abs(binance_1m.get("change", 0.0))
+                        if change_abs > 30.0:
+                            SETTINGS.stop_loss_pct = max(SETTINGS.stop_loss_pct, 0.40)
+                            SETTINGS.zscore_threshold = max(SETTINGS.zscore_threshold, 2.5)
+                        else:
+                            from config import _f
+                            SETTINGS.stop_loss_pct = _f("STOP_LOSS_PCT", 0.30)
+                            SETTINGS.zscore_threshold = _f("ZSCORE_THRESHOLD", 2.0)
+
+                    arbitrage_triggered = False
+                    from decision_engine import check_arbitrage
+                    if check_arbitrage(up, down):
+                        log(f"ARBITRAGE DETECTED! up={up} down={down} sum={up+down}")
+                        res_up = ex.place_order("UP", 1.0, market.get("token_up"))
+                        res_down = ex.place_order("DOWN", 1.0, market.get("token_down"))
+                        log(f"Arbitrage execution: UP={res_up} DOWN={res_down}")
+                        maybe_record_cycle_label(state, "arbitrage-execution", slug=market["slug"], up=up, down=down)
+                        arbitrage_triggered = True
+
+                    if not arbitrage_triggered:
+                        model_decision = explain_choose_side(
+                            market, yes_price_window, up_price_window, down_price_window,
+                            binance_1m=binance_1m, ob_up=ob_up, ob_down=ob_down
+                        )
+                        signal_side = model_decision.get("side") if model_decision.get("ok") else None
+                        no_entry_reason = model_decision.get("reason")
+                        if signal_side:
+                            signal_origin = f"model-{model_decision.get('reason')}"
+
+                        if signal_side is None and secs_left is not None and 90 <= secs_left <= 240:
+                            dumped_side = should_trigger_dump(prev_up, prev_down, up, down, SETTINGS.dump_move_threshold)
+                            if dumped_side:
+                                signal_side = dumped_side
+                                signal_origin = "dump-trigger"
+                                no_entry_reason = ""
+                                log(f"dump trigger | side={dumped_side} prev_up={prev_up} up={up} prev_down={prev_down} down={down}")
 
                     prev_up, prev_down = up, down
 
