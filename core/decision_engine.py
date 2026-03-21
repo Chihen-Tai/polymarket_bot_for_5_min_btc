@@ -100,8 +100,6 @@ def explain_choose_side(
     down_window: Optional[deque] = None,
     binance_1m: Optional[dict] = None,
     binance_5m: Optional[list[dict]] = None,
-    ob_up: Optional[dict] = None,
-    ob_down: Optional[dict] = None,
     ws_bba: Optional[dict] = None,
     ws_trades: Optional[list[dict]] = None
 ) -> dict:
@@ -249,12 +247,10 @@ def choose_side(
     down_window: Optional[deque] = None,
     binance_1m: Optional[dict] = None,
     binance_5m: Optional[list[dict]] = None,
-    ob_up: Optional[dict] = None,
-    ob_down: Optional[dict] = None,
     ws_bba: Optional[dict] = None,
     ws_trades: Optional[list[dict]] = None
 ) -> Optional[str]:
-    decision = explain_choose_side(market, yes_window, up_window, down_window, binance_1m, binance_5m, ob_up, ob_down, ws_bba, ws_trades)
+    decision = explain_choose_side(market, yes_window, up_window, down_window, binance_1m, binance_5m, ws_bba, ws_trades)
     if not decision.get("ok"):
         return None
     return decision.get("side")

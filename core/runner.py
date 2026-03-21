@@ -620,8 +620,6 @@ def main():
 
                     binance_1m = ex.get_binance_1m_candle() if SETTINGS.use_cex_oracle else None
                     binance_5m = ex.get_binance_5m_klines(100)
-                    ob_up = ex.get_full_orderbook(market.get("token_up", "")) if SETTINGS.use_ob_imbalance else None
-                    ob_down = ex.get_full_orderbook(market.get("token_down", "")) if SETTINGS.use_ob_imbalance else None
 
                     try:
                         ws_bba = BINANCE_WS.get_bba()
@@ -653,7 +651,7 @@ def main():
                     if not arbitrage_triggered:
                         model_decision = explain_choose_side(
                             market, yes_price_window, up_price_window, down_price_window,
-                            binance_1m=binance_1m, binance_5m=binance_5m, ob_up=ob_up, ob_down=ob_down,
+                            binance_1m=binance_1m, binance_5m=binance_5m,
                             ws_bba=ws_bba, ws_trades=ws_trades
                         )
                         signal_side = model_decision.get("side") if model_decision.get("ok") else None
