@@ -1,0 +1,132 @@
+[2026-03-22 04:41:17] startup sanity | recovery_merge token=81068956203582334524759368326129988366109290310946243267008162150695746195101 slug=btc-updown-5m-1774123500 kept_source=live-order merged_source=journal-rebuild
+[2026-03-22 04:41:17] bot started | dry_run=False
+[2026-03-22 04:41:19] sync_drop token=81068956203582334524759368326129988366109290310946243267008162150695746195101 slug=btc-updown-5m-1774123500 reason=missing-live-position age_sec=1995.4 miss_count=1
+[2026-03-22 04:41:19] market switched => btc-updown-5m-1774125600
+[2026-03-22 04:41:20] dump trigger | side=DOWN prev_up=0.375 up=0.485 prev_down=0.625 down=0.515
+[2026-03-22 04:41:20] loss-reversal applied (DOWN losing streak) | consec_losses=2 -> side=UP
+[2026-03-22 04:41:21] order placed: {'ok': True, 'mode': 'live', 'side': 'UP', 'amount_usd': 1.0, 'response': {'errorMsg': '', 'orderID': '0x6ea788a1a2624d0b6799f2f8d835af4b4304ef2d836241d719d25921928ef675', 'takingAmount': '5.555554', 'makingAmount': '0.999999', 'status': 'matched', 'transactionsHashes': ['0x30f00e3608744b54613d13f970b0a6caf999482136b6f8dad86bcdb54f1bf4d7'], 'success': True}}
+[2026-03-22 04:41:26] sync_hold token=53437998264958900436249711413058541267698924692150036706123457953745255560000 slug=btc-updown-5m-1774125600 reason=missing-live-position age_sec=5.0 miss_count=1
+[2026-03-22 04:41:35] PRINCIPAL EXTRACTED! Sold 0.40 shares. Risk-Free Moonbag active.
+[2026-03-22 04:41:35] skip entry: existing position still open
+[2026-03-22 04:41:35] EVENT INTERRUPT: OFI=0.90 Vol=$264618 -> forcing fast poll
+[2026-03-22 04:41:49] PRINCIPAL EXTRACTED! Sold 0.40 shares. Risk-Free Moonbag active.
+[2026-03-22 04:41:49] no entry | slug=btc-updown-5m-1774125600 reason=no_valid_signals secs_left=202.018195 up=0.485 down=0.515
+[2026-03-22 04:41:49] no signal | equity=5.92 cash=2.73
+[2026-03-22 04:41:49] EVENT INTERRUPT: OFI=0.88 Vol=$294967 -> forcing fast poll
+[2026-03-22 04:41:59] PRINCIPAL EXTRACTED! Sold 0.40 shares. Risk-Free Moonbag active.
+[2026-03-22 04:41:59] no entry | slug=btc-updown-5m-1774125600 reason=no_valid_signals secs_left=188.549349 up=0.485 down=0.515
+[2026-03-22 04:41:59] no signal | equity=5.81 cash=2.81
+[2026-03-22 04:41:59] EVENT INTERRUPT: OFI=0.89 Vol=$329330 -> forcing fast poll
+[2026-03-22 04:42:15] PRINCIPAL EXTRACTED! Sold 0.40 shares. Risk-Free Moonbag active.
+[2026-03-22 04:42:15] no entry | slug=btc-updown-5m-1774125600 reason=no_valid_signals secs_left=173.189336 up=0.485 down=0.515
+[2026-03-22 04:42:15] no signal | equity=4.40 cash=2.89
+[2026-03-22 04:42:15] EVENT INTERRUPT: OFI=0.89 Vol=$329330 -> forcing fast poll
+Binance WS Error: Connection to remote host was lost.
+Binance WS Closed.
+WS disconnected unexpectedly, retrying in 3s...
+status     opened/closed       market                     side    entry   actual  observed  act.pnl  obs.pnl tier   reason               remain      mae      mfe
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+partial    2026-03-22T02:20:08 btc-updown-5m-1774116900   UP     1.0000   1.7694    0.9483   0.7884  -0.0327 medium deadline-exit-loss   0.0422  -0.1000   0.0000
+  -> position_id=pos_1774117068_113453 unmatched_cost=0.0190 unmatched_shares=0.042221 entry_quality=good-entry flags=actual-medium-confidence|open-remainder
+partial    2026-03-22T02:29:02 btc-updown-5m-1774117500   UP     1.0000   0.8663    0.4489  -0.0985  -0.5159 medium hard-stop-loss       0.0489  -0.5764   0.0000
+  -> position_id=pos_1774117709_252618 unmatched_cost=0.0352 unmatched_shares=0.048885 entry_quality=bad-entry flags=actual-medium-confidence|open-remainder
+partial    2026-03-22T03:20:05 btc-updown-5m-1774120500   DOWN   1.0000   0.6068    1.0086  -0.3772   0.0246 medium deadline-exit-loss   0.0267  -0.0250   0.0000
+  -> position_id=pos_1774120698_115274 unmatched_cost=0.0160 unmatched_shares=0.026665 entry_quality=bad-entry flags=actual-medium-confidence|open-remainder
+unmatched  2026-03-22T04:08:04 btc-updown-5m-1774123500   UP     1.0000      n/a       n/a      n/a      n/a none                        2.3256   0.0000   0.0000
+  -> position_id=pos_1774123684_195101 unmatched_cost=1.0000 unmatched_shares=2.325580 entry_quality=unknown flags=open-remainder|no-exit
+unmatched  2026-03-22T04:41:21 btc-updown-5m-1774125600   UP     1.0000      n/a       n/a      n/a      n/a none                        5.5556   0.0000   0.0000
+  -> position_id=pos_1774125681_560000 unmatched_cost=1.0000 unmatched_shares=5.555554 entry_quality=unknown flags=open-remainder|no-exit
+
+summary: partial=3 unmatched=2
+summary details:
+  total_trades: 5
+  status_counts: {'partial': 3, 'unmatched': 2}
+  entry_quality_counts: {'bad-entry': 2, 'good-entry': 1, 'unknown': 2}
+  close_reason_counts: {'deadline-exit-loss': 2, 'hard-stop-loss': 1}
+  actual_source_tier_counts: {'medium': 3, 'none': 2}
+  actual_available_ratio: 0.6
+  actual_pnl: {'count': 3, 'average': 0.1042319250003851}
+  observed_pnl: {'count': 3, 'average': -0.17466807499961498}
+  mae: {'count': 5, 'average': -0.140278309}
+  mfe: {'count': 5, 'average': 0.0}
+  notes: {'actual_unavailable': 'actual_pnl average uses only rows with actual data; missing actual rows are excluded, not imputed'}
+
+================= RUN REPORT =================
+Generating post-run summary report...
+Report also saved to: /home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/data/latest_run_report.txt
+==============================================
+
+Traceback (most recent call last):
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/urllib3/connection.py", line 204, in _new_conn
+    sock = connection.create_connection(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/urllib3/util/connection.py", line 60, in create_connection
+    for res in socket.getaddrinfo(host, port, family, socket.SOCK_STREAM):
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/socket.py", line 963, in getaddrinfo
+    for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+socket.gaierror: [Errno -2] Name or service not known
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/urllib3/connectionpool.py", line 488, in _make_request
+    raise new_e
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/urllib3/connectionpool.py", line 464, in _make_request
+    self._validate_conn(conn)
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/urllib3/connectionpool.py", line 1093, in _validate_conn
+    conn.connect()
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/urllib3/connection.py", line 759, in connect
+    self.sock = sock = self._new_conn()
+                       ^^^^^^^^^^^^^^^^
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/urllib3/connection.py", line 211, in _new_conn
+    raise NameResolutionError(self.host, self, e) from e
+urllib3.exceptions.NameResolutionError: HTTPSConnection(host='gamma-api.polymarket.com', port=443): Failed to resolve 'gamma-api.polymarket.com' ([Errno -2] Name or service not known)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/requests/adapters.py", line 644, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/urllib3/connectionpool.py", line 841, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/urllib3/util/retry.py", line 535, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='gamma-api.polymarket.com', port=443): Max retries exceeded with url: /markets?slug=btc-updown-5m-1774125600 (Caused by NameResolutionError("HTTPSConnection(host='gamma-api.polymarket.com', port=443): Failed to resolve 'gamma-api.polymarket.com' ([Errno -2] Name or service not known)"))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/main.py", line 4, in <module>
+    main()
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/core/runner.py", line 604, in main
+    market = resolve_latest_btc_5m_token_ids()
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/core/market_resolver.py", line 63, in resolve_latest_btc_5m_token_ids
+    got = _fetch_by_slug(slug)
+          ^^^^^^^^^^^^^^^^^^^^
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/core/market_resolver.py", line 24, in _fetch_by_slug
+    r = requests.get(
+        ^^^^^^^^^^^^^
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/requests/api.py", line 73, in get
+    return request("get", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/.venv/lib/python3.12/site-packages/requests/adapters.py", line 677, in send
+    raise ConnectionError(e, request=request)
+requests.exceptions.ConnectionError: HTTPSConnectionPool(host='gamma-api.polymarket.com', port=443): Max retries exceeded with url: /markets?slug=btc-updown-5m-1774125600 (Caused by NameResolutionError("HTTPSConnection(host='gamma-api.polymarket.com', port=443): Failed to resolve 'gamma-api.polymarket.com' ([Errno -2] Name or service not known)"))

@@ -300,6 +300,8 @@ def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos
             max_adverse_pnl_usd=p.max_adverse_pnl_usd,
             has_scaled_out=getattr(p, "has_scaled_out", False),
             has_scaled_out_loss=getattr(p, "has_scaled_out_loss", False),
+            has_taken_partial=getattr(p, "has_taken_partial", False),
+            has_extracted_principal=getattr(p, "has_extracted_principal", False),
         ))
     return synced, notes
 
@@ -1046,6 +1048,10 @@ def main():
                         log(f"market resolve failed: {e}")
                         smart_sleep(SETTINGS.poll_seconds)
                         continue
+                except Exception as e:
+                    log(f"unexpected network or API error in main loop: {e}. Retrying in 5s...")
+                    smart_sleep(5.0)
+                    continue
             else:
                 price_now = ex.get_btc_price()
                 signal_side = "UP" if int(price_now) % 2 == 0 else "DOWN"

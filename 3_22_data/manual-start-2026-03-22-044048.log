@@ -1,0 +1,41 @@
+[2026-03-22 04:40:49] startup sanity | recovery_merge token=81068956203582334524759368326129988366109290310946243267008162150695746195101 slug=btc-updown-5m-1774123500 kept_source=live-order merged_source=journal-rebuild
+[2026-03-22 04:40:49] bot started | dry_run=False
+[2026-03-22 04:40:51] sync_drop token=81068956203582334524759368326129988366109290310946243267008162150695746195101 slug=btc-updown-5m-1774123500 reason=missing-live-position age_sec=1967.4 miss_count=1
+[2026-03-22 04:40:51] market switched => btc-updown-5m-1774125600
+status     opened/closed       market                     side    entry   actual  observed  act.pnl  obs.pnl tier   reason               remain      mae      mfe
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+partial    2026-03-22T02:20:08 btc-updown-5m-1774116900   UP     1.0000   1.7694    0.9483   0.7884  -0.0327 medium deadline-exit-loss   0.0422  -0.1000   0.0000
+  -> position_id=pos_1774117068_113453 unmatched_cost=0.0190 unmatched_shares=0.042221 entry_quality=good-entry flags=actual-medium-confidence|open-remainder
+partial    2026-03-22T02:29:02 btc-updown-5m-1774117500   UP     1.0000   0.8663    0.4489  -0.0985  -0.5159 medium hard-stop-loss       0.0489  -0.5764   0.0000
+  -> position_id=pos_1774117709_252618 unmatched_cost=0.0352 unmatched_shares=0.048885 entry_quality=bad-entry flags=actual-medium-confidence|open-remainder
+partial    2026-03-22T03:20:05 btc-updown-5m-1774120500   DOWN   1.0000   0.6068    1.0086  -0.3772   0.0246 medium deadline-exit-loss   0.0267  -0.0250   0.0000
+  -> position_id=pos_1774120698_115274 unmatched_cost=0.0160 unmatched_shares=0.026665 entry_quality=bad-entry flags=actual-medium-confidence|open-remainder
+unmatched  2026-03-22T04:08:04 btc-updown-5m-1774123500   UP     1.0000      n/a       n/a      n/a      n/a none                        2.3256   0.0000   0.0000
+  -> position_id=pos_1774123684_195101 unmatched_cost=1.0000 unmatched_shares=2.325580 entry_quality=unknown flags=open-remainder|no-exit
+
+summary: partial=3 unmatched=1
+summary details:
+  total_trades: 4
+  status_counts: {'partial': 3, 'unmatched': 1}
+  entry_quality_counts: {'bad-entry': 2, 'good-entry': 1, 'unknown': 1}
+  close_reason_counts: {'deadline-exit-loss': 2, 'hard-stop-loss': 1}
+  actual_source_tier_counts: {'medium': 3, 'none': 1}
+  actual_available_ratio: 0.75
+  actual_pnl: {'count': 3, 'average': 0.1042319250003851}
+  observed_pnl: {'count': 3, 'average': -0.17466807499961498}
+  mae: {'count': 4, 'average': -0.17534788625}
+  mfe: {'count': 4, 'average': 0.0}
+  notes: {'actual_unavailable': 'actual_pnl average uses only rows with actual data; missing actual rows are excluded, not imputed'}
+
+================= RUN REPORT =================
+Generating post-run summary report...
+Report also saved to: /home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/data/latest_run_report.txt
+==============================================
+
+Traceback (most recent call last):
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/main.py", line 4, in <module>
+    main()
+  File "/home/allen/.openclaw/workspace/polymarket-bot-by_openclaw/core/runner.py", line 621, in main
+    ob_up = ex.get_full_orderbook(market.get("token_up", "")) if SETTINGS.use_ob_imbalance else None
+                                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'Settings' object has no attribute 'use_ob_imbalance'
