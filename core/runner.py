@@ -1031,11 +1031,17 @@ def main():
                             try:
                                 book = ex.get_full_orderbook(token_override)
                                 clob_best_ask = book.get("best_ask", 0.0)
-                                if clob_best_ask > 0 and clob_best_ask < SETTINGS.min_entry_price:
-                                    maybe_record_cycle_label(state, "signal-blocked", slug=market["slug"], side=signal_side, reason="clob-ask-too-low")
-                                    log(f"skip entry: CLOB best_ask ({clob_best_ask}) < min_entry ({SETTINGS.min_entry_price}), avoiding deep slippage!")
-                                    signal_side = None
-                                    continue
+                                if clob_best_ask > 0:
+                                    if clob_best_ask < SETTINGS.min_entry_price:
+                                        maybe_record_cycle_label(state, "signal-blocked", slug=market["slug"], side=signal_side, reason="clob-ask-too-low")
+                                        log(f"skip entry: CLOB best_ask ({clob_best_ask}) < min_entry ({SETTINGS.min_entry_price}), avoiding deep downward slippage!")
+                                        signal_side = None
+                                        continue
+                                    elif clob_best_ask > getattr(SETTINGS, "max_entry_price", 0.8):
+                                        maybe_record_cycle_label(state, "signal-blocked", slug=market["slug"], side=signal_side, reason="clob-ask-too-high")
+                                        log(f"skip entry: CLOB best_ask ({clob_best_ask}) > max_entry ({getattr(SETTINGS, 'max_entry_price', 0.8)}), avoiding terrible risk/reward!")
+                                        signal_side = None
+                                        continue
                             except Exception as e:
                                 log(f"clob slippage check failed: {e}")
 
