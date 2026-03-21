@@ -1028,7 +1028,18 @@ def main():
                         token_override = market["token_up"] if signal_side == "UP" else market["token_down"]
                         entry_price = up if signal_side == "UP" else down
                         if entry_price and entry_price > 0:
-                            if float(entry_price) < SETTINGS.min_entry_price:
+                            try:
+                                book = ex.get_full_orderbook(token_override)
+                                clob_best_ask = book.get("best_ask", 0.0)
+                                if clob_best_ask > 0 and clob_best_ask < SETTINGS.min_entry_price:
+                                    maybe_record_cycle_label(state, "signal-blocked", slug=market["slug"], side=signal_side, reason="clob-ask-too-low")
+                                    log(f"skip entry: CLOB best_ask ({clob_best_ask}) < min_entry ({SETTINGS.min_entry_price}), avoiding deep slippage!")
+                                    signal_side = None
+                                    continue
+                            except Exception as e:
+                                log(f"clob slippage check failed: {e}")
+
+                            if signal_side and float(entry_price) < SETTINGS.min_entry_price:
                                 maybe_record_cycle_label(state, "signal-blocked", slug=market["slug"], side=signal_side, reason="price-too-low")
                                 log(f"skip entry: {signal_side} price {entry_price} < {SETTINGS.min_entry_price}")
                                 signal_side = None
