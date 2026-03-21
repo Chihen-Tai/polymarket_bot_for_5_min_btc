@@ -1,75 +1,91 @@
 # polymarket-bot-by_openclaw
+[English Version Below / 英文版附於文末↓](#english-version)
 
-Polymarket 自動交易機器人 但是目前我都虧錢
+Polymarket 自動量化交易機器人 (專攻 5 分鐘比特幣市場)
 
-## 目標
-- BTC 5min 策略骨架
-- 嚴格風控（資產不得低於 $5）
-- 先用 dry-run，不下真單
+## 🎯 核心特色機制
+- **ZLSMA + 枝形吊燈停損 (Chandelier Exit)**：內建高效能趨勢捕捉指標，過濾盤整雜訊。
+- **凱利公式注碼控制 (Quarter Kelly Sizing)**：根據策略歷史勝率動態決定下注金額。
+- **每日熔斷系統 (Daily Circuit Breaker)**：當日虧損達標自動關機，拒絕攤平。
+- **階梯停利 (Principal Extraction)**：暴漲時自動抽離本金，留下無風險彩票 (Risk-Free Moonbag) 繼續奔跑。
 
-## 快速開始
+## 🚀 快速開始
+
+### 1. 環境安裝
 ```bash
+git clone https://github.com/Chihen-Tai/polymarket-bot-by_openclaw.git
 cd polymarket-bot-by_openclaw
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-python runner.py
 ```
 
-查 token id（UP/DOWN）小工具：
+### 2. 環境變數設定 (`.env`)
+實盤交易前必填：
+- `PRIVATE_KEY`：你的錢包私鑰
+- `FUNDER_ADDRESS`：你的錢包地址
+- `DRY_RUN=True`：強烈建議先開紙上模擬，True 為不動用真金白銀。
+- `AUTO_MARKET_SELECTION=True`：讓系統自動每 5 分鐘抓取最新的 BTC 市場。
+
+### 3. 啟動機器人
+所有的實盤與模擬交易整合至單一主程式：
 ```bash
-source .venv/bin/activate
-python tools_fetch_token_ids.py btc-updown-5m-1773691500
+python main.py
 ```
 
-快速檢查出場規則：
+### 4. 結算與對帳分析
+按下 `Ctrl+C` 終止主程式後，系統會自動印出當次成績單。若需手動匯出報表：
 ```bash
-source .venv/bin/activate
-python test_trade_manager.py
-python replay_exit_checks.py
-python paper_replay_runner.py
-python reconcile_journal.py
-python inspect_trades.py --limit 10
-python verify_close_accounting.py --limit 20 --summary
-python trade_pair_ledger.py --limit 20 --summary
-python ledger_summary.py --limit 50
+# 確保在虛擬環境內執行
+python scripts/verify_close_accounting.py --limit 50 --format json --output data/close_accounting.json
+python scripts/trade_pair_ledger.py --limit 50 --format csv --output data/trade_ledger.csv
 ```
 
-報表 / 匯出：
+---
+
+<br><br>
+
+<a name="english-version"></a>
+# English Version
+
+Polymarket Automated Quantitative Trading Bot (Optimized for 5-Minute BTC Markets)
+
+## 🎯 Core Features
+- **ZLSMA + Chandelier Exit**: Built-in high-performance trend-following indicators to filter ranging market noise.
+- **Quarter Kelly Position Sizing**: Dynamically adjusts bet size based on the historical win rate of the strategy.
+- **Daily Circuit Breaker**: Automatically halts trading when the maximum daily drawdown limit is hit, preventing revenge trading.
+- **Tiered Take-Profit (Principal Extraction)**: Extracts initial capital upon sudden profit surges, leaving a "Risk-Free Moonbag" to capture exponential upside without baseline risk.
+
+## 🚀 Quick Start
+
+### 1. Installation
 ```bash
+git clone https://github.com/Chihen-Tai/polymarket-bot-by_openclaw.git
+cd polymarket-bot-by_openclaw
+python3 -m venv .venv
 source .venv/bin/activate
-python verify_close_accounting.py --limit 50 --format json --output reports/close_accounting.json
-python verify_close_accounting.py --limit 50 --format csv --output reports/close_accounting.csv
-python trade_pair_ledger.py --limit 50 --format json --output reports/trade_ledger.json
-python trade_pair_ledger.py --limit 50 --format csv --output reports/trade_ledger.csv --show-legs
-python ledger_summary.py --limit 100 --format json --output reports/ledger_summary.json
+pip install -r requirements.txt
+cp .env.example .env
 ```
 
-actual source tier：
-- `high`: cash balance delta（最高可信）
-- `medium`: close response / response amount 類來源
-- `low`: observed only、unavailable、或其他低可信推估
+### 2. Environment Setup (`.env`)
+Required before live trading:
+- `PRIVATE_KEY`: Your wallet private key.
+- `FUNDER_ADDRESS`: Your wallet public address.
+- `DRY_RUN=True`: Highly recommended to start in paper-trading simulation mode.
+- `AUTO_MARKET_SELECTION=True`: Enables the bot to autonomously cycle through upcoming 5m BTC markets.
 
-## 模式
-- `DRY_RUN=true`：只模擬下單
-- `DRY_RUN=false`：接真實 CLOB API（已接上）
+### 3. Running the Bot
+Launch the unified core engine:
+```bash
+python main.py
+```
 
-## 風控（預設）
-- `MIN_EQUITY=5.0`
-- `MAX_ORDER_USD=1.0`
-- `MAX_EXPOSURE_USD=3.0`
-- `MAX_ORDERS_PER_5MIN=1`
-- `MAX_CONSEC_LOSS=3`
-- `DAILY_MAX_LOSS=2.0`
-
-## 實盤啟用前必填
-請在 `.env` 填入：
-1. `PRIVATE_KEY`
-2. `FUNDER_ADDRESS`
-
-建議啟用：
-- `AUTO_MARKET_SELECTION=true`
-- `MARKET_SLUG_PREFIX=btc-updown-5m-`
-
-這樣機器人會自動抓最新 BTC 5min 市場並切換 token ids，不需要每 5 分鐘手改。
+### 4. Accounting & Analysis
+Terminating `main.py` via `Ctrl+C` will automatically print the run report. For manual exports:
+```bash
+# Export JSON/CSV ledger and analysis to data/ directory
+python scripts/verify_close_accounting.py --limit 50 --format json --output data/close_accounting.json
+python scripts/trade_pair_ledger.py --limit 50 --format csv --output data/trade_ledger.csv
+```
