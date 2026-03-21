@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from core.config import SETTINGS
-from core.indicators import calc_zlsma, calc_chandelier_exit
+from core.indicators import calc_zlsma, calc_chandelier_exit, compute_buy_sell_pressure
 
 
 def _sf(x: Any) -> Optional[float]:
@@ -101,7 +101,9 @@ def explain_choose_side(
     binance_1m: Optional[dict] = None,
     binance_5m: Optional[list[dict]] = None,
     ob_up: Optional[dict] = None,
-    ob_down: Optional[dict] = None
+    ob_down: Optional[dict] = None,
+    ws_bba: Optional[dict] = None,
+    ws_trades: Optional[list[dict]] = None
 ) -> dict:
     prices = get_outcome_prices(market)
     up = prices.get("up") or prices.get("漲")
@@ -187,6 +189,22 @@ def explain_choose_side(
         except Exception:
             pass
 
+    # Strategy 6: WebSocket Order Flow Imbalance (OFI)
+    if ws_trades:
+        buy_vol, sell_vol = compute_buy_sell_pressure(ws_trades)
+        total_vol = buy_vol + sell_vol
+        if total_vol > 0:
+            ofi_ratio = buy_vol / total_vol
+            # If > 0.70, strong buy pressure
+            if ofi_ratio > 0.70 and valid_up:
+                r = base_result.copy()
+                r.update({"ok": True, "side": "UP", "reason": "model-ws_order_flow_up", "entry_price": up})
+                candidates["ws_order_flow_up"] = r
+            elif ofi_ratio < 0.30 and valid_down:
+                r = base_result.copy()
+                r.update({"ok": True, "side": "DOWN", "reason": "model-ws_order_flow_down", "entry_price": down})
+                candidates["ws_order_flow_down"] = r
+
     # Mean Reversion
     mr = mean_reversion_side(up, yes_window)
     base_result["mr_side"] = mr
@@ -240,10 +258,13 @@ def choose_side(
     up_window: Optional[deque] = None, 
     down_window: Optional[deque] = None,
     binance_1m: Optional[dict] = None,
+    binance_5m: Optional[list[dict]] = None,
     ob_up: Optional[dict] = None,
-    ob_down: Optional[dict] = None
+    ob_down: Optional[dict] = None,
+    ws_bba: Optional[dict] = None,
+    ws_trades: Optional[list[dict]] = None
 ) -> Optional[str]:
-    decision = explain_choose_side(market, yes_window, up_window, down_window, binance_1m, ob_up, ob_down)
+    decision = explain_choose_side(market, yes_window, up_window, down_window, binance_1m, binance_5m, ob_up, ob_down, ws_bba, ws_trades)
     if not decision.get("ok"):
         return None
     return decision.get("side")

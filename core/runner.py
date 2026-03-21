@@ -15,6 +15,8 @@ from core.market_resolver import resolve_latest_btc_5m_token_ids, MarketResoluti
 from core.run_journal import RunJournal
 from core.state_store import load_state, save_state
 from core.trade_manager import decide_exit, maybe_reverse_entry, can_reenter_same_market
+from core.ws_binance import BINANCE_WS
+from core.indicators import compute_buy_sell_pressure
 from core.journal import (
     LOT_EPS_COST_USD,
     LOT_EPS_SHARES,
@@ -24,6 +26,24 @@ from core.journal import (
     read_events,
     format_exit_summary,
 )
+
+
+def smart_sleep(seconds: float):
+    sleep_start = time.time()
+    while time.time() - sleep_start < seconds:
+        try:
+            wt = BINANCE_WS.get_recent_trades(seconds=60.0)
+            bv, sv = compute_buy_sell_pressure(wt)
+            tv = bv + sv
+            if tv > 50000:
+                ofi = bv / max(tv, 1e-9)
+                if ofi > 0.70 or ofi < 0.30:
+                    log(f"EVENT INTERRUPT: OFI={ofi:.2f} Vol=${tv:.0f} -> forcing fast poll")
+                    break
+        except Exception:
+            pass
+        time.sleep(1.0)
+
 
 
 STATE_VERSION = 2
@@ -533,7 +553,20 @@ def main():
         log(f"startup sanity persisted runtime state | open_positions={len(open_positions)}")
 
     try:
+        from core.ws_binance import BINANCE_WS
+        BINANCE_WS.start()
+    except Exception as e:
+        log(f"Failed to start WS: {e}")
+
+    last_rest_query_ts = 0.0
+
+    try:
         while True:
+            time_since_last_query = time.time() - last_rest_query_ts
+            if time_since_last_query < 3.0:
+                time.sleep(3.0 - time_since_last_query)
+            last_rest_query_ts = time.time()
+
             now = datetime.now()
             key = current_5min_key(now)
             update_window(risk, key)
@@ -545,7 +578,7 @@ def main():
                     log(note)
             except Exception as sync_err:
                 log(f"API sync error (account/positions): {sync_err}")
-                time.sleep(SETTINGS.poll_seconds)
+                smart_sleep(SETTINGS.poll_seconds)
                 continue
             flags = load_runtime_flags({
                 "live_consec_losses": flags.live_consec_losses,
@@ -563,7 +596,7 @@ def main():
 
             if risk.daily_pnl <= -SETTINGS.daily_max_loss:
                 log(f"CIRCUIT BREAKER: Daily loss (-${abs(risk.daily_pnl):.2f}) reached limit (-${SETTINGS.daily_max_loss:.2f}). Pausing new entries.")
-                time.sleep(SETTINGS.poll_seconds)
+                smart_sleep(SETTINGS.poll_seconds)
                 continue
 
             if SETTINGS.auto_market_selection:
@@ -588,6 +621,13 @@ def main():
                     ob_up = ex.get_full_orderbook(market.get("token_up", "")) if SETTINGS.use_ob_imbalance else None
                     ob_down = ex.get_full_orderbook(market.get("token_down", "")) if SETTINGS.use_ob_imbalance else None
 
+                    try:
+                        ws_bba = BINANCE_WS.get_bba()
+                        ws_trades = BINANCE_WS.get_recent_trades(seconds=60.0)
+                    except Exception:
+                        ws_bba = None
+                        ws_trades = None
+
                     if SETTINGS.use_dynamic_thresholds and binance_1m:
                         change_abs = abs(binance_1m.get("change", 0.0))
                         if change_abs > 30.0:
@@ -611,7 +651,8 @@ def main():
                     if not arbitrage_triggered:
                         model_decision = explain_choose_side(
                             market, yes_price_window, up_price_window, down_price_window,
-                            binance_1m=binance_1m, binance_5m=binance_5m, ob_up=ob_up, ob_down=ob_down
+                            binance_1m=binance_1m, binance_5m=binance_5m, ob_up=ob_up, ob_down=ob_down,
+                            ws_bba=ws_bba, ws_trades=ws_trades
                         )
                         signal_side = model_decision.get("side") if model_decision.get("ok") else None
                         no_entry_reason = model_decision.get("reason")
@@ -1003,7 +1044,7 @@ def main():
                         log(f"market resolve failed: {e} | fallback to static token ids")
                     else:
                         log(f"market resolve failed: {e}")
-                        time.sleep(SETTINGS.poll_seconds)
+                        smart_sleep(SETTINGS.poll_seconds)
                         continue
             else:
                 price_now = ex.get_btc_price()
@@ -1028,7 +1069,7 @@ def main():
 
             if signal_side is None:
                 log(f"no signal | equity={acct.equity:.2f} cash={acct.cash:.2f}")
-                time.sleep(SETTINGS.poll_seconds)
+                smart_sleep(SETTINGS.poll_seconds)
                 continue
 
             order_usd = SETTINGS.max_order_usd
@@ -1049,13 +1090,13 @@ def main():
             if flags.panic_exit_mode:
                 maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="panic-exit-mode")
                 log("panic_exit_mode active: block new entries")
-                time.sleep(SETTINGS.poll_seconds)
+                smart_sleep(SETTINGS.poll_seconds)
                 continue
 
             if open_positions:
                 maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="existing-position-still-open")
                 log("skip entry: existing position still open")
-                time.sleep(SETTINGS.poll_seconds)
+                smart_sleep(SETTINGS.poll_seconds)
                 continue
 
             if flags.close_fail_streak >= 2:
@@ -1063,18 +1104,18 @@ def main():
                 panic_market_slug = last_market_slug
                 maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="close-fail-streak")
                 log(f"protection mode: close_fail_streak={flags.close_fail_streak}, block new entries")
-                time.sleep(SETTINGS.poll_seconds)
+                smart_sleep(SETTINGS.poll_seconds)
                 continue
 
             if time.time() < error_cooldown_until:
                 maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="error-cooldown")
                 log("in error cooldown, skip this cycle")
-                time.sleep(SETTINGS.poll_seconds)
+                smart_sleep(SETTINGS.poll_seconds)
                 continue
             if acct.cash < 1.0:
                 maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="cash-below-1")
                 log(f"blocked by cash: cash={acct.cash:.2f} < 1.00")
-                time.sleep(SETTINGS.poll_seconds)
+                smart_sleep(SETTINGS.poll_seconds)
                 continue
 
             ok, reason = can_place_order(
@@ -1095,7 +1136,7 @@ def main():
                 maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason=reason)
                 log(f"blocked by risk: {reason}")
                 notify_discord(SETTINGS.discord_webhook_url, f"🚫 Bot blocked: {reason}")
-                time.sleep(SETTINGS.poll_seconds)
+                smart_sleep(SETTINGS.poll_seconds)
                 continue
 
             try:
@@ -1198,7 +1239,7 @@ def main():
                     last_cycle_label=state.get("last_cycle_label", ""),
                     panic_market_slug=panic_market_slug,
                 )
-                time.sleep(SETTINGS.poll_seconds)
+                smart_sleep(SETTINGS.poll_seconds)
                 continue
 
             if SETTINGS.dry_run:
@@ -1208,7 +1249,7 @@ def main():
                 risk.consec_losses = risk.consec_losses + 1 if pnl < 0 else 0
                 log(f"mock settle pnl={pnl:+.2f} daily_pnl={risk.daily_pnl:+.2f} consec_losses={risk.consec_losses}")
 
-            time.sleep(SETTINGS.poll_seconds)
+            smart_sleep(SETTINGS.poll_seconds)
     except GracefulStop:
         reason = "manual-stop" if STOP_REQUEST["signal"] == signal.SIGINT else "timeout-or-sigterm"
         run_journal.finalize(status="terminated", reason=reason, notes=["graceful signal stop"])

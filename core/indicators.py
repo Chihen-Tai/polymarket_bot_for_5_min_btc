@@ -70,9 +70,34 @@ def calc_chandelier_exit(klines: list[dict], atr_period: int = 1, mult: float = 
         else:
             short_stop = new_short_stop
             
+            
         if direction == 1 and curr['close'] < long_stop:
             direction = -1
         elif direction == -1 and curr['close'] > short_stop:
             direction = 1
             
     return direction
+
+def compute_cvd(trades: list[dict]) -> float:
+    """
+    Computes Cumulative Volume Delta (CVD) from a list of aggTrades.
+    Trade format: {"p": price, "q": qty, "m": is_buyer_maker, "ts": timestamp}
+    If `m` is True, it's a market SELL hitting a maker bid.
+    """
+    cvd = 0.0
+    for t in trades:
+        vol = t['p'] * t['q']
+        if t['m']:
+            cvd -= vol  # Market sell
+        else:
+            cvd += vol  # Market buy
+    return cvd
+
+def compute_buy_sell_pressure(trades: list[dict]) -> tuple[float, float]:
+    """
+    Computes total buy volume vs total sell volume (in USD equivalent).
+    Returns (buy_vol, sell_vol).
+    """
+    buy_vol = sum(t['p'] * t['q'] for t in trades if not t['m'])
+    sell_vol = sum(t['p'] * t['q'] for t in trades if t['m'])
+    return buy_vol, sell_vol

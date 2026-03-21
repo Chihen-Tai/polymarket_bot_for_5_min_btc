@@ -4,6 +4,8 @@
 Polymarket 自動量化交易機器人 (專攻 5 分鐘比特幣市場)
 
 ## 🎯 核心特色機制
+- **高頻事件驅動架構 (Event-Driven Sniper)**：透過專屬 WebSocket 背景長連線 (Daemon) 實時訂閱幣安 `@aggTrade` 與 `@bookTicker`。
+- **訂單流失衡與微秒級中斷 (OFI & CVD)**：毫秒級解析全網買賣動能，一旦失衡立刻「打斷睡眠週期」光速交易，徹底消除傳統 REST API 固定輪詢產生的「逆向選擇 (Adverse Selection)」風險。
 - **ZLSMA + 枝形吊燈停損 (Chandelier Exit)**：內建高效能趨勢捕捉指標，過濾盤整雜訊。
 - **凱利公式注碼控制 (Quarter Kelly Sizing)**：根據策略歷史勝率動態決定下注金額。
 - **每日熔斷系統 (Daily Circuit Breaker)**：當日虧損達標自動關機，拒絕攤平。
@@ -52,6 +54,8 @@ python scripts/trade_pair_ledger.py --limit 50 --format csv --output data/trade_
 Polymarket Automated Quantitative Trading Bot (Optimized for 5-Minute BTC Markets)
 
 ## 🎯 Core Features
+- **High-Frequency Event-Driven Architecture**: Employs a dedicated background WebSocket daemon to stream live Binance `@aggTrade` and `@bookTicker` data.
+- **OFI & CVD Interrupt Sniping**: Computes real-time Order Flow Imbalance. Instantly interrupts sleep cycles to snipe Polymarket contracts upon severe momentum shifts, eliminating Adverse Selection latency.
 - **ZLSMA + Chandelier Exit**: Built-in high-performance trend-following indicators to filter ranging market noise.
 - **Quarter Kelly Position Sizing**: Dynamically adjusts bet size based on the historical win rate of the strategy.
 - **Daily Circuit Breaker**: Automatically halts trading when the maximum daily drawdown limit is hit, preventing revenge trading.
