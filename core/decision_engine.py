@@ -131,9 +131,6 @@ def explain_choose_side(
     if secs_left < SETTINGS.entry_window_min_sec:
         base_result["reason"] = "too_late_in_market"
         return base_result
-    if secs_left > SETTINGS.entry_window_max_sec:
-        base_result["reason"] = "too_early_in_market"
-        return base_result
 
     valid_up = up is not None and SETTINGS.min_entry_price <= float(up) <= SETTINGS.max_entry_price
     valid_down = down is not None and SETTINGS.min_entry_price <= float(down) <= SETTINGS.max_entry_price
