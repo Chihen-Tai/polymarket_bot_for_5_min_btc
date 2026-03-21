@@ -167,6 +167,17 @@ class PolymarketExchange:
 
         return None, "close_response_missing_amount", normalized
 
+    def _extract_close_response_filled_shares(self, payload: Any) -> tuple[float | None, str]:
+        if not isinstance(payload, dict):
+            return None, "close_response_unavailable"
+
+        for key in ("makingAmount", "size", "filledSize", "filled_size", "matchedSize", "matched_size"):
+            value = _to_float(payload.get(key), -1.0)
+            if value > 0:
+                return value, f"close_response_{key}"
+
+        return None, "close_response_missing_filled_shares"
+
     def get_account(self) -> Account:
         if self.dry_run:
             return Account(
@@ -210,6 +221,12 @@ class PolymarketExchange:
             return out
         except Exception:
             return []
+
+    def get_position(self, token_id: str) -> Position | None:
+        for pos in self.get_positions():
+            if pos.token_id == token_id:
+                return pos
+        return None
 
     def get_btc_price(self) -> float:
         if self.dry_run:
@@ -369,14 +386,16 @@ class PolymarketExchange:
         response_amount_value = None
         response_amount_source = "close_response_unavailable"
         response_amount_fields: dict[str, float | None] = {}
-        while remaining > 0.0001 and attempts < 5:
+        while remaining > 0.0001 and attempts < 8:
             attempts += 1
             # progressively smaller chunks on retries
             if attempts == 1:
                 chunk = remaining
             elif attempts == 2:
-                chunk = max(remaining * 0.7, 0.01)
+                chunk = max(remaining * 0.85, 0.01)
             elif attempts == 3:
+                chunk = max(remaining * 0.7, 0.01)
+            elif attempts == 4:
                 chunk = max(remaining * 0.5, 0.01)
             else:
                 chunk = max(remaining * 0.35, 0.01)
@@ -392,12 +411,18 @@ class PolymarketExchange:
                 )
                 last_resp = self.client.post_order(order, OrderType.FAK)
                 amount_value, amount_source, amount_fields = self._extract_close_response_value(last_resp)
+                filled_shares, filled_source = self._extract_close_response_filled_shares(last_resp)
                 if amount_value is not None and amount_value > 0:
                     response_amount_value = (response_amount_value or 0.0) + amount_value
                 response_amount_source = amount_source
-                response_amount_fields = amount_fields
-                remaining -= chunk
-                sold_total += chunk
+                response_amount_fields = {**amount_fields, "filled_shares": filled_shares, "filled_shares_source": filled_source}
+
+                effective_filled = min(chunk, max(0.0, float(filled_shares or 0.0)))
+                if effective_filled <= 0:
+                    break
+
+                remaining -= effective_filled
+                sold_total += effective_filled
             except Exception as e:
                 last_error = str(e)
                 # small delay then retry

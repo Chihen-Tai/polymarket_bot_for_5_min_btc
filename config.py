@@ -67,6 +67,8 @@ class Settings:
 
     # Cadence guard: avoid long no-trade stretches
     max_idle_minutes: int = _i("MAX_IDLE_MINUTES", 120)
+    live_position_grace_sec: int = _i("LIVE_POSITION_GRACE_SEC", 90)
+    live_position_miss_limit: int = _i("LIVE_POSITION_MISS_LIMIT", 3)
 
     # Dump+hedge integration
     dump_move_threshold: float = _f("DUMP_MOVE_THRESHOLD", 0.25)

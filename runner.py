@@ -57,6 +57,8 @@ class OpenPos:
     last_synced_current_value: float = 0.0
     last_synced_cash_pnl: float = 0.0
     last_synced_at: float = 0.0
+    live_miss_count: int = 0
+    pending_confirmation: bool = False
     max_favorable_value_usd: float = 0.0
     max_adverse_value_usd: float = 0.0
     max_favorable_pnl_usd: float = 0.0
@@ -231,7 +233,21 @@ def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos
     for p in open_positions:
         ap = actual.get(p.token_id)
         if ap is None or ap.size <= 0:
-            notes.append(f"sync_drop token={p.token_id} slug={p.slug} reason=missing-live-position")
+            age_sec = max(0.0, time.time() - float(p.opened_ts or 0.0)) if p.opened_ts else 999999.0
+            miss_count = int(getattr(p, "live_miss_count", 0) or 0) + 1
+            pending_confirmation = bool(getattr(p, "pending_confirmation", False))
+            in_grace = pending_confirmation and age_sec <= SETTINGS.live_position_grace_sec
+            under_miss_limit = pending_confirmation and miss_count < SETTINGS.live_position_miss_limit
+            if in_grace or under_miss_limit:
+                held = OpenPos(**p.__dict__)
+                held.live_miss_count = miss_count
+                held.pending_confirmation = True
+                synced.append(held)
+                notes.append(
+                    f"sync_hold token={p.token_id} slug={p.slug} reason=missing-live-position age_sec={age_sec:.1f} miss_count={miss_count} pending={pending_confirmation}"
+                )
+                continue
+            notes.append(f"sync_drop token={p.token_id} slug={p.slug} reason=missing-live-position age_sec={age_sec:.1f} miss_count={miss_count} pending={pending_confirmation}")
             continue
         row_notes, flags = inspect_open_position(p, ap)
         if flags["worthless"] or flags["stale"]:
@@ -254,6 +270,8 @@ def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos
             last_synced_current_value=float(ap.current_value),
             last_synced_cash_pnl=float(ap.cash_pnl),
             last_synced_at=time.time(),
+            live_miss_count=0,
+            pending_confirmation=False,
             max_favorable_value_usd=p.max_favorable_value_usd,
             max_adverse_value_usd=p.max_adverse_value_usd,
             max_favorable_pnl_usd=p.max_favorable_pnl_usd,
@@ -606,15 +624,21 @@ def main():
                             keep_positions.append(p)
                             continue
                         observed_value = realistic_exit_value(p, up, down, ob_up, ob_down)
-                        if observed_value is None:
+                        mark_value = observed_mark_value(p, up, down)
+                        if observed_value is None and mark_value is None:
                             keep_positions.append(p)
                             continue
-                        update_position_excursions(p, observed_value)
-                        pnl_pct = (observed_value - p.cost_usd) / max(p.cost_usd, 1e-9)
+                        effective_exit_value = observed_value if observed_value is not None else mark_value
+                        hard_stop_value = min(
+                            v for v in (observed_value, mark_value) if v is not None
+                        )
+                        update_position_excursions(p, effective_exit_value)
+                        pnl_pct = (effective_exit_value - p.cost_usd) / max(p.cost_usd, 1e-9)
+                        hard_stop_pnl_pct = (hard_stop_value - p.cost_usd) / max(p.cost_usd, 1e-9)
                         hold_sec = time.time() - p.opened_ts
-                        exit_decision = decide_exit(pnl_pct=pnl_pct, hold_sec=hold_sec, secs_left=secs_left, has_scaled_out=getattr(p, "has_scaled_out", False))
-                        stop_warn = pnl_pct <= -SETTINGS.stop_loss_warn_pct
-                        urgent_exit = pnl_pct <= -SETTINGS.stop_loss_pct
+                        exit_decision = decide_exit(pnl_pct=hard_stop_pnl_pct, hold_sec=hold_sec, secs_left=secs_left, has_scaled_out=getattr(p, "has_scaled_out", False))
+                        stop_warn = hard_stop_pnl_pct <= -SETTINGS.stop_loss_warn_pct
+                        urgent_exit = hard_stop_pnl_pct <= -SETTINGS.stop_loss_pct
 
                         if stop_warn and not urgent_exit:
                             append_event({
@@ -659,8 +683,50 @@ def main():
                                         if urgent_exit:
                                             flags.panic_exit_mode = True
                                             panic_market_slug = p.slug
-                                        log(f"{exit_decision.reason} close failed: zero shares closed | resp={close_resp}")
-                                        keep_positions.append(p)
+
+                                        live_after_fail = None
+                                        try:
+                                            live_after_fail = ex.get_position(p.token_id)
+                                        except Exception as reconcile_err:
+                                            log(f"reconcile after close fail errored | token={p.token_id} err={reconcile_err}")
+
+                                        err_text = str(close_resp.get("error") or "")
+                                        if live_after_fail is None or float(live_after_fail.size) <= LOT_EPS_SHARES:
+                                            log(
+                                                f"{exit_decision.reason} close failed but live position missing -> drop local lot | "
+                                                f"token={p.token_id} err={err_text or 'n/a'}"
+                                            )
+                                        elif "not enough balance" in err_text.lower() or "allowance" in err_text.lower() or float(live_after_fail.size) < max(LOT_EPS_SHARES, p.shares - LOT_EPS_SHARES):
+                                            resized_shares = float(live_after_fail.size)
+                                            resized_cost = p.avg_cost_per_share * resized_shares
+                                            log(
+                                                f"{exit_decision.reason} close reconciled live position | token={p.token_id} "
+                                                f"local_shares={p.shares:.6f} live_shares={resized_shares:.6f} err={err_text or 'n/a'}"
+                                            )
+                                            keep_positions.append(OpenPos(
+                                                slug=p.slug,
+                                                side=p.side,
+                                                token_id=p.token_id,
+                                                shares=resized_shares,
+                                                cost_usd=resized_cost,
+                                                opened_ts=p.opened_ts,
+                                                position_id=p.position_id,
+                                                entry_reason=p.entry_reason,
+                                                source=p.source,
+                                                last_synced_size=float(live_after_fail.size),
+                                                last_synced_initial_value=float(live_after_fail.initial_value),
+                                                last_synced_current_value=float(live_after_fail.current_value),
+                                                last_synced_cash_pnl=float(live_after_fail.cash_pnl),
+                                                last_synced_at=time.time(),
+                                                max_favorable_value_usd=p.max_favorable_value_usd,
+                                                max_adverse_value_usd=p.max_adverse_value_usd,
+                                                max_favorable_pnl_usd=p.max_favorable_pnl_usd,
+                                                max_adverse_pnl_usd=p.max_adverse_pnl_usd,
+                                                has_scaled_out=getattr(p, "has_scaled_out", False),
+                                            ))
+                                        else:
+                                            log(f"{exit_decision.reason} close failed: zero shares closed | resp={close_resp}")
+                                            keep_positions.append(p)
                                     else:
                                         flags.close_fail_streak = 0
                                         closed_any = True
@@ -675,16 +741,13 @@ def main():
                                         close_response_value = close_resp.get("close_response_value")
                                         close_response_value_source = str(close_resp.get("close_response_value_source") or "")
                                         close_response_amount_fields = close_resp.get("close_response_amount_fields") or {}
-                                        
-                                        cash_before = float(close_resp.get("cash_before") or 0.0)
-                                        cash_after = float(close_resp.get("cash_after") or 0.0)
 
-                                        if cash_before > 0 and cash_after > 0:
-                                            actual_exit_value_usd = cash_after - cash_before
-                                            actual_exit_value_source = "cash_balance_delta_strict"
+                                        if close_response_value is not None and float(close_response_value) > 0:
+                                            actual_exit_value_usd = float(close_response_value)
+                                            actual_exit_value_source = close_response_value_source or "close_response_value"
                                             actual_realized_pnl_usd = actual_exit_value_usd - realized_cost
                                             actual_realized_return_pct = actual_realized_pnl_usd / max(realized_cost, 1e-9)
-                                            pnl_source = "actual_cash_recovered_strict"
+                                            pnl_source = "actual_close_response_value"
                                             risk.daily_pnl += actual_realized_pnl_usd
                                         elif actual_exit_value_usd > 0 and actual_exit_value_source == "cash_balance_delta":
                                             actual_realized_pnl_usd = actual_exit_value_usd - realized_cost
@@ -706,7 +769,7 @@ def main():
                                             flags.last_loss_side = ""
                                         risk.consec_losses = flags.live_consec_losses
 
-                                        remaining_shares = min(max(0.0, p.shares - sold_shares), remaining_hint)
+                                        remaining_shares = max(max(0.0, p.shares - sold_shares), remaining_hint)
                                         remaining_cost = max(0.0, p.cost_usd - realized_cost)
                                         quality_pnl = actual_realized_pnl_usd if actual_realized_pnl_usd is not None else observed_realized_pnl_usd
                                         entry_quality = "good-entry" if quality_pnl > 0 else "bad-entry" if quality_pnl < 0 else "flat-entry"
@@ -747,7 +810,7 @@ def main():
                                                 f" actual_return={actual_realized_return_pct:.2%}"
                                             )
                                         log(
-                                            f"{exit_decision.reason} close | side={p.side} pnl_pct={pnl_pct:.2%}"
+                                            f"{exit_decision.reason} close | side={p.side} pnl_pct={pnl_pct:.2%} hard_stop_pnl_pct={hard_stop_pnl_pct:.2%}"
                                             f"{actual_bits} observed_pnl_usd={observed_realized_pnl_usd:+.4f} hold={hold_sec:.0f}s "
                                             f"consec_losses={flags.live_consec_losses} resp={close_resp}"
                                         )
@@ -939,6 +1002,7 @@ def main():
                             position_id=position_id,
                             entry_reason=signal_origin or "signal",
                             source="live-order",
+                            pending_confirmation=True,
                             max_favorable_value_usd=order_usd,
                             max_adverse_value_usd=order_usd,
                             max_favorable_pnl_usd=0.0,

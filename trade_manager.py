@@ -21,21 +21,15 @@ class EntryDecision:
 
 
 def decide_exit(*, pnl_pct: float, hold_sec: float, secs_left: Optional[float] = None, has_scaled_out: bool = False) -> ExitDecision:
-    if secs_left is not None and secs_left <= getattr(SETTINGS, "exit_deadline_sec", 20):
-        return ExitDecision(True, "deadline-exit", pnl_pct, hold_sec)
-
-    if pnl_pct >= SETTINGS.take_profit_hard_pct:
-        return ExitDecision(True, "take-profit-hard", pnl_pct, hold_sec)
-    
-    if not has_scaled_out and pnl_pct >= getattr(SETTINGS, "take_profit_scaleout_pct", 0.40):
-        return ExitDecision(True, "scale-out", pnl_pct, hold_sec)
-
-    if pnl_pct >= SETTINGS.take_profit_soft_pct and hold_sec >= 20:
-        return ExitDecision(True, "take-profit-soft", pnl_pct, hold_sec)
     if pnl_pct <= -SETTINGS.stop_loss_pct:
         return ExitDecision(True, "stop-loss", pnl_pct, hold_sec)
-    if hold_sec >= SETTINGS.max_hold_seconds:
-        return ExitDecision(True, "max-hold", pnl_pct, hold_sec)
+
+    if secs_left is not None and secs_left <= getattr(SETTINGS, "exit_deadline_sec", 20) and pnl_pct < 0:
+        return ExitDecision(True, "deadline-exit-loss", pnl_pct, hold_sec)
+
+    if hold_sec >= SETTINGS.max_hold_seconds and pnl_pct < 0:
+        return ExitDecision(True, "max-hold-loss", pnl_pct, hold_sec)
+
     return ExitDecision(False, "", pnl_pct, hold_sec)
 
 
