@@ -216,18 +216,7 @@ def explain_choose_side(
             r = base_result.copy()
             r.update({"ok": True, "side": side, "reason": "model-mean_reversion_signal", "entry_price": entry_price})
             candidates["mean_reversion_signal"] = r
-    else:
-        # Spread Signal
-        spread = abs(up - down)
-        base_result["spread"] = spread
-        min_spread = max(SETTINGS.edge_threshold, SETTINGS.fee_buffer)
-        if spread >= min_spread:
-            side = "DOWN" if up > down else "UP"
-            entry_price = up if side == "UP" else down
-            if (side == "UP" and valid_up) or (side == "DOWN" and valid_down):
-                r = base_result.copy()
-                r.update({"ok": True, "side": side, "reason": "model-spread_signal", "entry_price": entry_price, "spread": spread})
-                candidates["spread_signal"] = r
+
 
     # Apply Momentum Confirmation
     filtered_candidates = {}
