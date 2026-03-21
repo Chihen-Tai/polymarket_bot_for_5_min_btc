@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import csv
 import json
-from collections import Counter, deque
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from collections import defaultdict, deque, Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from journal import read_events
+from core.journal import read_events
 
 
 EPS = 1e-9

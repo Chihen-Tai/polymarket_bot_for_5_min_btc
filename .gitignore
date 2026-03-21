@@ -22,3 +22,8 @@ artifacts/
 
 # OS / editor
 .DS_Store
+
+# User Data
+data/
+*.csv
+*拷貝.txt

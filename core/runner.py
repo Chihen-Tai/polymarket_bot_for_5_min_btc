@@ -5,17 +5,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from random import uniform
 
-from config import SETTINGS
-from decision_engine import choose_side, explain_choose_side, get_outcome_prices, seconds_to_market_end
-from exchange import PolymarketExchange, Position
-from hedge_logic import should_trigger_dump
-from notifier import notify_discord
-from risk import RiskState, can_place_order, current_5min_key, update_window
-from market_resolver import resolve_latest_btc_5m_token_ids, MarketResolutionError
-from run_journal import RunJournal
-from state_store import load_state, save_state
-from trade_manager import decide_exit, maybe_reverse_entry, can_reenter_same_market
-from journal import (
+from core.config import SETTINGS
+from core.decision_engine import choose_side, explain_choose_side, get_outcome_prices, seconds_to_market_end
+from core.exchange import PolymarketExchange, Position
+from core.hedge_logic import should_trigger_dump
+from core.notifier import notify_discord
+from core.risk import RiskState, can_place_order, current_5min_key, update_window
+from core.market_resolver import resolve_latest_btc_5m_token_ids, MarketResolutionError
+from core.run_journal import RunJournal
+from core.state_store import load_state, save_state
+from core.trade_manager import decide_exit, maybe_reverse_entry, can_reenter_same_market
+from core.journal import (
     LOT_EPS_COST_USD,
     LOT_EPS_SHARES,
     STALE_HOURS,
@@ -64,6 +64,9 @@ class OpenPos:
     max_favorable_pnl_usd: float = 0.0
     max_adverse_pnl_usd: float = 0.0
     has_scaled_out: bool = False
+    has_scaled_out_loss: bool = False
+    has_taken_partial: bool = False
+    has_extracted_principal: bool = False
 
     @property
     def avg_cost_per_share(self) -> float:
@@ -235,19 +238,17 @@ def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos
         if ap is None or ap.size <= 0:
             age_sec = max(0.0, time.time() - float(p.opened_ts or 0.0)) if p.opened_ts else 999999.0
             miss_count = int(getattr(p, "live_miss_count", 0) or 0) + 1
-            pending_confirmation = bool(getattr(p, "pending_confirmation", False))
-            in_grace = pending_confirmation and age_sec <= SETTINGS.live_position_grace_sec
-            under_miss_limit = pending_confirmation and miss_count < SETTINGS.live_position_miss_limit
-            if in_grace or under_miss_limit:
+            # Give ALL missing positions a longer grace period to survive API delays/hiccups
+            in_grace = age_sec <= 300 and miss_count <= 5
+            if in_grace:
                 held = OpenPos(**p.__dict__)
                 held.live_miss_count = miss_count
-                held.pending_confirmation = True
                 synced.append(held)
                 notes.append(
-                    f"sync_hold token={p.token_id} slug={p.slug} reason=missing-live-position age_sec={age_sec:.1f} miss_count={miss_count} pending={pending_confirmation}"
+                    f"sync_hold token={p.token_id} slug={p.slug} reason=missing-live-position age_sec={age_sec:.1f} miss_count={miss_count}"
                 )
                 continue
-            notes.append(f"sync_drop token={p.token_id} slug={p.slug} reason=missing-live-position age_sec={age_sec:.1f} miss_count={miss_count} pending={pending_confirmation}")
+            notes.append(f"sync_drop token={p.token_id} slug={p.slug} reason=missing-live-position age_sec={age_sec:.1f} miss_count={miss_count}")
             continue
         row_notes, flags = inspect_open_position(p, ap)
         if flags["worthless"] or flags["stale"]:
@@ -276,6 +277,8 @@ def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos
             max_adverse_value_usd=p.max_adverse_value_usd,
             max_favorable_pnl_usd=p.max_favorable_pnl_usd,
             max_adverse_pnl_usd=p.max_adverse_pnl_usd,
+            has_scaled_out=getattr(p, "has_scaled_out", False),
+            has_scaled_out_loss=getattr(p, "has_scaled_out_loss", False),
         ))
     return synced, notes
 
@@ -534,10 +537,15 @@ def main():
             key = current_5min_key(now)
             update_window(risk, key)
 
-            acct = ex.get_account()
-            open_positions, sync_notes = sync_open_positions(ex, open_positions)
-            for note in sync_notes:
-                log(note)
+            try:
+                acct = ex.get_account()
+                open_positions, sync_notes = sync_open_positions(ex, open_positions)
+                for note in sync_notes:
+                    log(note)
+            except Exception as sync_err:
+                log(f"API sync error (account/positions): {sync_err}")
+                time.sleep(SETTINGS.poll_seconds)
+                continue
             flags = load_runtime_flags({
                 "live_consec_losses": flags.live_consec_losses,
                 "last_loss_side": flags.last_loss_side,
@@ -552,7 +560,12 @@ def main():
             signal_origin = ""
             no_entry_reason = ""
 
-            if SETTINGS.auto_market_selection and not SETTINGS.dry_run:
+            if risk.daily_pnl <= -SETTINGS.daily_max_loss:
+                log(f"CIRCUIT BREAKER: Daily loss (-${abs(risk.daily_pnl):.2f}) reached limit (-${SETTINGS.daily_max_loss:.2f}). Pausing new entries.")
+                time.sleep(SETTINGS.poll_seconds)
+                continue
+
+            if SETTINGS.auto_market_selection:
                 try:
                     market = resolve_latest_btc_5m_token_ids()
                     if market["slug"] != last_market_slug:
@@ -570,6 +583,7 @@ def main():
                         down_price_window.append(float(down))
 
                     binance_1m = ex.get_binance_1m_candle() if SETTINGS.use_cex_oracle else None
+                    binance_5m = ex.get_binance_5m_klines(100)
                     ob_up = ex.get_full_orderbook(market.get("token_up", "")) if SETTINGS.use_ob_imbalance else None
                     ob_down = ex.get_full_orderbook(market.get("token_down", "")) if SETTINGS.use_ob_imbalance else None
 
@@ -579,12 +593,12 @@ def main():
                             SETTINGS.stop_loss_pct = max(SETTINGS.stop_loss_pct, 0.40)
                             SETTINGS.zscore_threshold = max(SETTINGS.zscore_threshold, 2.5)
                         else:
-                            from config import _f
+                            from core.config import _f
                             SETTINGS.stop_loss_pct = _f("STOP_LOSS_PCT", 0.30)
                             SETTINGS.zscore_threshold = _f("ZSCORE_THRESHOLD", 2.0)
 
                     arbitrage_triggered = False
-                    from decision_engine import check_arbitrage
+                    from core.decision_engine import check_arbitrage
                     if check_arbitrage(up, down):
                         log(f"ARBITRAGE DETECTED! up={up} down={down} sum={up+down}")
                         res_up = ex.place_order("UP", 1.0, market.get("token_up"))
@@ -596,7 +610,7 @@ def main():
                     if not arbitrage_triggered:
                         model_decision = explain_choose_side(
                             market, yes_price_window, up_price_window, down_price_window,
-                            binance_1m=binance_1m, ob_up=ob_up, ob_down=ob_down
+                            binance_1m=binance_1m, binance_5m=binance_5m, ob_up=ob_up, ob_down=ob_down
                         )
                         signal_side = model_decision.get("side") if model_decision.get("ok") else None
                         no_entry_reason = model_decision.get("reason")
@@ -636,7 +650,23 @@ def main():
                         pnl_pct = (effective_exit_value - p.cost_usd) / max(p.cost_usd, 1e-9)
                         hard_stop_pnl_pct = (hard_stop_value - p.cost_usd) / max(p.cost_usd, 1e-9)
                         hold_sec = time.time() - p.opened_ts
-                        exit_decision = decide_exit(pnl_pct=hard_stop_pnl_pct, hold_sec=hold_sec, secs_left=secs_left, has_scaled_out=getattr(p, "has_scaled_out", False))
+                        recovery_chance_low = False
+                        if getattr(SETTINGS, "smart_stop_loss_enabled", False) and hard_stop_pnl_pct < -0.10:
+                            if signal_side and signal_side != p.side:
+                                recovery_chance_low = True
+                            elif hold_sec >= 90.0 and secs_left is not None and secs_left <= 60.0:
+                                recovery_chance_low = True
+
+                        exit_decision = decide_exit(
+                            pnl_pct=hard_stop_pnl_pct, 
+                            hold_sec=hold_sec, 
+                            secs_left=secs_left, 
+                            has_scaled_out=getattr(p, "has_scaled_out", False), 
+                            recovery_chance_low=recovery_chance_low,
+                            has_scaled_out_loss=getattr(p, "has_scaled_out_loss", False),
+                            has_taken_partial=getattr(p, "has_taken_partial", False),
+                            has_extracted_principal=getattr(p, "has_extracted_principal", False)
+                        )
                         stop_warn = hard_stop_pnl_pct <= -SETTINGS.stop_loss_warn_pct
                         urgent_exit = hard_stop_pnl_pct <= -SETTINGS.stop_loss_pct
 
@@ -673,6 +703,64 @@ def main():
                                 keep_positions.append(p)
                                 continue
 
+                            if exit_decision.reason == "stop-loss-scale-out":
+                                sell_fraction = getattr(SETTINGS, "stop_loss_partial_fraction", 0.50)
+                                sell_shares = p.shares * sell_fraction
+                                try:
+                                    close_resp = ex.close_position(p.token_id, sell_shares)
+                                    if close_resp.get("ok"):
+                                        sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
+                                        if sold_shares > 0:
+                                            actual_fraction = sold_shares / p.shares
+                                            p.shares -= sold_shares
+                                            p.cost_usd *= max(0.0, 1.0 - actual_fraction)
+                                            p.has_scaled_out_loss = True
+                                            log(f"STOP-LOSS SCALED OUT! Sold {sold_shares:.2f} shares to mitigate risk.")
+                                            maybe_record_cycle_label(state, "stop-loss-scale-out", slug=p.slug, side=p.side)
+                                except Exception as e:
+                                    log(f"Stop-loss scale-out error: {e}")
+                                keep_positions.append(p)
+                                continue
+
+                            if exit_decision.reason == "take-profit-principal":
+                                current_value = max(p.shares * effective_exit_value, 1e-9)
+                                sell_fraction = min(0.99, p.cost_usd / current_value)
+                                sell_shares = p.shares * sell_fraction
+                                try:
+                                    close_resp = ex.close_position(p.token_id, sell_shares)
+                                    if close_resp.get("ok"):
+                                        sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
+                                        if sold_shares > 0:
+                                            actual_fraction = sold_shares / p.shares
+                                            p.shares -= sold_shares
+                                            p.cost_usd *= max(0.0, 1.0 - actual_fraction)
+                                            p.has_extracted_principal = True
+                                            log(f"PRINCIPAL EXTRACTED! Sold {sold_shares:.2f} shares. Risk-Free Moonbag active.")
+                                            maybe_record_cycle_label(state, "take-profit-principal", slug=p.slug, side=p.side)
+                                except Exception as e:
+                                    log(f"Take-profit principal error: {e}")
+                                keep_positions.append(p)
+                                continue
+
+                            if exit_decision.reason == "take-profit-partial":
+                                sell_fraction = 0.30
+                                sell_shares = p.shares * sell_fraction
+                                try:
+                                    close_resp = ex.close_position(p.token_id, sell_shares)
+                                    if close_resp.get("ok"):
+                                        sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
+                                        if sold_shares > 0:
+                                            actual_fraction = sold_shares / p.shares
+                                            p.shares -= sold_shares
+                                            p.cost_usd *= max(0.0, 1.0 - actual_fraction)
+                                            p.has_taken_partial = True
+                                            log(f"PARTIAL PROFIT TAKEN! Sold {sold_shares:.2f} shares (+30% threshold).")
+                                            maybe_record_cycle_label(state, "take-profit-partial", slug=p.slug, side=p.side)
+                                except Exception as e:
+                                    log(f"Take-profit partial error: {e}")
+                                keep_positions.append(p)
+                                continue
+
                             try:
                                 close_resp = ex.close_position(p.token_id, p.shares)
                                 if close_resp.get("ok"):
@@ -696,7 +784,7 @@ def main():
                                                 f"{exit_decision.reason} close failed but live position missing -> drop local lot | "
                                                 f"token={p.token_id} err={err_text or 'n/a'}"
                                             )
-                                        elif "not enough balance" in err_text.lower() or "allowance" in err_text.lower() or float(live_after_fail.size) < max(LOT_EPS_SHARES, p.shares - LOT_EPS_SHARES):
+                                        elif "not enough balance" in err_text.lower() or "allowance" in err_text.lower() or (live_after_fail is not None and float(live_after_fail.size) < max(LOT_EPS_SHARES, p.shares - LOT_EPS_SHARES)):
                                             resized_shares = float(live_after_fail.size)
                                             resized_cost = p.avg_cost_per_share * resized_shares
                                             log(
@@ -723,6 +811,9 @@ def main():
                                                 max_favorable_pnl_usd=p.max_favorable_pnl_usd,
                                                 max_adverse_pnl_usd=p.max_adverse_pnl_usd,
                                                 has_scaled_out=getattr(p, "has_scaled_out", False),
+                                                has_scaled_out_loss=getattr(p, "has_scaled_out_loss", False),
+                                                has_taken_partial=getattr(p, "has_taken_partial", False),
+                                                has_extracted_principal=getattr(p, "has_extracted_principal", False),
                                             ))
                                         else:
                                             log(f"{exit_decision.reason} close failed: zero shares closed | resp={close_resp}")
@@ -814,6 +905,14 @@ def main():
                                             f"{actual_bits} observed_pnl_usd={observed_realized_pnl_usd:+.4f} hold={hold_sec:.0f}s "
                                             f"consec_losses={flags.live_consec_losses} resp={close_resp}"
                                         )
+
+                                        if p.entry_reason:
+                                            from core.learning import SCOREBOARD
+                                            SCOREBOARD.record_outcome(
+                                                strategy_name=p.entry_reason,
+                                                pnl_pct=actual_realized_return_pct if actual_realized_return_pct is not None else observed_realized_return_pct,
+                                                timestamp=time.time()
+                                            )
                                         if remaining_shares > LOT_EPS_SHARES and remaining_cost > LOT_EPS_COST_USD:
                                             keep_positions.append(OpenPos(
                                                 slug=p.slug,
@@ -829,6 +928,10 @@ def main():
                                                 max_adverse_value_usd=p.max_adverse_value_usd,
                                                 max_favorable_pnl_usd=p.max_favorable_pnl_usd,
                                                 max_adverse_pnl_usd=p.max_adverse_pnl_usd,
+                                                has_scaled_out=getattr(p, "has_scaled_out", False),
+                                                has_scaled_out_loss=getattr(p, "has_scaled_out_loss", False),
+                                                has_taken_partial=getattr(p, "has_taken_partial", False),
+                                                has_extracted_principal=getattr(p, "has_extracted_principal", False),
                                             ))
                                         else:
                                             log(
@@ -864,12 +967,7 @@ def main():
                         log(f"re-entry unlocked in same market | secs_left={secs_left:.0f}")
 
                     idle_min = (time.time() - last_trade_ts) / 60.0
-                    if signal_side is None and idle_min >= SETTINGS.max_idle_minutes:
-                        if up is not None and down is not None and secs_left is not None and 60 <= secs_left <= 220:
-                            signal_side = "DOWN" if up > down else "UP"
-                            signal_origin = "cadence-fallback"
-                            no_entry_reason = ""
-                            log(f"cadence fallback triggered | idle={idle_min:.1f}m | side={signal_side}")
+                    # Cadence fallback disabled per Openclaw report (prevents forced trades without edge)
 
                     if signal_side:
                         entry_decision = maybe_reverse_entry(
@@ -885,11 +983,16 @@ def main():
                         token_override = market["token_up"] if signal_side == "UP" else market["token_down"]
                         entry_price = up if signal_side == "UP" else down
                         if entry_price and entry_price > 0:
-                            est_shares = 1.0 / float(entry_price)
-                            if not ex.has_exit_liquidity(token_override, est_shares):
-                                maybe_record_cycle_label(state, "signal-but-no-fill", slug=market["slug"], side=signal_side, reason="weak-exit-liquidity")
-                                log("skip entry: weak exit liquidity")
+                            if float(entry_price) < SETTINGS.min_entry_price:
+                                maybe_record_cycle_label(state, "signal-blocked", slug=market["slug"], side=signal_side, reason="price-too-low")
+                                log(f"skip entry: {signal_side} price {entry_price} < {SETTINGS.min_entry_price}")
                                 signal_side = None
+                            else:
+                                est_shares = 1.0 / float(entry_price)
+                                if not ex.has_exit_liquidity(token_override, est_shares):
+                                    maybe_record_cycle_label(state, "signal-but-no-fill", slug=market["slug"], side=signal_side, reason="weak-exit-liquidity")
+                                    log("skip entry: weak exit liquidity")
+                                    signal_side = None
                     else:
                         maybe_record_cycle_label(state, "no-entry", slug=market["slug"], secs_left=secs_left, up=up, down=down, reason=no_entry_reason or "no_signal")
                         log(f"no entry | slug={market["slug"]} reason={no_entry_reason or "no_signal"} secs_left={secs_left} up={up} down={down}")
@@ -926,7 +1029,20 @@ def main():
                 time.sleep(SETTINGS.poll_seconds)
                 continue
 
-            order_usd = 1.0
+            order_usd = SETTINGS.max_order_usd
+            if getattr(SETTINGS, "use_kelly_sizing", False) and signal_origin:
+                try:
+                    from core.learning import SCOREBOARD
+                    win_rate = SCOREBOARD.get_strategy_score(signal_origin)
+                    f_star = max(0.0, 2.0 * win_rate - 1.0)
+                    q_kelly = f_star / 4.0
+                    if q_kelly > 0:
+                        bankroll = acct.equity
+                        kelly_bet = bankroll * q_kelly
+                        order_usd = max(SETTINGS.max_order_usd, min(kelly_bet, getattr(SETTINGS, "max_bet_cap_usd", 50.0)))
+                        log(f"Kelly Sizing | Strategy={signal_origin} WR={win_rate:.1%} qK={q_kelly:.2%} Bankroll=${bankroll:.2f} -> Bet=${order_usd:.2f}")
+                except Exception as e:
+                    log(f"Kelly calc error: {e}")
 
             if flags.panic_exit_mode:
                 maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="panic-exit-mode")
@@ -1104,6 +1220,25 @@ def main():
         raise
     else:
         run_journal.finalize(status="stopped", reason="clean-exit")
+    finally:
+        try:
+            import subprocess
+            import sys
+            from pathlib import Path
+            script_path = Path(__file__).parent.parent / "scripts" / "trade_pair_ledger.py"
+            report_path = Path(__file__).parent.parent / "data" / "latest_run_report.txt"
+            if script_path.exists():
+                print("\n================= RUN REPORT =================")
+                print("Generating post-run summary report...")
+                # Also save to file for easy review later
+                with open(report_path, "w", encoding="utf-8") as f:
+                    subprocess.run([sys.executable, str(script_path), "--limit", "30", "--summary"], stdout=f, check=False)
+                # Print to console
+                subprocess.run([sys.executable, str(script_path), "--limit", "30", "--summary"], check=False)
+                print(f"Report also saved to: {report_path}")
+                print("==============================================\n")
+        except Exception as report_err:
+            log(f"Failed to generate run report: {report_err}")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from journal import read_events, summarize_reconciliation
+from core.journal import read_events, summarize_reconciliation
 
 BASE = Path(__file__).resolve().parent
 OUT = BASE / 'trade_journal_reconciled.jsonl'

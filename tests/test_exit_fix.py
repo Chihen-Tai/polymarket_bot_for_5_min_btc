@@ -1,4 +1,4 @@
-from exchange import PolymarketExchange
+from core.exchange import PolymarketExchange
 
 
 def main():

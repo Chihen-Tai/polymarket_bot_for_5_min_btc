@@ -1,6 +1,6 @@
-from trade_manager import decide_exit, maybe_reverse_entry, can_reenter_same_market
-from journal import replay_open_positions
-from journal_analysis import build_exit_accounting_rows, build_trade_pairs
+from core.trade_manager import decide_exit, maybe_reverse_entry, can_reenter_same_market
+from core.journal import replay_open_positions
+from scripts.journal_analysis import build_exit_accounting_rows, build_trade_pairs
 
 
 def main():
@@ -76,10 +76,12 @@ def main():
     ])
 
     cases = [
-        ("stop_loss", decide_exit(pnl_pct=-0.21, hold_sec=5).reason == "stop-loss"),
-        ("take_profit_soft", decide_exit(pnl_pct=0.25, hold_sec=25, has_scaled_out=True).reason == "take-profit-soft"),
-        ("take_profit_hard", decide_exit(pnl_pct=1.20, hold_sec=5).reason == "take-profit-hard"),
-        ("max_hold", decide_exit(pnl_pct=0.01, hold_sec=120).reason == "max-hold"),
+        ("stop_loss_scale_out", decide_exit(pnl_pct=-0.25, hold_sec=5).reason == "stop-loss-scale-out"),
+        ("smart_stop_loss_after_scale_out", decide_exit(pnl_pct=-0.40, hold_sec=5, recovery_chance_low=True, has_scaled_out_loss=True).reason == "smart-stop-loss"),
+        ("smart_stop_loss_at_threshold", decide_exit(pnl_pct=-0.40, hold_sec=5, recovery_chance_low=True).reason == "smart-stop-loss"), # Priorities: hard stop > smart stop > scale out
+        ("hard_stop_loss", decide_exit(pnl_pct=-0.55, hold_sec=5).reason == "hard-stop-loss"),
+        ("max_hold_extended", decide_exit(pnl_pct=-0.01, hold_sec=125).reason == "max-hold-loss-extended"),
+        ("max_hold_loss_low_recovery", decide_exit(pnl_pct=-0.01, hold_sec=65, recovery_chance_low=True).reason == "max-hold-loss"),
         (
             "loss_reversal_only_down",
             maybe_reverse_entry(signal_side="DOWN", live_consec_losses=2, last_loss_side="DOWN").side == "UP"

@@ -1,6 +1,6 @@
 # polymarket-bot-by_openclaw
 
-Polymarket 自動交易機器人（Phase 1: dry-run 骨架）
+Polymarket 自動交易機器人 但是目前我都虧錢
 
 ## 目標
 - BTC 5min 策略骨架

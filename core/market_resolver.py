@@ -4,7 +4,7 @@ import time
 
 import requests
 
-from config import SETTINGS
+from core.config import SETTINGS
 
 
 class MarketResolutionError(Exception):

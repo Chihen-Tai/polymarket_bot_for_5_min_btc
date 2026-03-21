@@ -2,7 +2,8 @@ import os
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
-load_dotenv()
+from pathlib import Path
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 def _f(key: str, default: float) -> float:
@@ -20,6 +21,7 @@ def _b(key: str, default: bool) -> bool:
 @dataclass
 class Settings:
     dry_run: bool = _b("DRY_RUN", True)
+    data_dir: str = str(Path(__file__).resolve().parent.parent / "data")
 
     min_equity: float = _f("MIN_EQUITY", 1.0)
     max_order_usd: float = _f("MAX_ORDER_USD", 1.0)
@@ -74,7 +76,10 @@ class Settings:
     dump_move_threshold: float = _f("DUMP_MOVE_THRESHOLD", 0.25)
     hedge_sum_target: float = _f("HEDGE_SUM_TARGET", 0.95)
     hedge_max_wait_sec: int = _i("HEDGE_MAX_WAIT_SEC", 90)
-    stop_loss_pct: float = _f("STOP_LOSS_PCT", 0.20)
+    stop_loss_pct: float = _f("STOP_LOSS_PCT", 0.35)
+    smart_stop_loss_enabled: bool = _b("SMART_STOP_LOSS_ENABLED", True)
+    stop_loss_partial_pct: float = _f("STOP_LOSS_PARTIAL_PCT", 0.20)
+    stop_loss_partial_fraction: float = _f("STOP_LOSS_PARTIAL_FRACTION", 0.50)
     max_hold_seconds: int = _i("MAX_HOLD_SECONDS", 60)
     take_profit_scaleout_pct: float = _f("TAKE_PROFIT_SCALEOUT_PCT", 0.15)
     take_profit_soft_pct: float = _f("TAKE_PROFIT_SOFT_PCT", 0.20)
@@ -86,7 +91,7 @@ class Settings:
 
     # Strategy 1: Binance Oracle Front-running
     use_cex_oracle: bool = _b("USE_CEX_ORACLE", True)
-    cex_frontrun_threshold: float = _f("CEX_FRONTRUN_THRESHOLD", 15.0)
+    cex_frontrun_threshold: float = _f("CEX_FRONTRUN_THRESHOLD", 60.0)
 
     # Strategy 2: Arbitrage (disabled to enforce strict single-order 1 USD rule)
     enable_arbitrage: bool = _b("ENABLE_ARBITRAGE", False)
@@ -98,6 +103,10 @@ class Settings:
     # Strategy 4: Orderbook Imbalance
     use_ob_imbalance: bool = _b("USE_OB_IMBALANCE", True)
     imbalance_threshold: float = _f("IMBALANCE_THRESHOLD", 0.70)
+
+    # Advanced Risk
+    use_kelly_sizing: bool = _b("USE_KELLY_SIZING", True)
+    max_bet_cap_usd: float = _f("MAX_BET_CAP_USD", 50.0)
 
     # Market Maker Settings
     mm_spread: float = _f("MM_SPREAD", 0.05)

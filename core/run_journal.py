@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-RUN_JOURNAL_PATH = Path(__file__).resolve().parent / "run_journal.jsonl"
+RUN_JOURNAL_PATH = Path(__file__).resolve().parent.parent / "data" / "run_journal.jsonl"
 
 
 def _now_iso() -> str:

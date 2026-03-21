@@ -4,9 +4,9 @@ import json
 import time
 from collections import deque
 import requests
-from config import SETTINGS
-from exchange import PolymarketExchange
-from decision_engine import explain_choose_side, check_arbitrage
+from core.config import SETTINGS
+from core.exchange import PolymarketExchange
+from core.decision_engine import explain_choose_side, check_arbitrage
 
 def main():
     slug = "btc-updown-5m-1773985500"

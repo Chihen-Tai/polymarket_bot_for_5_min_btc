@@ -2,10 +2,11 @@ from dataclasses import dataclass
 from random import uniform
 from typing import Any
 import time
-
+import os
+import json
 import requests
 
-from config import SETTINGS
+from core.config import SETTINGS
 
 
 @dataclass
@@ -41,20 +42,50 @@ class PolymarketExchange:
 
     def __init__(self, dry_run: bool = True):
         self.dry_run = dry_run
-        self._equity = 10.30
-        self._cash = 9.23
+        
+        self.paper_balance_file = os.path.join(SETTINGS.data_dir, "paper_balance.json")
+        self._load_paper_balance()
+        
         self._open_exposure = 0.0
         self._last_price = 73933.39
 
         self.client = None
         self._funder = SETTINGS.funder_address
 
+        self._init_real_client()
+
+    def _load_paper_balance(self):
+        self._cash = 100.0
+        self._equity = 100.0
         if not self.dry_run:
-            self._init_real_client()
+            return
+        if os.path.exists(self.paper_balance_file):
+            try:
+                with open(self.paper_balance_file, "r") as f:
+                    data = json.load(f)
+                    self._cash = data.get("cash", 100.0)
+                    self._equity = self._cash
+            except Exception:
+                pass
+
+    def _save_paper_balance(self):
+        if not self.dry_run:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.paper_balance_file), exist_ok=True)
+            with open(self.paper_balance_file, "w") as f:
+                json.dump({"cash": self._cash}, f)
+        except Exception:
+            pass
 
     def _init_real_client(self):
         from py_clob_client.client import ClobClient
         from py_clob_client.clob_types import ApiCreds
+
+        if self.dry_run:
+            # Unauthenticated client just for reading public orderbooks during Paper Trading
+            self.client = ClobClient(SETTINGS.clob_host, chain_id=SETTINGS.chain_id)
+            return
 
         if not SETTINGS.private_key:
             raise ValueError("PRIVATE_KEY is required when DRY_RUN=false")
@@ -277,22 +308,61 @@ class PolymarketExchange:
             return {}
         return {}
 
+    def get_binance_5m_klines(self, limit: int = 100) -> list[dict]:
+        """獲取幣安 5 分鐘 K 線，用於計算 ZLSMA 與 ATR"""
+        try:
+            r = requests.get(
+                "https://api.binance.com/api/v3/klines",
+                params={"symbol": "BTCUSDT", "interval": "5m", "limit": limit},
+                timeout=5,
+            )
+            r.raise_for_status()
+            data = r.json()
+            results = []
+            for i, candle in enumerate(data):
+                prev_close = _to_float(data[i-1][4]) if i > 0 else _to_float(candle[1])
+                results.append({
+                    "open": _to_float(candle[1]),
+                    "high": _to_float(candle[2]),
+                    "low": _to_float(candle[3]),
+                    "close": _to_float(candle[4]),
+                    "volume": _to_float(candle[5]),
+                    "prev_close": prev_close
+                })
+            return results
+        except Exception:
+            return []
+
     def place_order(self, side: str, amount_usd: float, token_id_override: str | None = None) -> dict:
+        token_id = token_id_override or (SETTINGS.token_id_up if side == "UP" else SETTINGS.token_id_down)
+        if not token_id:
+            raise ValueError("TOKEN_ID_UP / TOKEN_ID_DOWN is required")
+
         if self.dry_run:
+            book = self.get_full_orderbook(token_id)
+            if not book or book.get("best_ask", 0.0) == 0.0:
+                book = {"best_ask": 0.5}
+            
+            best_ask = book.get("best_ask", 0.5)
+            filled_shares = amount_usd / best_ask
+            
             self._cash -= amount_usd
             self._open_exposure += amount_usd
+            self._save_paper_balance()
+            
+            mock_resp = {
+                "orderID": "paper-order-" + str(int(time.time())),
+                "originalQuantity": str(filled_shares),
+                "fillAmount": str(filled_shares),
+                "status": "MATCHED",
+            }
             return {
                 "ok": True,
                 "mode": "dry-run",
                 "side": side,
                 "amount_usd": amount_usd,
-                "order_id": "dryrun-order",
+                "response": mock_resp,
             }
-
-        # side = UP / DOWN ; 對應 token id
-        token_id = token_id_override or (SETTINGS.token_id_up if side == "UP" else SETTINGS.token_id_down)
-        if not token_id:
-            raise ValueError("TOKEN_ID_UP / TOKEN_ID_DOWN is required when DRY_RUN=false")
 
         from py_clob_client.clob_types import MarketOrderArgs, OrderType
         from py_clob_client.order_builder.constants import BUY
@@ -317,7 +387,7 @@ class PolymarketExchange:
 
     def get_full_orderbook(self, token_id: str) -> dict:
         """獲取完整的 orderbook 來計算 Imbalance"""
-        if self.dry_run or not self.client:
+        if not self.client:
             return {"bids_volume": 1000, "asks_volume": 1000, "best_bid": 0.5, "best_ask": 0.51}
         try:
             book = self.client.get_order_book(token_id)
@@ -348,7 +418,7 @@ class PolymarketExchange:
             return {}
 
     def has_exit_liquidity(self, token_id: str, shares: float) -> bool:
-        if self.dry_run:
+        if not self.client:
             return True
         try:
             book = self.client.get_order_book(token_id)
@@ -372,7 +442,26 @@ class PolymarketExchange:
 
     def close_position(self, token_id: str, shares: float) -> dict:
         if self.dry_run:
-            return {"ok": True, "mode": "dry-run", "closed_shares": shares}
+            book = self.get_full_orderbook(token_id)
+            if not book or book.get("best_bid", 0.0) == 0.0:
+                book = {"best_bid": 0.5}
+
+            best_bid = book.get("best_bid", 0.5)
+            value_received = shares * best_bid
+            
+            self._cash += value_received
+            self._open_exposure = max(0.0, self._open_exposure - value_received)
+            self._save_paper_balance()
+
+            return {
+                "ok": True, 
+                "mode": "dry-run", 
+                "closed_shares": shares,
+                "actual_exit_value_usd": value_received,
+                "actual_exit_value_source": "paper_trade_simulation",
+                "close_response_value": value_received,
+                "remaining_shares": 0.0
+            }
 
         from py_clob_client.clob_types import MarketOrderArgs, OrderType
         from py_clob_client.order_builder.constants import SELL
@@ -419,7 +508,8 @@ class PolymarketExchange:
 
                 effective_filled = min(chunk, max(0.0, float(filled_shares or 0.0)))
                 if effective_filled <= 0:
-                    break
+                    time.sleep(2)
+                    continue
 
                 remaining -= effective_filled
                 sold_total += effective_filled

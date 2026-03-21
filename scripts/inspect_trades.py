@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from journal import format_entry_summary, format_exit_summary, read_events
+from core.journal import format_entry_summary, format_exit_summary, read_events
 
 
 def main() -> None:

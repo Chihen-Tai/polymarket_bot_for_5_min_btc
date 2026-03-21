@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from trade_manager import decide_exit
+from core.trade_manager import decide_exit
 
 
 @dataclass

@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-JOURNAL_PATH = Path(__file__).resolve().parent / "trade_journal.jsonl"
-LOT_EPS_SHARES = 0.05
-LOT_EPS_COST_USD = 0.02
+JOURNAL_PATH = Path(__file__).resolve().parent.parent / "data" / "trade_journal.jsonl"
+LOT_EPS_SHARES = 0.20
+LOT_EPS_COST_USD = 0.10
 STALE_HOURS = 6
 
 
