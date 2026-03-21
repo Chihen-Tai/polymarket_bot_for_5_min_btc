@@ -25,6 +25,7 @@ class BinanceWebSocket:
         # Thread-safe states
         self.bba = {"b": 0.0, "B": 0.0, "a": 0.0, "A": 0.0, "ts": 0.0, "u": 0} 
         self.trades = deque(maxlen=5000)
+        self.recent_prices = deque(maxlen=200)
         self.ws = None
         self.thread = None
         self.running = False
@@ -44,6 +45,9 @@ class BinanceWebSocket:
                     self.bba["A"] = float(data.get("A", 0))  # Best Ask Qty
                     self.bba["u"] = data.get("u", 0)         # Orderbook update ID
                     self.bba["ts"] = time.time()
+                    
+                    if self.bba["b"] > 0 and self.bba["a"] > 0:
+                        self.recent_prices.append((self.bba["ts"], (self.bba["b"] + self.bba["a"]) / 2.0))
             
             elif stream.endswith("@aggTrade"):
                 # p = price, q = qty, m = is_buyer_maker (True = market sell, False = market buy)
@@ -60,24 +64,29 @@ class BinanceWebSocket:
         logger.error(f"Binance WS Error: {error}")
 
     def _on_close(self, ws, close_status_code, close_msg):
-        logger.warning("Binance WS Closed. Reconnecting in 3s...")
-        if self.running:
-            time.sleep(3)
-            self._connect()
+        logger.warning("Binance WS Closed.")
 
     def _on_open(self, ws):
         logger.info(f"Binance WS Connected to {self.symbol} streams.")
 
     def _connect(self):
-        # We run the websocket blockingly in this thread
-        self.ws = websocket.WebSocketApp(
-            self.ws_url,
-            on_open=self._on_open,
-            on_message=self._on_message,
-            on_error=self._on_error,
-            on_close=self._on_close
-        )
-        self.ws.run_forever(ping_interval=30, ping_timeout=10)
+        # We run the websocket blockingly in a safe loop
+        while self.running:
+            try:
+                self.ws = websocket.WebSocketApp(
+                    self.ws_url,
+                    on_open=self._on_open,
+                    on_message=self._on_message,
+                    on_error=self._on_error,
+                    on_close=self._on_close
+                )
+                self.ws.run_forever(ping_interval=30, ping_timeout=10)
+            except Exception as e:
+                logger.error(f"WebSocket fatal error: {e}")
+            
+            if self.running:
+                logger.warning("WS disconnected unexpectedly, retrying in 3s...")
+                time.sleep(3)
 
     def start(self):
         if not self.running:
@@ -99,6 +108,23 @@ class BinanceWebSocket:
         # Return a snap of recent trades within `seconds` timeout
         snapshot = list(self.trades)
         return [t for t in snapshot if t["ts"] >= cutoff]
+
+    def get_price_velocity(self, seconds: float = 3.0) -> float:
+        """Returns the percentage change of the mid-price over the last X seconds."""
+        if not self.recent_prices:
+            return 0.0
+        now = time.time()
+        oldest_price = None
+        for ts, price in self.recent_prices:
+            if now - ts <= seconds:
+                oldest_price = price
+                break
+        
+        if not oldest_price:
+            return 0.0
+        
+        current_price = self.recent_prices[-1][1]
+        return (current_price - oldest_price) / oldest_price
 
 
 # Global singleton instance

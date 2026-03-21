@@ -205,6 +205,22 @@ def explain_choose_side(
                 r.update({"ok": True, "side": "DOWN", "reason": "model-ws_order_flow_down", "entry_price": down})
                 candidates["ws_order_flow_down"] = r
 
+    # Strategy 7: WS Flash Snipe (WebSocket 閃電狙擊 0.3%)
+    if getattr(SETTINGS, "ws_flash_snipe_threshold", 0.0) > 0 and ws_bba and "b" in ws_bba:
+        try:
+            from core.ws_binance import BINANCE_WS
+            vel = BINANCE_WS.get_price_velocity(seconds=3.0)
+            if vel > SETTINGS.ws_flash_snipe_threshold and valid_up:
+                r = base_result.copy()
+                r.update({"ok": True, "side": "UP", "reason": "model-ws_flash_snipe_up", "entry_price": up})
+                candidates["ws_flash_snipe_up"] = r
+            elif vel < -SETTINGS.ws_flash_snipe_threshold and valid_down:
+                r = base_result.copy()
+                r.update({"ok": True, "side": "DOWN", "reason": "model-ws_flash_snipe_down", "entry_price": down})
+                candidates["ws_flash_snipe_down"] = r
+        except Exception:
+            pass
+
     # Mean Reversion
     mr = mean_reversion_side(up, yes_window)
     base_result["mr_side"] = mr

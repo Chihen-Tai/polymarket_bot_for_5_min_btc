@@ -75,6 +75,8 @@ class Settings:
     # Dump+hedge integration
     dump_move_threshold: float = _f("DUMP_MOVE_THRESHOLD", 0.25)
     hedge_sum_target: float = _f("HEDGE_SUM_TARGET", 0.95)
+    hedge_ratio: float = _f("HEDGE_RATIO", 0.0)
+    ws_flash_snipe_threshold: float = _f("WS_FLASH_SNIPE_THRESHOLD", 0.003)
     hedge_max_wait_sec: int = _i("HEDGE_MAX_WAIT_SEC", 90)
     stop_loss_pct: float = _f("STOP_LOSS_PCT", 0.35)
     smart_stop_loss_enabled: bool = _b("SMART_STOP_LOSS_ENABLED", True)

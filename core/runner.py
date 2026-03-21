@@ -1144,6 +1144,34 @@ def main():
                 risk.orders_this_window += 1
                 last_trade_ts = time.time()
                 risk.consec_losses = flags.live_consec_losses
+                
+                # Hedge Logic
+                hedge_ratio = getattr(SETTINGS, "hedge_ratio", 0.0)
+                if hedge_ratio > 0.0 and market:
+                    hedge_side = "DOWN" if signal_side == "UP" else "UP"
+                    hedge_usd = order_usd * hedge_ratio
+                    hedge_token_id = market.get("token_down") if signal_side == "UP" else market.get("token_up")
+                    if hedge_token_id and hedge_usd >= 0.5:
+                        log(f"executing structured hedge | side={hedge_side} cost=${hedge_usd:.4f}")
+                        h_res = ex.place_order(hedge_side, hedge_usd, token_id_override=hedge_token_id)
+                        try:
+                            hr = h_res.get("response", {}) if isinstance(h_res, dict) else {}
+                            h_shares = float(hr.get("takingAmount", 0) or 0)
+                            if h_shares > 0:
+                                h_ts = time.time()
+                                open_positions.append(OpenPos(
+                                    slug=market["slug"],
+                                    side=hedge_side,
+                                    token_id=hedge_token_id,
+                                    shares=h_shares,
+                                    cost_usd=hedge_usd,
+                                    opened_ts=h_ts,
+                                    position_id=f"pos_{int(h_ts)}_{hedge_token_id[-6:]}",
+                                    entry_reason="structured-hedge",
+                                    source="runtime"
+                                ))
+                        except Exception as e:
+                            log(f"hedge parsing error: {e}")
                 try:
                     r = resp.get("response", {}) if isinstance(resp, dict) else {}
                     shares = float(r.get("takingAmount", 0) or 0)
