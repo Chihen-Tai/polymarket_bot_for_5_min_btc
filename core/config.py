@@ -63,7 +63,6 @@ class Settings:
     zscore_window: int = _i("ZSCORE_WINDOW", 20)
     zscore_threshold: float = _f("ZSCORE_THRESHOLD", 2.0)
     entry_window_min_sec: float = _f("ENTRY_WINDOW_MIN_SEC", 60.0)
-    entry_window_max_sec: float = _f("ENTRY_WINDOW_MAX_SEC", 150.0)
     min_entry_price: float = _f("MIN_ENTRY_PRICE", 0.3)
     max_entry_price: float = _f("MAX_ENTRY_PRICE", 0.8)
 
@@ -84,7 +83,7 @@ class Settings:
     stop_loss_partial_fraction: float = _f("STOP_LOSS_PARTIAL_FRACTION", 0.50)
     max_hold_seconds: int = _i("MAX_HOLD_SECONDS", 60)
     take_profit_scaleout_pct: float = _f("TAKE_PROFIT_SCALEOUT_PCT", 0.15)
-    take_profit_soft_pct: float = _f("TAKE_PROFIT_SOFT_PCT", 0.20)
+    take_profit_soft_pct: float = _f("TAKE_PROFIT_SOFT_PCT", 0.30)
     take_profit_hard_pct: float = _f("TAKE_PROFIT_HARD_PCT", 0.35)
     momentum_ticks: int = _i("MOMENTUM_TICKS", 3)
     momentum_min_move: float = _f("MOMENTUM_MIN_MOVE", 0.01)

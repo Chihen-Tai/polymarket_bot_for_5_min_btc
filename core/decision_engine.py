@@ -237,7 +237,7 @@ def explain_choose_side(
 
     r = base_result.copy()
     r["reason"] = "no_best_strategy_found"
-    return result
+    return r
 
 
 def choose_side(

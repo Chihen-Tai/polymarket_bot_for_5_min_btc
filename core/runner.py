@@ -679,7 +679,7 @@ def main():
                         if mark is None:
                             keep_positions.append(p)
                             continue
-                        observed_value = realistic_exit_value(p, up, down, ob_up, ob_down)
+                        observed_value = realistic_exit_value(p, up, down, None, None)
                         mark_value = observed_mark_value(p, up, down)
                         if observed_value is None and mark_value is None:
                             keep_positions.append(p)
