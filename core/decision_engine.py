@@ -83,14 +83,21 @@ def mean_reversion_side(yes_price: Optional[float], yes_window: deque) -> Option
     return None
 
 
-def _has_momentum(side: str, up_window: deque, down_window: deque) -> bool:
+# Strategies that already encode velocity / order-flow — skip extra momentum filter
+_MOMENTUM_EXEMPT = frozenset([
+    "ws_order_flow_up", "ws_order_flow_down",
+    "ws_flash_snipe_up", "ws_flash_snipe_down",
+])
+
+
+def _has_momentum(side: str, up_window: deque, down_window: deque, min_move: float = 0.002) -> bool:
     ticks = max(2, SETTINGS.momentum_ticks)
     target = list(up_window if side == "UP" else down_window)
     if len(target) < ticks:
         return True
     recent = target[-ticks:]
     move = recent[-1] - recent[0]
-    return move >= SETTINGS.momentum_min_move
+    return move >= min_move
 
 
 def explain_choose_side(
@@ -216,9 +223,12 @@ def explain_choose_side(
             candidates["mean_reversion_signal"] = r
 
 
-    # Apply Momentum Confirmation
+    # Apply Momentum Confirmation (OFI/flash-snipe strategies are exempt — they carry own velocity)
     filtered_candidates = {}
     for name, s_result in candidates.items():
+        if name in _MOMENTUM_EXEMPT:
+            filtered_candidates[name] = s_result
+            continue
         if up_window is not None and down_window is not None:
             if not _has_momentum(s_result.get("side"), up_window, down_window):
                 continue
@@ -226,7 +236,11 @@ def explain_choose_side(
 
     if not filtered_candidates:
         r = base_result.copy()
-        r["reason"] = "no_valid_signals"
+        # Report why — if momentum filter ate everything vs no candidates at all
+        if candidates:
+            r["reason"] = f"flow_too_weak_{len(candidates)}{int(secs_left or 0)}"
+        else:
+            r["reason"] = "no_valid_signals"
         return r
 
     # Learning Engine Scoreboard Integration
