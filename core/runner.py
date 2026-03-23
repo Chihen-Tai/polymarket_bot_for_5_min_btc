@@ -698,10 +698,31 @@ def main():
                             })
                             open_positions.remove(gp)
                             
-                    prices = get_outcome_prices(market)
-                    up = prices.get("up") or prices.get("漲")
-                    down = prices.get("down") or prices.get("跌")
+                    token_up = market.get("token_up", "")
+                    token_down = market.get("token_down", "")
+                    poly_ob_up = ex.get_full_orderbook(token_up)
+                    poly_ob_down = ex.get_full_orderbook(token_down)
+
                     secs_left = seconds_to_market_end(market)
+
+                    # Use LIVE CLOB mid-prices instead of stale Gamma API outcomePrices
+                    up = None
+                    if poly_ob_up and poly_ob_up.get("best_ask", 0) <= 1.0:
+                        up_bid = poly_ob_up.get("best_bid", 0.0)
+                        up_ask = poly_ob_up.get("best_ask", 1.0)
+                        up = round((up_bid + up_ask) / 2.0, 3)
+
+                    down = None
+                    if poly_ob_down and poly_ob_down.get("best_ask", 0) <= 1.0:
+                        down_bid = poly_ob_down.get("best_bid", 0.0)
+                        down_ask = poly_ob_down.get("best_ask", 1.0)
+                        down = round((down_bid + down_ask) / 2.0, 3)
+
+                    # Fallback to Gamma API if live CLOB is totally broken
+                    if up is None or down is None:
+                        prices = get_outcome_prices(market)
+                        up = up or prices.get("up") or prices.get("漲")
+                        down = down or prices.get("down") or prices.get("跌")
 
                     if up is not None:
                         up_price_window.append(float(up))
@@ -734,14 +755,11 @@ def main():
                     from core.decision_engine import check_arbitrage
                     if check_arbitrage(up, down):
                         log(f"ARBITRAGE DETECTED! up={up} down={down} sum={up+down}")
-                        res_up = ex.place_order("UP", 1.0, market.get("token_up"), simulated_price=float(up) if up is not None else None)
-                        res_down = ex.place_order("DOWN", 1.0, market.get("token_down"), simulated_price=float(down) if down is not None else None)
+                        res_up = ex.place_order("UP", 1.0, token_up, simulated_price=float(up) if up is not None else None)
+                        res_down = ex.place_order("DOWN", 1.0, token_down, simulated_price=float(down) if down is not None else None)
                         log(f"Arbitrage execution: UP={res_up} DOWN={res_down}")
                         maybe_record_cycle_label(state, "arbitrage-execution", slug=market["slug"], up=up, down=down)
                         arbitrage_triggered = True
-
-                    poly_ob_up = ex.get_full_orderbook(market.get("token_up", ""))
-                    poly_ob_down = ex.get_full_orderbook(market.get("token_down", ""))
 
                     if not arbitrage_triggered:
                         model_decision = explain_choose_side(
