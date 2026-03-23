@@ -1,0 +1,71 @@
+status     opened/closed       market                     side    entry   actual  observed  act.pnl  obs.pnl tier   reason               remain      mae      mfe
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+partial    2026-03-22T16:48:28 btc-updown-5m-1774169100   DOWN   1.0000   0.5000    0.3400   0.0000  -0.1600 medium max-hold-loss-exte   1.0000  -0.3800   0.0000
+  -> position_id=pos_1774169114_649912 unmatched_cost=0.5000 unmatched_shares=1.000000 entry_quality=flat-entry flags=actual-medium-confidence|open-remainder
+unmatched  2026-03-22T16:51:46 btc-updown-5m-1774169400   DOWN   1.0000      n/a       n/a      n/a      n/a none                        2.0000   0.0000   0.0000
+  -> position_id=pos_1774169506_574196 unmatched_cost=1.0000 unmatched_shares=2.000000 entry_quality=unknown flags=open-remainder|no-exit
+closed     2026-03-22T22:54:42 btc-updown-5m-1774191000   DOWN   1.0000   1.0000    1.0200   0.0000   0.0200 medium deadline-exit-loss   0.0000  -0.0400   0.0000
+closed     2026-03-22T22:57:29 btc-updown-5m-1774191300   UP     1.0000   1.0000    0.4300   0.0000  -0.5700 medium hard-stop-loss       0.0000  -0.6300   0.0000
+unmatched  2026-03-22T23:00:36 btc-updown-5m-1774191600   UP     1.0000      n/a       n/a      n/a      n/a none                        2.0000   0.0000   0.0000
+  -> position_id=pos_1774191636_528800 unmatched_cost=1.0000 unmatched_shares=2.000000 entry_quality=unknown flags=open-remainder|no-exit
+closed     2026-03-23T05:03:38 btc-updown-5m-1774213200   DOWN   1.0000   1.0000    1.0000  -0.0000  -0.0000 medium max-hold-loss-exte   0.0000  -0.0632   0.0000
+closed     2026-03-23T05:04:24 btc-updown-5m-1774213200   DOWN   1.0000   0.6632    0.6632  -0.3368  -0.3368 medium hard-stop-loss       0.0000  -0.4000   0.0000
+closed     2026-03-23T05:09:51 btc-updown-5m-1774213500   UP     1.0000   0.0273    0.0273  -0.9727  -0.9727 medium hard-stop-loss       0.0000  -1.0000   0.0000
+partial    2026-03-23T06:53:22 btc-updown-5m-1774219800   UP     1.0000   0.5000    0.5000   0.0000   0.0000 medium max-hold-loss-exte   0.9901  -0.0594   0.0000
+  -> position_id=pos_1774219809_336553 unmatched_cost=0.5000 unmatched_shares=0.990099 entry_quality=flat-entry flags=actual-medium-confidence|open-remainder
+unmatched  2026-03-23T06:53:22 btc-updown-5m-1774219800   UP     1.0000      n/a       n/a      n/a      n/a none                        1.9802   0.0000   0.0000
+  -> position_id=pos_1774220002_336553 unmatched_cost=1.0000 unmatched_shares=1.980198 entry_quality=unknown flags=open-remainder|no-exit
+partial    2026-03-23T07:22:06 btc-updown-5m-1774221600   UP     1.0000   0.3788    0.3788  -0.1212  -0.1212 medium hard-stop-loss       1.0101  -0.1515   0.0000
+  -> position_id=pos_1774221602_309656 unmatched_cost=0.5000 unmatched_shares=1.010101 entry_quality=bad-entry flags=actual-medium-confidence|open-remainder
+partial    2026-03-23T07:24:50 btc-updown-5m-1774221600   UP     1.0000   0.5000    0.5000   0.0000   0.0000 medium deadline-exit-loss   1.3333  -0.0800   0.0000
+  -> position_id=pos_1774221726_309656 unmatched_cost=0.5000 unmatched_shares=1.333333 entry_quality=flat-entry flags=actual-medium-confidence|open-remainder
+partial    2026-03-23T07:28:08 btc-updown-5m-1774221900   UP     1.0000   0.5150    0.5150   0.0150   0.0150 medium max-hold-loss-exte   1.0000  -0.0600   0.0000
+  -> position_id=pos_1774221906_047121 unmatched_cost=0.5000 unmatched_shares=1.000000 entry_quality=good-entry flags=actual-medium-confidence|open-remainder
+partial    2026-03-23T07:29:42 btc-updown-5m-1774221900   UP     1.0000   0.4854    0.4854  -0.0146  -0.0146 medium deadline-exit-loss   0.9709  -0.0874   0.0000
+  -> position_id=pos_1774222089_047121 unmatched_cost=0.5000 unmatched_shares=0.970874 entry_quality=bad-entry flags=actual-medium-confidence|open-remainder
+partial    2026-03-23T07:33:14 btc-updown-5m-1774222200   DOWN   1.0000   0.5000    0.5000   0.0000   0.0000 medium max-hold-loss-exte   1.0309  -0.0619   0.0000
+  -> position_id=pos_1774222204_022167 unmatched_cost=0.5000 unmatched_shares=1.030928 entry_quality=flat-entry flags=actual-medium-confidence|open-remainder
+unmatched  2026-03-23T07:33:15 btc-updown-5m-1774222200   DOWN   1.0000      n/a       n/a      n/a      n/a none                        2.0619   0.0000   0.0000
+  -> position_id=pos_1774222395_022167 unmatched_cost=1.0000 unmatched_shares=2.061856 entry_quality=unknown flags=open-remainder|no-exit
+partial    2026-03-23T07:38:19 btc-updown-5m-1774222500   DOWN   1.0000   0.4899    0.4899  -0.0101  -0.0101 medium max-hold-loss-exte   1.0101  -0.0606   0.0000
+  -> position_id=pos_1774222508_059086 unmatched_cost=0.5000 unmatched_shares=1.010101 entry_quality=bad-entry flags=actual-medium-confidence|open-remainder
+partial    2026-03-23T07:39:21 btc-updown-5m-1774222500   DOWN   1.0000   0.1598    0.1598  -0.3402  -0.3402 medium hard-stop-loss       1.0309  -0.3711   0.0000
+  -> position_id=pos_1774222699_059086 unmatched_cost=0.5000 unmatched_shares=1.030928 entry_quality=bad-entry flags=actual-medium-confidence|open-remainder
+partial    2026-03-23T07:43:04 btc-updown-5m-1774222800   UP     1.0000   0.5000    0.5000   0.0000   0.0000 medium max-hold-loss-exte   0.9524  -0.0571   0.0000
+  -> position_id=pos_1774222803_073781 unmatched_cost=0.5000 unmatched_shares=0.952381 entry_quality=flat-entry flags=actual-medium-confidence|open-remainder
+unmatched  2026-03-23T07:43:04 btc-updown-5m-1774222800   UP     1.0000      n/a       n/a      n/a      n/a none                        1.9048   0.0000   0.0000
+  -> position_id=pos_1774222984_073781 unmatched_cost=1.0000 unmatched_shares=1.904762 entry_quality=unknown flags=open-remainder|no-exit
+partial    2026-03-23T07:46:38 btc-updown-5m-1774223100   UP     1.0000   0.4320    0.4320  -0.0680  -0.0680 medium smart-stop-loss      0.9709  -0.0971   0.0000
+  -> position_id=pos_1774223103_306079 unmatched_cost=0.5000 unmatched_shares=0.970874 entry_quality=bad-entry flags=actual-medium-confidence|open-remainder
+unmatched  2026-03-23T07:46:39 btc-updown-5m-1774223100   DOWN   1.0000      n/a       n/a      n/a      n/a none                        1.8018   0.0000   0.0000
+  -> position_id=pos_1774223199_389447 unmatched_cost=1.0000 unmatched_shares=1.801802 entry_quality=unknown flags=open-remainder|no-exit
+partial    2026-03-23T07:53:17 btc-updown-5m-1774223400   DOWN   1.0000   0.5052    0.5052   0.0052   0.0052 medium max-hold-loss-exte   1.0309  -0.0619   0.0000
+  -> position_id=pos_1774223410_602345 unmatched_cost=0.5000 unmatched_shares=1.030928 entry_quality=good-entry flags=actual-medium-confidence|open-remainder
+unmatched  2026-03-23T07:53:17 btc-updown-5m-1774223400   DOWN   1.0000      n/a       n/a      n/a      n/a none                        2.0408   0.0000   0.0000
+  -> position_id=pos_1774223597_602345 unmatched_cost=1.0000 unmatched_shares=2.040816 entry_quality=unknown flags=open-remainder|no-exit
+partial    2026-03-23T07:58:18 btc-updown-5m-1774223700   DOWN   1.0000   0.4798    0.4798  -0.0202  -0.0202 medium max-hold-loss-exte   1.0101  -0.0606   0.0000
+  -> position_id=pos_1774223711_041919 unmatched_cost=0.5000 unmatched_shares=1.010101 entry_quality=bad-entry flags=actual-medium-confidence|open-remainder
+partial    2026-03-23T07:59:56 btc-updown-5m-1774223700   DOWN   1.0000   0.4895    0.4895  -0.0105  -0.0105 medium deadline-exit-loss   1.0526  -0.0842   0.0000
+  -> position_id=pos_1774223898_041919 unmatched_cost=0.5000 unmatched_shares=1.052632 entry_quality=bad-entry flags=actual-medium-confidence|open-remainder
+partial    2026-03-23T08:03:18 btc-updown-5m-1774224000   UP     1.0000   0.5095    0.5095   0.0095   0.0095 medium max-hold-loss-exte   0.9524  -0.0571   0.0000
+  -> position_id=pos_1774224013_563980 unmatched_cost=0.5000 unmatched_shares=0.952381 entry_quality=good-entry flags=actual-medium-confidence|open-remainder
+partial    2026-03-23T08:04:41 btc-updown-5m-1774224000   DOWN   1.0000   0.5000    0.5000   0.0000   0.0000 medium deadline-exit-loss   1.0753  -0.0645   0.0000
+  -> position_id=pos_1774224198_833614 unmatched_cost=0.5000 unmatched_shares=1.075269 entry_quality=flat-entry flags=actual-medium-confidence|open-remainder
+partial    2026-03-23T08:07:07 btc-updown-5m-1774224300   DOWN   1.0000   0.4798    0.4798  -0.0202  -0.0202 medium max-hold-loss        1.0101  -0.1010   0.0000
+  -> position_id=pos_1774224304_028151 unmatched_cost=0.5000 unmatched_shares=1.010101 entry_quality=bad-entry flags=actual-medium-confidence|open-remainder
+unmatched  2026-03-23T08:07:07 btc-updown-5m-1774224300   UP     1.0000      n/a       n/a      n/a      n/a none                        1.9048   0.0000   0.0000
+  -> position_id=pos_1774224427_165332 unmatched_cost=1.0000 unmatched_shares=1.904762 entry_quality=unknown flags=open-remainder|no-exit
+
+summary: closed=5 partial=17 unmatched=8
+summary details:
+  total_trades: 30
+  status_counts: {'closed': 5, 'partial': 17, 'unmatched': 8}
+  entry_quality_counts: {'bad-entry': 11, 'flat-entry': 8, 'good-entry': 3, 'unknown': 8}
+  close_reason_counts: {'deadline-exit-loss': 5, 'hard-stop-loss': 5, 'max-hold-loss': 1, 'max-hold-loss-extended': 10, 'smart-stop-loss': 1}
+  actual_source_tier_counts: {'medium': 22, 'none': 8}
+  actual_available_ratio: 0.7333333333333333
+  actual_pnl: {'count': 22, 'average': -0.08567567610043997}
+  observed_pnl: {'count': 22, 'average': -0.11794840337316725}
+  mae: {'count': 30, 'average': -0.13428749863147518}
+  mfe: {'count': 30, 'average': 0.0}
+  notes: {'actual_unavailable': 'actual_pnl average uses only rows with actual data; missing actual rows are excluded, not imputed'}

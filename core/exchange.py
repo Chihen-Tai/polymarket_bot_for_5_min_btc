@@ -203,8 +203,9 @@ class PolymarketExchange:
 
     def get_account(self) -> Account:
         if self.dry_run:
+            self._load_paper_balance()
             return Account(
-                equity=self._equity,
+                equity=self._cash,
                 cash=self._cash,
                 open_exposure=self._open_exposure,
             )

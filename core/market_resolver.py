@@ -3,6 +3,8 @@ import json
 import time
 
 import requests
+import urllib3
+urllib3.disable_warnings()
 
 from core.config import SETTINGS
 
@@ -25,6 +27,7 @@ def _fetch_by_slug(slug: str):
         "https://gamma-api.polymarket.com/markets",
         params={"slug": slug},
         timeout=12,
+        verify=False
     )
     r.raise_for_status()
     arr = r.json() or []
@@ -69,6 +72,7 @@ def resolve_latest_btc_5m_token_ids() -> dict:
         "https://gamma-api.polymarket.com/markets",
         params={"active": "true", "closed": "false", "limit": 500},
         timeout=12,
+        verify=False
     )
     r.raise_for_status()
     data = r.json()

@@ -115,8 +115,8 @@ def realistic_exit_value(pos: OpenPos, up: float | None, down: float | None, ob_
     if best_bid is not None and float(best_bid) > 0:
         return pos.shares * float(best_bid)
     
-    # Penalty if orderbook bid is unavailable
-    return pos.shares * max(0.0, float(mark) - 0.03)
+    # Without orderbook depth passed in Dry Run polling, we assume Maker/Limit orders track the mark exactly over time without massive taker penalties.
+    return pos.shares * float(mark)
 
 
 def observed_mark_value(pos: OpenPos, up: float | None, down: float | None) -> float | None:
@@ -618,6 +618,27 @@ def main():
                     if market["slug"] != last_market_slug:
                         last_market_slug = market["slug"]
                         log(f"market switched => {market['slug']}")
+                        
+                    if getattr(SETTINGS, "dry_run", False):
+                        ghosts = [p for p in open_positions if p.slug != market["slug"]]
+                        for gp in ghosts:
+                            log(f"Force-clearing stale dry-run position from expired market: {gp.slug}")
+                            append_event({
+                                "kind": "exit",
+                                "slug": gp.slug,
+                                "side": gp.side,
+                                "token_id": gp.token_id,
+                                "position_id": gp.position_id,
+                                "closed_shares": gp.shares,
+                                "remaining_shares": 0.0,
+                                "realized_cost_usd": gp.cost_usd,
+                                "actual_exit_value_usd": gp.cost_usd,
+                                "observed_exit_value_usd": gp.cost_usd,
+                                "status": "closed",
+                                "exit_reason": "dry-run-market-expired"
+                            })
+                            open_positions.remove(gp)
+                            
                     prices = get_outcome_prices(market)
                     up = prices.get("up") or prices.get("漲")
                     down = prices.get("down") or prices.get("跌")
@@ -745,60 +766,150 @@ def main():
                             if exit_decision.reason == "scale-out":
                                 sell_fraction = min(0.99, p.cost_usd / max(observed_value, 1e-9))
                                 sell_shares = p.shares * sell_fraction
-                                try:
-                                    close_resp = ex.close_position(p.token_id, sell_shares, simulated_price=float(mark) if mark is not None else None)
-                                    if close_resp.get("ok"):
-                                        sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
-                                        if sold_shares > 0:
-                                            actual_fraction = sold_shares / p.shares
-                                            p.shares -= sold_shares
-                                            p.cost_usd *= max(0.0, 1.0 - actual_fraction)
-                                            p.has_scaled_out = True
-                                            log(f"SCALED OUT! Sold {sold_shares:.2f} shares to lock in cost. Moonbag active.")
-                                            maybe_record_cycle_label(state, "scale-out", slug=p.slug, side=p.side)
-                                except Exception as e:
-                                    log(f"Scale-out error: {e}")
-                                keep_positions.append(p)
-                                continue
+                                
+                                sell_value = sell_shares * effective_exit_value
+                                remain_value = (p.shares - sell_shares) * effective_exit_value
+                                if sell_value < 1.0 or remain_value < 1.0:
+                                    log(f"Scale-out sub-$1.00 API limit reached (sell=${sell_value:.2f}, remain=${remain_value:.2f}). Escalating to FULL exit.")
+                                    exit_decision.reason = "scale-out-escalated"
+                                else:
+                                    try:
+                                        close_resp = ex.close_position(p.token_id, sell_shares, simulated_price=float(mark) if mark is not None else None)
+                                        if close_resp.get("ok"):
+                                            sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
+                                            if sold_shares > 0:
+                                                actual_fraction = sold_shares / p.shares
+                                                realized_cost = p.cost_usd * actual_fraction
+                                                p.shares -= sold_shares
+                                                p.cost_usd *= max(0.0, 1.0 - actual_fraction)
+                                                p.has_scaled_out = True
+                                                
+                                                _act_val = close_resp.get("actual_exit_value_usd", 0.0)
+                                                _obs_val = sold_shares * effective_exit_value
+                                                append_event({
+                                                    "kind": "exit",
+                                                    "slug": p.slug,
+                                                    "side": p.side,
+                                                    "token_id": p.token_id,
+                                                    "position_id": p.position_id,
+                                                    "closed_shares": sold_shares,
+                                                    "remaining_shares": p.shares,
+                                                    "realized_cost_usd": realized_cost,
+                                                    "actual_exit_value_usd": _act_val,
+                                                    "actual_realized_pnl_usd": _act_val - realized_cost,
+                                                    "observed_exit_value_usd": _obs_val,
+                                                    "observed_realized_pnl_usd": _obs_val - realized_cost,
+                                                    "status": "partial",
+                                                    "reason": "scale-out",
+                                                    "mfe_pnl_usd": p.max_favorable_pnl_usd,
+                                                    "mae_pnl_usd": p.max_adverse_pnl_usd
+                                                })
+                                                
+                                                log(f"SCALED OUT! Sold {sold_shares:.2f} shares to lock in cost. Moonbag active.")
+                                                maybe_record_cycle_label(state, "scale-out", slug=p.slug, side=p.side)
+                                    except Exception as e:
+                                        log(f"Scale-out error: {e}")
+                                    keep_positions.append(p)
+                                    continue
 
                             if exit_decision.reason == "stop-loss-scale-out":
                                 sell_fraction = getattr(SETTINGS, "stop_loss_partial_fraction", 0.50)
                                 sell_shares = p.shares * sell_fraction
-                                try:
-                                    close_resp = ex.close_position(p.token_id, sell_shares, simulated_price=float(mark) if mark is not None else None)
-                                    if close_resp.get("ok"):
-                                        sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
-                                        if sold_shares > 0:
-                                            actual_fraction = sold_shares / p.shares
-                                            p.shares -= sold_shares
-                                            p.cost_usd *= max(0.0, 1.0 - actual_fraction)
-                                            p.has_scaled_out_loss = True
-                                            log(f"STOP-LOSS SCALED OUT! Sold {sold_shares:.2f} shares to mitigate risk.")
-                                            maybe_record_cycle_label(state, "stop-loss-scale-out", slug=p.slug, side=p.side)
-                                except Exception as e:
-                                    log(f"Stop-loss scale-out error: {e}")
-                                keep_positions.append(p)
-                                continue
+                                
+                                sell_value = sell_shares * effective_exit_value
+                                remain_value = (p.shares - sell_shares) * effective_exit_value
+                                if sell_value < 1.0 or remain_value < 1.0:
+                                    log(f"Stop-loss scale-out sub-$1.00 API limit reached (sell=${sell_value:.2f}). Escalating to FULL exit.")
+                                    exit_decision.reason = "stop-loss-escalated"
+                                else:
+                                    try:
+                                        close_resp = ex.close_position(p.token_id, sell_shares, simulated_price=float(mark) if mark is not None else None)
+                                        if close_resp.get("ok"):
+                                            sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
+                                            if sold_shares > 0:
+                                                actual_fraction = sold_shares / p.shares
+                                                realized_cost = p.cost_usd * actual_fraction
+                                                p.shares -= sold_shares
+                                                p.cost_usd *= max(0.0, 1.0 - actual_fraction)
+                                                p.has_scaled_out_loss = True
+                                                
+                                                _act_val = close_resp.get("actual_exit_value_usd", 0.0)
+                                                _obs_val = sold_shares * effective_exit_value
+                                                append_event({
+                                                    "kind": "exit",
+                                                    "slug": p.slug,
+                                                    "side": p.side,
+                                                    "token_id": p.token_id,
+                                                    "position_id": p.position_id,
+                                                    "closed_shares": sold_shares,
+                                                    "remaining_shares": p.shares,
+                                                    "realized_cost_usd": realized_cost,
+                                                    "actual_exit_value_usd": _act_val,
+                                                    "actual_realized_pnl_usd": _act_val - realized_cost,
+                                                    "observed_exit_value_usd": _obs_val,
+                                                    "observed_realized_pnl_usd": _obs_val - realized_cost,
+                                                    "status": "partial",
+                                                    "reason": "stop-loss-scale-out",
+                                                    "mfe_pnl_usd": p.max_favorable_pnl_usd,
+                                                    "mae_pnl_usd": p.max_adverse_pnl_usd
+                                                })
+                                                
+                                                log(f"STOP-LOSS SCALED OUT! Sold {sold_shares:.2f} shares to mitigate risk.")
+                                                maybe_record_cycle_label(state, "stop-loss-scale-out", slug=p.slug, side=p.side)
+                                    except Exception as e:
+                                        log(f"Stop-loss scale-out error: {e}")
+                                    keep_positions.append(p)
+                                    continue
 
                             if exit_decision.reason == "take-profit-principal":
                                 current_value = max(p.shares * effective_exit_value, 1e-9)
                                 sell_fraction = min(0.99, p.cost_usd / current_value)
                                 sell_shares = p.shares * sell_fraction
-                                try:
-                                    close_resp = ex.close_position(p.token_id, sell_shares, simulated_price=float(mark) if mark is not None else None)
-                                    if close_resp.get("ok"):
-                                        sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
-                                        if sold_shares > 0:
-                                            actual_fraction = sold_shares / p.shares
-                                            p.shares -= sold_shares
-                                            p.cost_usd *= max(0.0, 1.0 - actual_fraction)
-                                            p.has_extracted_principal = True
-                                            log(f"PRINCIPAL EXTRACTED! Sold {sold_shares:.2f} shares. Risk-Free Moonbag active.")
-                                            maybe_record_cycle_label(state, "take-profit-principal", slug=p.slug, side=p.side)
-                                except Exception as e:
-                                    log(f"Take-profit principal error: {e}")
-                                keep_positions.append(p)
-                                continue
+                                
+                                sell_value = sell_shares * effective_exit_value
+                                remain_value = (p.shares - sell_shares) * effective_exit_value
+                                if sell_value < 1.0 or remain_value < 1.0:
+                                    log(f"Principal-extract sub-$1.00 API limit reached (sell=${sell_value:.2f}). Escalating to FULL exit.")
+                                    exit_decision.reason = "take-profit-escalated"
+                                else:
+                                    try:
+                                        close_resp = ex.close_position(p.token_id, sell_shares, simulated_price=float(mark) if mark is not None else None)
+                                        if close_resp.get("ok"):
+                                            sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
+                                            if sold_shares > 0:
+                                                actual_fraction = sold_shares / p.shares
+                                                realized_cost = p.cost_usd * actual_fraction
+                                                p.shares -= sold_shares
+                                                p.cost_usd *= max(0.0, 1.0 - actual_fraction)
+                                                p.has_extracted_principal = True
+                                                
+                                                _act_val = close_resp.get("actual_exit_value_usd", 0.0)
+                                                _obs_val = sold_shares * effective_exit_value
+                                                append_event({
+                                                    "kind": "exit",
+                                                    "slug": p.slug,
+                                                    "side": p.side,
+                                                    "token_id": p.token_id,
+                                                    "position_id": p.position_id,
+                                                    "closed_shares": sold_shares,
+                                                    "remaining_shares": p.shares,
+                                                    "realized_cost_usd": realized_cost,
+                                                    "actual_exit_value_usd": _act_val,
+                                                    "actual_realized_pnl_usd": _act_val - realized_cost,
+                                                    "observed_exit_value_usd": _obs_val,
+                                                    "observed_realized_pnl_usd": _obs_val - realized_cost,
+                                                    "status": "partial",
+                                                    "reason": "take-profit-principal",
+                                                    "mfe_pnl_usd": p.max_favorable_pnl_usd,
+                                                    "mae_pnl_usd": p.max_adverse_pnl_usd
+                                                })
+                                                
+                                                log(f"PRINCIPAL EXTRACTED! Sold {sold_shares:.2f} shares. Risk-Free Moonbag active.")
+                                                maybe_record_cycle_label(state, "take-profit-principal", slug=p.slug, side=p.side)
+                                    except Exception as e:
+                                        log(f"Take-profit principal error: {e}")
+                                    keep_positions.append(p)
+                                    continue
 
                             if exit_decision.reason == "take-profit-partial":
                                 sell_fraction = 0.30
@@ -1112,6 +1223,16 @@ def main():
             )
 
             if signal_side is None:
+                if SETTINGS.dry_run and open_positions:
+                    mock_value = 0.0
+                    for p in open_positions:
+                        if p.shares <= 0: continue
+                        if market.get("slug") == p.slug:
+                            mark = (up if p.side == "UP" else down)
+                            mock_value += p.shares * float(mark if mark is not None else 0.5)
+                        else:
+                            mock_value += p.shares * 0.5
+                    acct.equity = acct.cash + mock_value
                 log(f"no signal | equity={acct.equity:.2f} cash={acct.cash:.2f}")
                 smart_sleep(SETTINGS.poll_seconds)
                 continue
@@ -1225,7 +1346,8 @@ def main():
                                     opened_ts=h_ts,
                                     position_id=f"pos_{int(h_ts)}_{hedge_token_id[-6:]}",
                                     entry_reason="structured-hedge",
-                                    source="runtime"
+                                    source="runtime",
+                                    max_favorable_value_usd=hedge_usd,
                                 ))
                         except Exception as e:
                             log(f"hedge parsing error: {e}")

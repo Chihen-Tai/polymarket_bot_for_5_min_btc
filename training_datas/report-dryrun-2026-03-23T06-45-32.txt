@@ -1,0 +1,31 @@
+status     opened/closed       market                     side    entry   actual  observed  act.pnl  obs.pnl tier   reason               remain      mae      mfe
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+closed     2026-03-22T16:33:31 btc-updown-5m-1774168200   DOWN   1.0000   1.0000    1.0100   0.0000   0.0100 medium max-hold-loss-exte   0.0000  -0.0700   0.0000
+closed     2026-03-22T16:38:12 btc-updown-5m-1774168500   DOWN   1.0000   1.0000    0.2500   0.0000  -0.7500 medium hard-stop-loss       0.0000  -0.8100   0.0000
+closed     2026-03-22T16:43:29 btc-updown-5m-1774168800   DOWN   1.0000   1.0000    0.9300   0.0000  -0.0700 medium max-hold-loss-exte   0.0000  -0.1300   0.0000
+closed     2026-03-22T16:44:42 btc-updown-5m-1774168800   DOWN   1.0000   1.0000    0.9300   0.0000  -0.0700 medium deadline-exit-loss   0.0000  -0.1300   0.0000
+partial    2026-03-22T16:48:28 btc-updown-5m-1774169100   DOWN   1.0000   0.5000    0.3400   0.0000  -0.1600 medium max-hold-loss-exte   1.0000  -0.3800   0.0000
+  -> position_id=pos_1774169114_649912 unmatched_cost=0.5000 unmatched_shares=1.000000 entry_quality=flat-entry flags=actual-medium-confidence|open-remainder
+unmatched  2026-03-22T16:51:46 btc-updown-5m-1774169400   DOWN   1.0000      n/a       n/a      n/a      n/a none                        2.0000   0.0000   0.0000
+  -> position_id=pos_1774169506_574196 unmatched_cost=1.0000 unmatched_shares=2.000000 entry_quality=unknown flags=open-remainder|no-exit
+closed     2026-03-22T22:54:42 btc-updown-5m-1774191000   DOWN   1.0000   1.0000    1.0200   0.0000   0.0200 medium deadline-exit-loss   0.0000  -0.0400   0.0000
+closed     2026-03-22T22:57:29 btc-updown-5m-1774191300   UP     1.0000   1.0000    0.4300   0.0000  -0.5700 medium hard-stop-loss       0.0000  -0.6300   0.0000
+unmatched  2026-03-22T23:00:36 btc-updown-5m-1774191600   UP     1.0000      n/a       n/a      n/a      n/a none                        2.0000   0.0000   0.0000
+  -> position_id=pos_1774191636_528800 unmatched_cost=1.0000 unmatched_shares=2.000000 entry_quality=unknown flags=open-remainder|no-exit
+closed     2026-03-23T05:03:38 btc-updown-5m-1774213200   DOWN   1.0000   1.0000    1.0000  -0.0000  -0.0000 medium max-hold-loss-exte   0.0000  -0.0632   0.0000
+closed     2026-03-23T05:04:24 btc-updown-5m-1774213200   DOWN   1.0000   0.6632    0.6632  -0.3368  -0.3368 medium hard-stop-loss       0.0000  -0.4000   0.0000
+closed     2026-03-23T05:09:51 btc-updown-5m-1774213500   UP     1.0000   0.0273    0.0273  -0.9727  -0.9727 medium hard-stop-loss       0.0000  -1.0000   0.0000
+
+summary: closed=9 partial=1 unmatched=2
+summary details:
+  total_trades: 12
+  status_counts: {'closed': 9, 'partial': 1, 'unmatched': 2}
+  entry_quality_counts: {'bad-entry': 3, 'flat-entry': 7, 'unknown': 2}
+  close_reason_counts: {'deadline-exit-loss': 2, 'hard-stop-loss': 4, 'max-hold-loss-extended': 4}
+  actual_source_tier_counts: {'medium': 10, 'none': 2}
+  actual_available_ratio: 0.8333333333333334
+  actual_pnl: {'count': 10, 'average': -0.13095693779904308}
+  observed_pnl: {'count': 10, 'average': -0.2899569377990431}
+  mae: {'count': 12, 'average': -0.3044298245614035}
+  mfe: {'count': 12, 'average': 0.0}
+  notes: {'actual_unavailable': 'actual_pnl average uses only rows with actual data; missing actual rows are excluded, not imputed'}

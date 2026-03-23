@@ -32,16 +32,16 @@ def decide_exit(*, pnl_pct: float, hold_sec: float, secs_left: Optional[float] =
 
     # 2. Stop Loss Handling
     if getattr(SETTINGS, "smart_stop_loss_enabled", False):
-        if pnl_pct <= -(SETTINGS.stop_loss_pct + 0.15):
+        if pnl_pct <= -SETTINGS.stop_loss_pct:
             return ExitDecision(True, "hard-stop-loss", pnl_pct, hold_sec)
-        if pnl_pct <= -SETTINGS.stop_loss_pct and recovery_chance_low:
+        if pnl_pct <= -getattr(SETTINGS, "stop_loss_warn_pct", 0.08) and recovery_chance_low:
             return ExitDecision(True, "smart-stop-loss", pnl_pct, hold_sec)
-        if not has_scaled_out_loss and pnl_pct <= -getattr(SETTINGS, "stop_loss_partial_pct", 0.20):
+        if not has_scaled_out_loss and pnl_pct <= -getattr(SETTINGS, "stop_loss_partial_pct", 0.05):
             return ExitDecision(True, "stop-loss-scale-out", pnl_pct, hold_sec)
     else:
         if pnl_pct <= -SETTINGS.stop_loss_pct:
             return ExitDecision(True, "stop-loss", pnl_pct, hold_sec)
-        if not has_scaled_out_loss and pnl_pct <= -getattr(SETTINGS, "stop_loss_partial_pct", 0.20):
+        if not has_scaled_out_loss and pnl_pct <= -getattr(SETTINGS, "stop_loss_partial_pct", 0.05):
             return ExitDecision(True, "stop-loss-scale-out", pnl_pct, hold_sec)
 
     if secs_left is not None and secs_left <= getattr(SETTINGS, "exit_deadline_sec", 20) and pnl_pct < 0:
