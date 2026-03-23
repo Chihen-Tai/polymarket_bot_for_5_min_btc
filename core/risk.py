@@ -58,11 +58,11 @@ def can_place_order(
         else:
             return False, "order frequency limit exceeded"
 
-    # if consec_losses >= max_consec_loss:
-    #     return False, "consecutive loss circuit breaker"
+    if consec_losses >= max_consec_loss:
+        return False, "consecutive loss circuit breaker"
 
-    # Daily max loss check disabled
-    # if abs(daily_pnl) >= daily_max_loss and daily_pnl < 0:
-    #     return False, "daily max loss reached"
+    # Daily max loss check restored
+    if daily_pnl <= -daily_max_loss:
+        return False, "daily max loss reached"
 
     return True, "ok"

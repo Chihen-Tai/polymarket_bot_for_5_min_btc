@@ -668,11 +668,11 @@ def main():
             signal_origin = ""
             no_entry_reason = ""
 
-            # Daily loss circuit breaker disabled
-            # if risk.daily_pnl <= -SETTINGS.daily_max_loss:
-            #     log(f"CIRCUIT BREAKER: Daily loss (-${abs(risk.daily_pnl):.2f}) reached limit (-${SETTINGS.daily_max_loss:.2f}). Pausing new entries.")
-            #     smart_sleep(SETTINGS.poll_seconds)
-            #     continue
+            # Daily loss circuit breaker restored
+            if risk.daily_pnl <= -SETTINGS.daily_max_loss:
+                log(f"CIRCUIT BREAKER: Daily loss (-${abs(risk.daily_pnl):.2f}) reached limit (-${SETTINGS.daily_max_loss:.2f}). Pausing new entries.")
+                smart_sleep(SETTINGS.poll_seconds)
+                continue
 
             if SETTINGS.auto_market_selection:
                 try:
@@ -725,11 +725,12 @@ def main():
                     if SETTINGS.use_dynamic_thresholds and binance_1m:
                         change_abs = abs(binance_1m.get("change", 0.0))
                         if change_abs > 30.0:
-                            SETTINGS.stop_loss_pct = max(SETTINGS.stop_loss_pct, 0.40)
+                            # widen stop loss slightly in high vol, but not 40%
+                            SETTINGS.stop_loss_pct = max(SETTINGS.stop_loss_pct, 0.15)
                             SETTINGS.zscore_threshold = max(SETTINGS.zscore_threshold, 2.5)
                         else:
                             from core.config import _f
-                            SETTINGS.stop_loss_pct = _f("STOP_LOSS_PCT", 0.30)
+                            SETTINGS.stop_loss_pct = _f("STOP_LOSS_PCT", 0.10)
                             SETTINGS.zscore_threshold = _f("ZSCORE_THRESHOLD", 2.0)
 
                     arbitrage_triggered = False
