@@ -370,15 +370,27 @@ class PolymarketExchange:
         price_rounded = round(price, 3) 
         size_rounded = round(amount_usd / price_rounded, 2)
 
-        order = self.client.create_order(
-            OrderArgs(
-                token_id=token_id,
-                price=float(price_rounded),
-                size=float(size_rounded),
-                side=BUY,
+        if force_taker:
+            from py_clob_client.clob_types import MarketOrderArgs
+            order = self.client.create_market_order(
+                MarketOrderArgs(
+                    token_id=token_id,
+                    amount=float(size_rounded),
+                    side=BUY,
+                    order_type=OrderType.FAK,
+                )
             )
-        )
-        resp = self.client.post_order(order, OrderType.POST_ONLY)
+            resp = self.client.post_order(order, OrderType.FAK)
+        else:
+            order = self.client.create_order(
+                OrderArgs(
+                    token_id=token_id,
+                    price=float(price_rounded),
+                    size=float(size_rounded),
+                    side=BUY,
+                )
+            )
+            resp = self.client.post_order(order, OrderType.POST_ONLY)
 
         return {
             "ok": True,
@@ -443,7 +455,32 @@ class PolymarketExchange:
         except Exception:
             return True
 
-    def close_position(self, token_id: str, shares: float, simulated_price: float | None = None) -> dict:
+    def cancel_order(self, order_id: str) -> bool:
+        if self.dry_run or not self.client:
+            return True
+        try:
+            if hasattr(self.client, "cancel_order"):
+                self.client.cancel_order(order_id)
+            elif hasattr(self.client, "cancel"):
+                self.client.cancel(order_id)
+            return True
+        except Exception as e:
+            return False
+
+    def get_open_orders(self, token_id: str | None = None) -> list[dict]:
+        if self.dry_run or not self.client:
+            return []
+        try:
+            from py_clob_client.clob_types import OpenOrderParams
+            params = {"token_id": token_id} if token_id else {}
+            resp = getattr(self.client, "get_orders", lambda x: [])(OpenOrderParams(**params))
+            if isinstance(resp, list):
+                return resp
+            return []
+        except Exception:
+            return []
+
+    def close_position(self, token_id: str, shares: float, simulated_price: float | None = None, force_taker: bool = False) -> dict:
         if self.dry_run:
             if simulated_price and simulated_price > 0:
                 best_bid = simulated_price
@@ -469,8 +506,9 @@ class PolymarketExchange:
                 "remaining_shares": 0.0
             }
 
-        from py_clob_client.clob_types import MarketOrderArgs, OrderType
+        from py_clob_client.clob_types import MarketOrderArgs, OrderArgs, OrderType
         from py_clob_client.order_builder.constants import SELL
+        import time
 
         cash_before = self._get_cash_balance()
         remaining = float(shares)
@@ -481,6 +519,7 @@ class PolymarketExchange:
         usdc_received_total: float | None = None  # Strictly USDC received (takingAmount sum)
         usdc_received_source = "close_response_unavailable"
         shares_sold_per_attempt: list[float] = []  # Shares filled per attempt (for debug)
+        
         while remaining > 0.0001 and attempts < 8:
             attempts += 1
             # progressively smaller chunks on retries
@@ -496,18 +535,59 @@ class PolymarketExchange:
                 chunk = max(remaining * 0.35, 0.01)
 
             try:
-                order = self.client.create_market_order(
-                    MarketOrderArgs(
-                        token_id=token_id,
-                        amount=float(chunk),
-                        side=SELL,
-                        order_type=OrderType.FAK,
+                self.cancel_all_orders() # Cancel open orders to free token balance
+                
+                # Maker Exits for first 5 attempts, Taker Fallback for remaining
+                if not force_taker and attempts <= 5:
+                    book = self.get_full_orderbook(token_id)
+                    best_bid = float(book.get("best_bid", 0.01)) if book else 0.01
+                    best_ask = float(book.get("best_ask", 1.00)) if book else 1.00
+                    
+                    target_price = max(best_bid + 0.001, best_ask - (attempts - 1) * 0.005)
+                    target_price = round(target_price, 3)
+                    
+                    order = self.client.create_order(
+                        OrderArgs(
+                            token_id=token_id,
+                            price=float(target_price),
+                            size=float(chunk),
+                            side=SELL,
+                        )
                     )
-                )
-                last_resp = self.client.post_order(order, OrderType.FAK)
-                # Strictly separate: USDC received vs shares filled
-                usdc_this, usdc_src = self._extract_close_usdc_received(last_resp)
-                filled_shares, _ = self._extract_close_shares_sold(last_resp)
+                    last_resp = self.client.post_order(order, OrderType.POST_ONLY)
+                    
+                    # If this is a limit order, it won't fill immediately. Sleep 3 seconds to expose liquidity to the market.
+                    time.sleep(3.0)
+                    
+                    # Check USDC Delta to see if the market bought our Limit Ask!
+                    current_cash = self._get_cash_balance()
+                    usdc_gained = current_cash - cash_before
+                    # Previous loop iterations might have gained USDC, so we subtract what we already tracked
+                    new_usdc_this_round = usdc_gained - (usdc_received_total or 0.0)
+                    
+                    if new_usdc_this_round > 0.05:
+                        # We got a fill! Estimate shares based on target price
+                        filled_shares = min(remaining, new_usdc_this_round / target_price)
+                        usdc_this = new_usdc_this_round
+                        usdc_src = "maker-balance-delta"
+                    else:
+                        filled_shares = 0.0
+                        usdc_this = 0.0
+                        usdc_src = "maker-no-fill"
+                        
+                else:
+                    # Taker Fallback (Attempts 6-8)
+                    order = self.client.create_market_order(
+                        MarketOrderArgs(
+                            token_id=token_id,
+                            amount=float(chunk),
+                            side=SELL,
+                            order_type=OrderType.FAK,
+                        )
+                    )
+                    last_resp = self.client.post_order(order, OrderType.FAK)
+                    usdc_this, usdc_src = self._extract_close_usdc_received(last_resp)
+                    filled_shares, _ = self._extract_close_shares_sold(last_resp)
 
                 if usdc_this is not None and usdc_this > 0:
                     usdc_received_total = (usdc_received_total or 0.0) + usdc_this

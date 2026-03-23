@@ -87,6 +87,7 @@ class OpenPos:
     has_scaled_out_loss: bool = False
     has_taken_partial: bool = False
     has_extracted_principal: bool = False
+    has_panic_dumped: bool = False
     dust_retry_count: int = 0  # Number of times this residual lot has been kept for retry
 
     @property
@@ -807,6 +808,30 @@ def main():
                             has_taken_partial=getattr(p, "has_taken_partial", False),
                             has_extracted_principal=getattr(p, "has_extracted_principal", False)
                         )
+
+                        # --- Phase 2: Advanced Loophole Exploitation ---
+                        try:
+                            ws_vel = BINANCE_WS.get_price_velocity(3.0)
+                            
+                            # 1. Panic Dump Override
+                            is_panic = (p.side == "UP" and ws_vel < -SETTINGS.panic_dump_velocity) or \
+                                       (p.side == "DOWN" and ws_vel > SETTINGS.panic_dump_velocity)
+                            if is_panic and hold_sec > 2.0:
+                                log(f"🚨 PANIC DUMP OVERRIDE! {p.side} {p.token_id[-6:]} Binance vel={ws_vel:.4%}")
+                                exit_decision.should_close = True
+                                exit_decision.reason = "panic-dump"
+                                p.has_panic_dumped = True
+                            
+                            # 2. Let Profits Run
+                            if getattr(exit_decision, "should_close", False) and exit_decision.reason in ("take-profit-partial", "take-profit-principal"):
+                                is_pump = (p.side == "UP" and ws_vel > SETTINGS.tp_hold_velocity) or \
+                                          (p.side == "DOWN" and ws_vel < -SETTINGS.tp_hold_velocity)
+                                if is_pump:
+                                    log(f"📈 LET PROFITS RUN! Delaying TP for {p.side}. Binance vel={ws_vel:.4%}")
+                                    exit_decision.should_close = False
+                        except Exception:
+                            pass
+                        # ----------------------------------------------
                         stop_warn = hard_stop_pnl_pct <= -SETTINGS.stop_loss_warn_pct
                         urgent_exit = hard_stop_pnl_pct <= -SETTINGS.stop_loss_pct
 
@@ -976,7 +1001,7 @@ def main():
                                 sell_fraction = 0.30
                                 sell_shares = p.shares * sell_fraction
                                 try:
-                                    close_resp = ex.close_position(p.token_id, sell_shares, simulated_price=float(mark) if mark is not None else None)
+                                    close_resp = ex.close_position(p.token_id, sell_shares, simulated_price=float(mark) if mark is not None else None, force_taker=getattr(p, "has_panic_dumped", False))
                                     if close_resp.get("ok"):
                                         sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
                                         if sold_shares > 0:
@@ -992,7 +1017,7 @@ def main():
                                 continue
 
                             try:
-                                close_resp = ex.close_position(p.token_id, p.shares, simulated_price=float(mark) if mark is not None else None)
+                                close_resp = ex.close_position(p.token_id, p.shares, simulated_price=float(mark) if mark is not None else None, force_taker=getattr(p, "has_panic_dumped", False))
                                 if close_resp.get("ok"):
                                     sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), p.shares)
                                     remaining_hint = max(0.0, float(close_resp.get("remaining_shares", p.shares - sold_shares) or 0.0))
@@ -1378,7 +1403,18 @@ def main():
 
             try:
                 sim_price = (float(up) if up is not None else None) if signal_side == "UP" else (float(down) if down is not None else None)
-                resp = ex.place_order(signal_side, order_usd, token_id_override=token_override, simulated_price=sim_price)
+                
+                force_taker_snipe = False
+                try:
+                    ws_vel = BINANCE_WS.get_price_velocity(3.0)
+                    if (signal_side == "UP" and ws_vel > SETTINGS.taker_snipe_velocity) or \
+                       (signal_side == "DOWN" and ws_vel < -SETTINGS.taker_snipe_velocity):
+                        log(f"⚡ TAKER SNIPE TRIGGERED! {signal_side} Binance vel={ws_vel:.4%}")
+                        force_taker_snipe = True
+                except Exception:
+                    pass
+
+                resp = ex.place_order(signal_side, order_usd, token_override, simulated_price=sim_price, force_taker=force_taker_snipe)
                 risk.orders_this_window += 1
                 last_trade_ts = time.time()
                 risk.consec_losses = flags.live_consec_losses

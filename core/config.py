@@ -111,5 +111,14 @@ class Settings:
     mm_order_size: float = _f("MM_ORDER_SIZE", 1.0)
     mm_safety_halt: float = _f("MM_SAFETY_HALT", 30.0)
 
+    # Maker/Limit Latency Execution Settings
+    maker_order_timeout_sec: int = _i("MAKER_ORDER_TIMEOUT_SEC", 15)
+    cancel_on_reversal_velocity: float = _f("CANCEL_ON_REVERSAL_VELOCITY", 0.003)
+
+    # Phase 2: Advanced Loophole Exploitation
+    taker_snipe_velocity: float = _f("TAKER_SNIPE_VELOCITY", 0.0008)
+    panic_dump_velocity: float = _f("PANIC_DUMP_VELOCITY", 0.0010)
+    tp_hold_velocity: float = _f("TP_HOLD_VELOCITY", 0.0004)
+
 
 SETTINGS = Settings()
