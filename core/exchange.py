@@ -326,7 +326,7 @@ class PolymarketExchange:
         except Exception:
             return []
 
-    def place_order(self, side: str, amount_usd: float, token_id_override: str | None = None, simulated_price: float | None = None) -> dict:
+    def place_order(self, side: str, amount_usd: float, token_id_override: str | None = None, simulated_price: float | None = None, force_taker: bool = False) -> dict:
         token_id = token_id_override or (SETTINGS.token_id_up if side == "UP" else SETTINGS.token_id_down)
         if not token_id:
             raise ValueError("TOKEN_ID_UP / TOKEN_ID_DOWN is required")
