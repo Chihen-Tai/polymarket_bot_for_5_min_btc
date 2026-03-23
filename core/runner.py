@@ -675,6 +675,11 @@ def main():
                 try:
                     market = resolve_latest_btc_5m_token_ids()
                     if market["slug"] != last_market_slug:
+                        # Clear price history to prevent artificial momentum / mean-reversion signals
+                        if last_market_slug != "None":
+                            yes_price_window.clear()
+                            up_price_window.clear()
+                            down_price_window.clear()
                         last_market_slug = market["slug"]
                         log(f"market switched => {market['slug']}")
                         
@@ -729,6 +734,21 @@ def main():
                         yes_price_window.append(float(up))
                     if down is not None:
                         down_price_window.append(float(down))
+
+                    # Local dry-run PnL tracker update (Simulate API return)
+                    if getattr(SETTINGS, "dry_run", False):
+                        for p in open_positions:
+                            bid = 0.0
+                            if p.side == "UP" and poly_ob_up:
+                                bid = poly_ob_up.get("best_bid", 0.0)
+                            elif p.side == "DOWN" and poly_ob_down:
+                                bid = poly_ob_down.get("best_bid", 0.0)
+                                
+                            if bid > 0.0:
+                                p.current_value = p.size * bid
+                                if p.initial_value > 0:
+                                    p.cash_pnl = p.current_value - p.initial_value
+                                    p.percent_pnl = p.cash_pnl / p.initial_value
 
                     binance_1m = ex.get_binance_1m_candle() if SETTINGS.use_cex_oracle else None
                     binance_5m = ex.get_binance_5m_klines(100)
@@ -1590,13 +1610,6 @@ def main():
                 else:
                     smart_sleep(SETTINGS.poll_seconds)
                 continue
-
-            if SETTINGS.dry_run:
-                pnl = round(uniform(-0.3, 0.3), 2)
-                ex.settle_mock(pnl)
-                risk.daily_pnl += pnl
-                risk.consec_losses = risk.consec_losses + 1 if pnl < 0 else 0
-                log(f"mock settle pnl={pnl:+.2f} daily_pnl={risk.daily_pnl:+.2f} consec_losses={risk.consec_losses}")
 
             has_active = bool(open_positions) or (len(pending_orders) > 0 if 'pending_orders' in locals() else False)
             if has_active:
