@@ -1,0 +1,12 @@
+name: polymarket-bot
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+    - python-dotenv>=1.0.1
+    - requests>=2.32.3
+    - py-clob-client>=0.28.0
+    - websocket-client>=1.8.0

@@ -17,9 +17,8 @@ Polymarket 自動量化交易機器人 (專攻 5 分鐘比特幣市場)
 ```bash
 git clone https://github.com/Chihen-Tai/polymarket-bot-by_openclaw.git
 cd polymarket-bot-by_openclaw
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+conda env create -f environment.yml
+conda activate polymarket-bot
 cp .env.example .env
 ```
 
@@ -39,7 +38,7 @@ python main.py
 ### 4. 結算與對帳分析
 按下 `Ctrl+C` 終止主程式後，系統會自動印出當次成績單。若需手動匯出報表：
 ```bash
-# 確保在虛擬環境內執行
+# 確保在 conda 環境內執行 (conda activate polymarket-bot)
 python scripts/verify_close_accounting.py --limit 50 --format json --output data/close_accounting.json
 python scripts/trade_pair_ledger.py --limit 50 --format csv --output data/trade_ledger.csv
 ```
@@ -67,9 +66,8 @@ Polymarket Automated Quantitative Trading Bot (Optimized for 5-Minute BTC Market
 ```bash
 git clone https://github.com/Chihen-Tai/polymarket-bot-by_openclaw.git
 cd polymarket-bot-by_openclaw
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+conda env create -f environment.yml
+conda activate polymarket-bot
 cp .env.example .env
 ```
 
