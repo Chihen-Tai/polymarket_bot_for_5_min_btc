@@ -668,11 +668,8 @@ def main():
             signal_origin = ""
             no_entry_reason = ""
 
-            # Daily loss circuit breaker restored
-            if risk.daily_pnl <= -SETTINGS.daily_max_loss:
-                log(f"CIRCUIT BREAKER: Daily loss (-${abs(risk.daily_pnl):.2f}) reached limit (-${SETTINGS.daily_max_loss:.2f}). Pausing new entries.")
-                smart_sleep(SETTINGS.poll_seconds)
-                continue
+            # The daily loss circuit breaker is handled properly in `can_place_order`
+            # Removing the unconditional continue so open positions are still managed.
 
             if SETTINGS.auto_market_selection:
                 try:
@@ -873,6 +870,8 @@ def main():
                                                 
                                                 _act_val = close_resp.get("actual_exit_value_usd", 0.0)
                                                 _obs_val = sold_shares * effective_exit_value
+                                                _realized_pnl = _act_val - realized_cost if _act_val > 0 else _obs_val - realized_cost
+                                                risk.daily_pnl += _realized_pnl
                                                 append_event({
                                                     "kind": "exit",
                                                     "slug": p.slug,
@@ -922,6 +921,8 @@ def main():
                                                 
                                                 _act_val = close_resp.get("actual_exit_value_usd", 0.0)
                                                 _obs_val = sold_shares * effective_exit_value
+                                                _realized_pnl = _act_val - realized_cost if _act_val > 0 else _obs_val - realized_cost
+                                                risk.daily_pnl += _realized_pnl
                                                 append_event({
                                                     "kind": "exit",
                                                     "slug": p.slug,
@@ -972,6 +973,8 @@ def main():
                                                 
                                                 _act_val = close_resp.get("actual_exit_value_usd", 0.0)
                                                 _obs_val = sold_shares * effective_exit_value
+                                                _realized_pnl = _act_val - realized_cost if _act_val > 0 else _obs_val - realized_cost
+                                                risk.daily_pnl += _realized_pnl
                                                 append_event({
                                                     "kind": "exit",
                                                     "slug": p.slug,
@@ -1007,6 +1010,12 @@ def main():
                                         sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
                                         if sold_shares > 0:
                                             actual_fraction = sold_shares / p.shares
+                                            realized_cost = p.cost_usd * actual_fraction
+                                            _act_val = float(close_resp.get("actual_exit_value_usd", 0.0) or 0.0)
+                                            _obs_val = sold_shares * effective_exit_value
+                                            _realized_pnl = _act_val - realized_cost if _act_val > 0 else _obs_val - realized_cost
+                                            risk.daily_pnl += _realized_pnl
+
                                             p.shares -= sold_shares
                                             p.cost_usd *= max(0.0, 1.0 - actual_fraction)
                                             p.has_taken_partial = True
