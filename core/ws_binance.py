@@ -114,8 +114,10 @@ class BinanceWebSocket:
         if not self.recent_prices:
             return 0.0
         now = time.time()
+        # Get snapshot and find the OLDEST price within the time window
+        snapshot = list(self.recent_prices)
         oldest_price = None
-        for ts, price in self.recent_prices:
+        for ts, price in snapshot:  # oldest to newest
             if now - ts <= seconds:
                 oldest_price = price
                 break
@@ -123,8 +125,14 @@ class BinanceWebSocket:
         if not oldest_price:
             return 0.0
         
-        current_price = self.recent_prices[-1][1]
+        current_price = snapshot[-1][1]  # newest price
         return (current_price - oldest_price) / oldest_price
+
+    def get_last_update_age(self) -> float:
+        """Returns seconds since last WS price tick. Used to detect stale/disconnected state."""
+        if not self.recent_prices:
+            return float('inf')
+        return time.time() - self.recent_prices[-1][0]
 
 
 # Global singleton instance

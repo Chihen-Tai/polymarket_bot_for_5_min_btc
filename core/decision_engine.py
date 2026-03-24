@@ -67,7 +67,7 @@ def _check_imbalance(ob: dict) -> float:
 
 
 def mean_reversion_side(yes_price: Optional[float], yes_window: deque) -> Optional[str]:
-    if yes_price is None or len(yes_window) < 5:
+    if yes_price is None or len(yes_window) < 10:  # Require at least 10 ticks (~150s of data) for stability
         return None
     vals = list(yes_window)
     mean = sum(vals) / len(vals)
@@ -192,29 +192,31 @@ def explain_choose_side(
         total_vol = buy_vol + sell_vol
         if total_vol > 0:
             ofi_ratio = buy_vol / total_vol
-            # If > 0.70, strong buy pressure
-            if ofi_ratio > 0.70 and valid_up:
+            ofi_threshold = getattr(SETTINGS, "ofi_bypass_threshold", 0.70)
+            if ofi_ratio > ofi_threshold and valid_up:
                 r = base_result.copy()
                 r.update({"ok": True, "side": "UP", "reason": "model-ws_order_flow_up", "entry_price": up})
                 candidates["ws_order_flow_up"] = r
-            elif ofi_ratio < 0.30 and valid_down:
+            elif ofi_ratio < (1.0 - ofi_threshold) and valid_down:
                 r = base_result.copy()
                 r.update({"ok": True, "side": "DOWN", "reason": "model-ws_order_flow_down", "entry_price": down})
                 candidates["ws_order_flow_down"] = r
 
     # Strategy 7: WS Flash Snipe (WebSocket 閃電狙擊 0.3%)
-    if getattr(SETTINGS, "ws_flash_snipe_threshold", 0.0) > 0 and ws_bba and "b" in ws_bba:
+    if getattr(SETTINGS, "ws_flash_snipe_threshold", 0.0) > 0 and ws_bba and ws_bba.get("b", 0.0) > 0:
         try:
             from core.ws_binance import BINANCE_WS
-            vel = BINANCE_WS.get_price_velocity(seconds=3.0)
-            if vel > SETTINGS.ws_flash_snipe_threshold and valid_up:
-                r = base_result.copy()
-                r.update({"ok": True, "side": "UP", "reason": "model-ws_flash_snipe_up", "entry_price": up})
-                candidates["ws_flash_snipe_up"] = r
-            elif vel < -SETTINGS.ws_flash_snipe_threshold and valid_down:
-                r = base_result.copy()
-                r.update({"ok": True, "side": "DOWN", "reason": "model-ws_flash_snipe_down", "entry_price": down})
-                candidates["ws_flash_snipe_down"] = r
+            # Guard: skip if WS has been silent for > 5 seconds (disconnected)
+            if BINANCE_WS.get_last_update_age() < 5.0:
+                vel = BINANCE_WS.get_price_velocity(seconds=3.0)
+                if vel > SETTINGS.ws_flash_snipe_threshold and valid_up:
+                    r = base_result.copy()
+                    r.update({"ok": True, "side": "UP", "reason": "model-ws_flash_snipe_up", "entry_price": up})
+                    candidates["ws_flash_snipe_up"] = r
+                elif vel < -SETTINGS.ws_flash_snipe_threshold and valid_down:
+                    r = base_result.copy()
+                    r.update({"ok": True, "side": "DOWN", "reason": "model-ws_flash_snipe_down", "entry_price": down})
+                    candidates["ws_flash_snipe_down"] = r
         except Exception:
             pass
 
