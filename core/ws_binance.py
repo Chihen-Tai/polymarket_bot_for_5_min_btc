@@ -110,21 +110,29 @@ class BinanceWebSocket:
         return [t for t in snapshot if t["ts"] >= cutoff]
 
     def get_price_velocity(self, seconds: float = 3.0) -> float:
-        """Returns the percentage change of the mid-price over the last X seconds."""
+        """Returns the percentage change of the mid-price over the last X seconds.
+        Returns 0.0 if the most recent tick is older than the requested window
+        (stale / disconnected WebSocket), preventing misleading velocity signals.
+        """
         if not self.recent_prices:
             return 0.0
         now = time.time()
-        # Get snapshot and find the OLDEST price within the time window
         snapshot = list(self.recent_prices)
+
+        # Guard: if the newest tick is itself outside the window, data is stale
+        if now - snapshot[-1][0] > seconds:
+            return 0.0
+
+        # Find the OLDEST price still within the time window
         oldest_price = None
         for ts, price in snapshot:  # oldest to newest
             if now - ts <= seconds:
                 oldest_price = price
                 break
-        
+
         if not oldest_price:
             return 0.0
-        
+
         current_price = snapshot[-1][1]  # newest price
         return (current_price - oldest_price) / oldest_price
 

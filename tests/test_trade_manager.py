@@ -76,12 +76,18 @@ def main():
     ])
 
     cases = [
-        ("stop_loss_scale_out", decide_exit(pnl_pct=-0.25, hold_sec=5).reason == "stop-loss-scale-out"),
-        ("smart_stop_loss_after_scale_out", decide_exit(pnl_pct=-0.40, hold_sec=5, recovery_chance_low=True, has_scaled_out_loss=True).reason == "smart-stop-loss"),
-        ("smart_stop_loss_at_threshold", decide_exit(pnl_pct=-0.40, hold_sec=5, recovery_chance_low=True).reason == "smart-stop-loss"), # Priorities: hard stop > smart stop > scale out
+        # stop-loss-scale-out triggers at -5% (stop_loss_partial_pct=0.05), before hard-stop at -10%
+        ("stop_loss_scale_out", decide_exit(pnl_pct=-0.07, hold_sec=5).reason == "stop-loss-scale-out"),
+        # after scale-out loss, smart-stop fires at -8% (< -7% warn, > -10% hard-stop) when recovery_chance_low
+        ("smart_stop_loss_after_scale_out", decide_exit(pnl_pct=-0.08, hold_sec=5, recovery_chance_low=True, has_scaled_out_loss=True).reason == "smart-stop-loss"),
+        # at -8% with recovery_chance_low, smart-stop fires (checked before scale-out in priority order)
+        ("smart_stop_loss_at_threshold", decide_exit(pnl_pct=-0.08, hold_sec=5, recovery_chance_low=True).reason == "smart-stop-loss"),
+        # hard-stop fires at -10% (stop_loss_pct=0.10)
         ("hard_stop_loss", decide_exit(pnl_pct=-0.55, hold_sec=5).reason == "hard-stop-loss"),
-        ("max_hold_extended", decide_exit(pnl_pct=-0.01, hold_sec=125).reason == "max-hold-loss-extended"),
-        ("max_hold_loss_low_recovery", decide_exit(pnl_pct=-0.01, hold_sec=65, recovery_chance_low=True).reason == "max-hold-loss"),
+        # max-hold-extended fires at 2x max_hold_seconds (90*2=180) when smart_stop is enabled
+        ("max_hold_extended", decide_exit(pnl_pct=-0.01, hold_sec=190).reason == "max-hold-loss-extended"),
+        # max-hold-loss fires at 1x max_hold_seconds when recovery_chance_low=True
+        ("max_hold_loss_low_recovery", decide_exit(pnl_pct=-0.01, hold_sec=95, recovery_chance_low=True).reason == "max-hold-loss"),
         (
             "loss_reversal_only_down",
             maybe_reverse_entry(signal_side="DOWN", live_consec_losses=2, last_loss_side="DOWN").side == "UP"

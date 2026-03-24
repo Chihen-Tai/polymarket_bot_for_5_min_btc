@@ -89,7 +89,7 @@ class Settings:
     momentum_ticks: int = _i("MOMENTUM_TICKS", 3)
     momentum_min_move: float = _f("MOMENTUM_MIN_MOVE", 0.005)
     exit_deadline_sec: int = _i("EXIT_DEADLINE_SEC", 20)
-    stop_loss_warn_pct: float = _f("STOP_LOSS_WARN_PCT", 0.12)
+    stop_loss_warn_pct: float = _f("STOP_LOSS_WARN_PCT", 0.07)
 
     # Strategy 1: Binance Oracle Front-running
     use_cex_oracle: bool = _b("USE_CEX_ORACLE", True)
@@ -119,6 +119,14 @@ class Settings:
     taker_snipe_velocity: float = _f("TAKER_SNIPE_VELOCITY", 0.0008)
     panic_dump_velocity: float = _f("PANIC_DUMP_VELOCITY", 0.0010)
     tp_hold_velocity: float = _f("TP_HOLD_VELOCITY", 0.0004)
+
+    # Phase 3: Entry & Exit Quality Guards
+    # hard_stop_shield_velocity: if Binance velocity is same-direction as position,
+    # skip hard stop for this cycle. Set 0.0 to disable.
+    hard_stop_shield_velocity: float = _f("HARD_STOP_SHIELD_VELOCITY", 0.0004)
+    # entry_velocity_min: block entry if Binance velocity is strongly opposing signal.
+    # Only blocks adverse moves; flat/zero velocity still allows entry. Set 0.0 to disable.
+    entry_velocity_min: float = _f("ENTRY_VELOCITY_MIN", 0.0002)
 
 
 SETTINGS = Settings()

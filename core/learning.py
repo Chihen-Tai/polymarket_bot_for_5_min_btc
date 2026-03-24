@@ -72,15 +72,17 @@ class StrategyScoreboard:
         
         wins = PRIOR_WINS
         losses = PRIOR_LOSSES
-        
-        # Weight recent trades slightly higher? For now, standard count.
+
+        # Weight by PnL magnitude: a +50% win counts more than a +1% win.
+        # Scale factor 5.0 keeps the prior (1 win + 1 loss) meaningful.
+        _SCALE = 5.0
         for t in trades:
-            # Consider slightly negative still a loss to encourage edge
+            weight = 1.0 + abs(t.pnl_pct) * _SCALE
             if t.pnl_pct > 0.0:
-                wins += 1
+                wins += weight
             else:
-                losses += 1
-                
+                losses += weight
+
         total = wins + losses
         win_rate = wins / total
         return win_rate

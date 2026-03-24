@@ -778,6 +778,27 @@ def main():
                         if signal_side:
                             signal_origin = f"model-{model_decision.get('reason')}"
 
+                        # --- Entry Quality Gate ---
+                        # Block entry when Binance velocity is strongly opposing the signal direction.
+                        # Flat / low-velocity environments still pass (only adverse moves are blocked).
+                        if signal_side is not None:
+                            _entry_vel_min = getattr(SETTINGS, "entry_velocity_min", 0.0)
+                            if _entry_vel_min > 0.0:
+                                _entry_ws_vel = 0.0
+                                try:
+                                    _entry_ws_vel = BINANCE_WS.get_price_velocity(3.0)
+                                except Exception:
+                                    pass
+                                _wrong_dir = (
+                                    (signal_side == "UP" and _entry_ws_vel < -_entry_vel_min) or
+                                    (signal_side == "DOWN" and _entry_ws_vel > _entry_vel_min)
+                                )
+                                if _wrong_dir:
+                                    log(f"ENTRY GATE BLOCKED: signal={signal_side} Binance vel={_entry_ws_vel:.4%} (min={_entry_vel_min:.4%})")
+                                    no_entry_reason = f"entry_gate_velocity_mismatch_{_entry_ws_vel:.4f}"
+                                    signal_side = None
+                        # --------------------------
+
                         if signal_side is None and secs_left is not None and 90 <= secs_left <= 240:
                             dumped_side = should_trigger_dump(prev_up, prev_down, up, down, SETTINGS.dump_move_threshold)
                             if dumped_side:
@@ -852,6 +873,32 @@ def main():
                                     exit_decision.should_close = False
                         except Exception:
                             pass
+                        # --- Hard Stop Velocity Shield ---
+                        # If Binance price is still moving with the position, delay hard-stop for one cycle.
+                        # Panic-dump override (above) fires first and is unaffected.
+                        if (
+                            exit_decision.should_close
+                            and exit_decision.reason == "hard-stop-loss"
+                        ):
+                            _shield_vel = getattr(SETTINGS, "hard_stop_shield_velocity", 0.0)
+                            if _shield_vel > 0.0:
+                                _hs_ws_vel = 0.0
+                                try:
+                                    _hs_ws_vel = BINANCE_WS.get_price_velocity(3.0)
+                                except Exception:
+                                    pass
+                                _same_dir = (
+                                    (p.side == "UP" and _hs_ws_vel > _shield_vel) or
+                                    (p.side == "DOWN" and _hs_ws_vel < -_shield_vel)
+                                )
+                                if _same_dir:
+                                    log(
+                                        f"HARD STOP SHIELDED: {p.side} {p.token_id[-6:]} "
+                                        f"Binance vel={_hs_ws_vel:.4%} — skipping this cycle"
+                                    )
+                                    exit_decision.should_close = False
+                                    exit_decision.reason = ""
+                        # ---------------------------------
                         # ----------------------------------------------
                         stop_warn = hard_stop_pnl_pct <= -SETTINGS.stop_loss_warn_pct
                         urgent_exit = hard_stop_pnl_pct <= -SETTINGS.stop_loss_pct
@@ -1259,8 +1306,10 @@ def main():
 
                     has_current_market_pos = any(p.slug == market["slug"] for p in open_positions)
                     if can_reenter_same_market(has_current_market_pos=has_current_market_pos, closed_any=closed_any, secs_left=secs_left):
-                        risk.orders_this_window = 0
-                        log(f"re-entry unlocked in same market | secs_left={secs_left:.0f}")
+                        # Grant one extra order slot for re-entry rather than zeroing the whole window
+                        # so the per-5min rate limiter remains effective across multiple re-entries.
+                        risk.orders_this_window = max(0, risk.orders_this_window - 1)
+                        log(f"re-entry unlocked in same market | secs_left={secs_left:.0f} orders_this_window={risk.orders_this_window}")
 
                     idle_min = (time.time() - last_trade_ts) / 60.0
                     # Cadence fallback disabled per Openclaw report (prevents forced trades without edge)
@@ -1366,8 +1415,13 @@ def main():
                     if q_kelly > 0:
                         bankroll = acct.equity
                         kelly_bet = bankroll * q_kelly
-                        order_usd = max(SETTINGS.max_order_usd, min(kelly_bet, getattr(SETTINGS, "max_bet_cap_usd", 50.0)))
+                        # Kelly can shrink OR grow the bet — respect min $1 floor and hard cap.
+                        min_bet = SETTINGS.max_order_usd  # never bet less than baseline
+                        order_usd = max(min_bet, min(kelly_bet, getattr(SETTINGS, "max_bet_cap_usd", 50.0)))
                         log(f"Kelly Sizing | Strategy={signal_origin} WR={win_rate:.1%} qK={q_kelly:.2%} Bankroll=${bankroll:.2f} -> Bet=${order_usd:.2f}")
+                    else:
+                        # win_rate <= 50%: Kelly says don't bet; use baseline only
+                        log(f"Kelly Sizing | Strategy={signal_origin} WR={win_rate:.1%} -> no edge, baseline bet=${order_usd:.2f}")
                 except Exception as e:
                     log(f"Kelly calc error: {e}")
 
@@ -1405,7 +1459,6 @@ def main():
             # 計算當前 OFI 供風控判斷（與 decision_engine 共用 ws_trades 資料）
             current_ofi = 0.0
             if ws_trades:
-                from core.indicators import compute_buy_sell_pressure
                 _bv, _sv = compute_buy_sell_pressure(ws_trades)
                 _total = _bv + _sv
                 if _total > 0:
