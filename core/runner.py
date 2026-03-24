@@ -776,7 +776,10 @@ def main():
                         signal_side = model_decision.get("side") if model_decision.get("ok") else None
                         no_entry_reason = model_decision.get("reason")
                         if signal_side:
-                            signal_origin = f"model-{model_decision.get('reason')}"
+                            _raw_reason = model_decision.get('reason', '')
+                            # Strip existing 'model-' prefix to avoid double-prefix (model-model-...)
+                            _clean_reason = _raw_reason.removeprefix('model-')
+                            signal_origin = f"model-{_clean_reason}"
 
                         # --- Entry Quality Gate ---
                         # Block entry when Binance velocity is strongly opposing the signal direction.
