@@ -735,21 +735,6 @@ def main():
                     if down is not None:
                         down_price_window.append(float(down))
 
-                    # Local dry-run PnL tracker update (Simulate API return)
-                    if getattr(SETTINGS, "dry_run", False):
-                        for p in open_positions:
-                            bid = 0.0
-                            if p.side == "UP" and poly_ob_up:
-                                bid = poly_ob_up.get("best_bid", 0.0)
-                            elif p.side == "DOWN" and poly_ob_down:
-                                bid = poly_ob_down.get("best_bid", 0.0)
-                                
-                            if bid > 0.0:
-                                p.current_value = p.size * bid
-                                if p.initial_value > 0:
-                                    p.cash_pnl = p.current_value - p.initial_value
-                                    p.percent_pnl = p.cash_pnl / p.initial_value
-
                     binance_1m = ex.get_binance_1m_candle() if SETTINGS.use_cex_oracle else None
                     binance_5m = ex.get_binance_5m_klines(100)
 
