@@ -50,6 +50,7 @@ class PolymarketExchange:
         
         self._open_exposure = 0.0
         self._last_price = 73933.39
+        self._position_cost: dict[str, float] = {}  # token_id -> cost_usd (for exposure accounting)
 
         self.client = None
         self._funder = SETTINGS.funder_address
@@ -67,6 +68,7 @@ class PolymarketExchange:
                     data = json.load(f)
                     self._cash = data.get("cash", 100.0)
                     self._equity = self._cash
+                    self._position_cost = data.get("position_cost", {})
             except Exception:
                 pass
 
@@ -76,7 +78,7 @@ class PolymarketExchange:
         try:
             os.makedirs(os.path.dirname(self.paper_balance_file), exist_ok=True)
             with open(self.paper_balance_file, "w") as f:
-                json.dump({"cash": self._cash}, f)
+                json.dump({"cash": self._cash, "position_cost": self._position_cost}, f)
         except Exception:
             pass
 
@@ -204,8 +206,10 @@ class PolymarketExchange:
     def get_account(self) -> Account:
         if self.dry_run:
             self._load_paper_balance()
+            # Include mark-to-market value of open positions so equity reflects unrealized P&L
+            positions_value = sum(self._position_cost.values())  # conservative: use cost basis (no live price here)
             return Account(
-                equity=self._cash,
+                equity=self._cash + positions_value,
                 cash=self._cash,
                 open_exposure=self._open_exposure,
             )
@@ -344,6 +348,7 @@ class PolymarketExchange:
             
             self._cash -= amount_usd
             self._open_exposure += amount_usd
+            self._position_cost[token_id] = self._position_cost.get(token_id, 0.0) + amount_usd
             self._save_paper_balance()
             
             mock_resp = {
@@ -502,9 +507,11 @@ class PolymarketExchange:
                 best_bid = book.get("best_bid", 0.5)
 
             value_received = shares * best_bid
-            
+
             self._cash += value_received
-            self._open_exposure = max(0.0, self._open_exposure - value_received)
+            # Subtract original cost from exposure (not value_received which varies with price)
+            original_cost = self._position_cost.pop(token_id, value_received)
+            self._open_exposure = max(0.0, self._open_exposure - original_cost)
             self._save_paper_balance()
 
             return {

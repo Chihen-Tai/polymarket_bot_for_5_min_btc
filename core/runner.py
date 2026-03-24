@@ -1324,9 +1324,20 @@ def main():
                             last_loss_side=flags.last_loss_side,
                         )
                         if entry_decision.reason:
-                            signal_side = entry_decision.side
-                            signal_origin = f"{signal_origin}+{entry_decision.reason}" if signal_origin else entry_decision.reason
-                            log(f"{entry_decision.reason} applied (DOWN losing streak) | consec_losses={flags.live_consec_losses} -> side={signal_side}")
+                            # Guard: only reverse if the target side has a proven scoreboard edge (WR > 55%)
+                            try:
+                                from core.learning import SCOREBOARD
+                                reversed_strat = signal_origin.replace("model-", "").split("+")[0]
+                                _rev_wr = SCOREBOARD.get_strategy_score(reversed_strat)
+                            except Exception:
+                                _rev_wr = 0.5  # fallback: neutral
+                            if _rev_wr > 0.55:
+                                signal_side = entry_decision.side
+                                signal_origin = f"{signal_origin}+{entry_decision.reason}" if signal_origin else entry_decision.reason
+                                log(f"{entry_decision.reason} applied (DOWN losing streak) | consec_losses={flags.live_consec_losses} -> side={signal_side} (WR={_rev_wr:.1%})")
+                            else:
+                                log(f"loss-reversal SKIPPED: reversed side WR={_rev_wr:.1%} <= 55% threshold, keeping original signal={signal_side}")
+
 
                         token_override = market["token_up"] if signal_side == "UP" else market["token_down"]
                         entry_price = up if signal_side == "UP" else down
