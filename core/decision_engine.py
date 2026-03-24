@@ -154,18 +154,17 @@ def explain_choose_side(
 
     candidates = {}
 
-    # Strategy 1: Binance Oracle Front-running
-    if SETTINGS.use_cex_oracle and binance_1m:
-        change = binance_1m.get("change", 0.0)
-        if change >= SETTINGS.cex_frontrun_threshold and valid_up:
-            r = base_result.copy()
-            r.update({"ok": True, "side": "UP", "reason": "model-cex_oracle_pump", "entry_price": up})
-            candidates["cex_oracle_pump"] = r
-        elif change <= -SETTINGS.cex_frontrun_threshold and valid_down:
-            r = base_result.copy()
-            r.update({"ok": True, "side": "DOWN", "reason": "model-cex_oracle_dump", "entry_price": down})
-            candidates["cex_oracle_dump"] = r
-
+    # Strategy 1: Binance Oracle Front-running (Disabled: 1-minute candle causes 60-second continuous false re-entries. Using Strategy 7 WS 3s pulse instead.)
+    # if SETTINGS.use_cex_oracle and binance_1m:
+    #     change = binance_1m.get("change", 0.0)
+    #     if change >= SETTINGS.cex_frontrun_threshold and valid_up:
+    #         r = base_result.copy()
+    #         r.update({"ok": True, "side": "UP", "reason": "model-cex_oracle_pump", "entry_price": up})
+    #         candidates["cex_oracle_pump"] = r
+    #     elif change <= -SETTINGS.cex_frontrun_threshold and valid_down:
+    #         r = base_result.copy()
+    #         r.update({"ok": True, "side": "DOWN", "reason": "model-cex_oracle_dump", "entry_price": down})
+    #         candidates["cex_oracle_dump"] = r
 
     # Strategy 5: Zhihu ZLSMA + ATR Scalper (disabled: continuous state trigger causes naive entries)
     # if binance_5m and len(binance_5m) >= 99:
