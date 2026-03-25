@@ -132,6 +132,11 @@ class Settings:
     failed_follow_through_loss_pct: float = _f("FAILED_FOLLOW_THROUGH_LOSS_PCT", 0.03)
     failed_follow_through_max_mfe_pct: float = _f("FAILED_FOLLOW_THROUGH_MAX_MFE_PCT", 0.02)
     failed_follow_through_min_secs_left: int = _i("FAILED_FOLLOW_THROUGH_MIN_SECS_LEFT", 90)
+    ws_stale_max_age_sec: float = _f("WS_STALE_MAX_AGE_SEC", 5.0)
+    ws_stale_fail_safe_streak: int = _i("WS_STALE_FAIL_SAFE_STREAK", 2)
+    api_slow_threshold_ms: float = _f("API_SLOW_THRESHOLD_MS", 1500.0)
+    api_fail_safe_streak: int = _i("API_FAIL_SAFE_STREAK", 3)
+    network_recovery_streak: int = _i("NETWORK_RECOVERY_STREAK", 2)
     # entry_velocity_min: block entry if Binance velocity is strongly opposing signal.
     # Only blocks adverse moves; flat/zero velocity still allows entry. Set 0.0 to disable.
     entry_velocity_min: float = _f("ENTRY_VELOCITY_MIN", 0.0002)

@@ -111,6 +111,12 @@ class RuntimeFlags:
     last_loss_side: str
     close_fail_streak: int
     panic_exit_mode: bool
+    network_fail_safe_mode: bool = False
+    api_fail_streak: int = 0
+    slow_api_streak: int = 0
+    ws_stale_streak: int = 0
+    network_recovery_streak: int = 0
+    last_api_latency_ms: float = 0.0
 
 
 def realistic_exit_value(pos: OpenPos, up: float | None, down: float | None, ob_up: dict | None, ob_down: dict | None) -> float | None:
@@ -151,6 +157,90 @@ def strategy_name_for_side(strategy_name: str, side: str | None) -> str:
     if lower.endswith("_down"):
         return f"{base[:-5]}_{target.lower()}"
     return base
+
+
+def timed_call(fn, *args, **kwargs):
+    start = time.perf_counter()
+    result = fn(*args, **kwargs)
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    return result, elapsed_ms
+
+
+def current_ws_age() -> float:
+    try:
+        return float(BINANCE_WS.get_last_update_age())
+    except Exception:
+        return float("inf")
+
+
+def observe_api_latency(flags: RuntimeFlags, label: str, elapsed_ms: float) -> bool:
+    flags.last_api_latency_ms = max(float(getattr(flags, "last_api_latency_ms", 0.0) or 0.0), float(elapsed_ms))
+    threshold_ms = float(getattr(SETTINGS, "api_slow_threshold_ms", 1500.0))
+    if elapsed_ms >= threshold_ms:
+        log(f"slow api | call={label} latency_ms={elapsed_ms:.0f} threshold_ms={threshold_ms:.0f}")
+        return True
+    return False
+
+
+def update_network_guard(
+    flags: RuntimeFlags,
+    *,
+    ws_age: float,
+    cycle_had_slow_api: bool = False,
+    cycle_api_error: bool = False,
+) -> list[str]:
+    notes: list[str] = []
+    prev_mode = bool(getattr(flags, "network_fail_safe_mode", False))
+    stale_limit = float(getattr(SETTINGS, "ws_stale_max_age_sec", 5.0))
+
+    if ws_age > stale_limit:
+        flags.ws_stale_streak += 1
+        notes.append(
+            f"ws stale detected | age={ws_age:.1f}s threshold={stale_limit:.1f}s streak={flags.ws_stale_streak}"
+        )
+    else:
+        flags.ws_stale_streak = 0
+
+    if cycle_had_slow_api:
+        flags.slow_api_streak += 1
+        notes.append(
+            f"slow api streak | streak={flags.slow_api_streak} last_latency_ms={flags.last_api_latency_ms:.0f}"
+        )
+    else:
+        flags.slow_api_streak = 0
+
+    if cycle_api_error:
+        flags.api_fail_streak += 1
+        notes.append(f"api failure streak | streak={flags.api_fail_streak}")
+    else:
+        flags.api_fail_streak = 0
+
+    fail_safe_threshold = int(getattr(SETTINGS, "api_fail_safe_streak", 3))
+    ws_fail_safe_threshold = int(getattr(SETTINGS, "ws_stale_fail_safe_streak", 2))
+    should_activate = (
+        flags.api_fail_streak >= fail_safe_threshold
+        or flags.slow_api_streak >= fail_safe_threshold
+        or flags.ws_stale_streak >= ws_fail_safe_threshold
+    )
+
+    if should_activate:
+        flags.network_fail_safe_mode = True
+        flags.network_recovery_streak = 0
+        if not prev_mode:
+            notes.append(
+                "network fail-safe mode ACTIVATED | new entries disabled until connectivity and latency recover"
+            )
+    elif flags.network_fail_safe_mode:
+        flags.network_recovery_streak += 1
+        recovery_target = int(getattr(SETTINGS, "network_recovery_streak", 2))
+        if flags.network_recovery_streak >= recovery_target:
+            flags.network_fail_safe_mode = False
+            flags.network_recovery_streak = 0
+            notes.append("network fail-safe mode CLEARED | ws/api health back to normal")
+    else:
+        flags.network_recovery_streak = 0
+
+    return notes
 
 
 def required_trade_edge(entry_price: float, secs_left: float | None, history_count: int = 0) -> float:
@@ -438,6 +528,12 @@ def load_runtime_flags(state: dict, open_positions: list[OpenPos]) -> RuntimeFla
     last_loss_side = state.get("last_loss_side", "")
     close_fail_streak = int(state.get("close_fail_streak", 0))
     panic_exit_mode = bool(state.get("panic_exit_mode", False))
+    network_fail_safe_mode = bool(state.get("network_fail_safe_mode", False))
+    api_fail_streak = int(state.get("api_fail_streak", 0))
+    slow_api_streak = int(state.get("slow_api_streak", 0))
+    ws_stale_streak = int(state.get("ws_stale_streak", 0))
+    network_recovery_streak = int(state.get("network_recovery_streak", 0))
+    last_api_latency_ms = float(state.get("last_api_latency_ms", 0.0))
 
     if not open_positions:
         close_fail_streak = 0
@@ -454,6 +550,12 @@ def load_runtime_flags(state: dict, open_positions: list[OpenPos]) -> RuntimeFla
         last_loss_side=last_loss_side,
         close_fail_streak=close_fail_streak,
         panic_exit_mode=panic_exit_mode,
+        network_fail_safe_mode=network_fail_safe_mode,
+        api_fail_streak=api_fail_streak,
+        slow_api_streak=slow_api_streak,
+        ws_stale_streak=ws_stale_streak,
+        network_recovery_streak=network_recovery_streak,
+        last_api_latency_ms=last_api_latency_ms,
     )
 
 
@@ -493,6 +595,12 @@ def save_runtime_state(
         "last_loss_side": flags.last_loss_side,
         "close_fail_streak": flags.close_fail_streak,
         "panic_exit_mode": flags.panic_exit_mode,
+        "network_fail_safe_mode": flags.network_fail_safe_mode,
+        "api_fail_streak": flags.api_fail_streak,
+        "slow_api_streak": flags.slow_api_streak,
+        "ws_stale_streak": flags.ws_stale_streak,
+        "network_recovery_streak": flags.network_recovery_streak,
+        "last_api_latency_ms": flags.last_api_latency_ms,
         "panic_market_slug": panic_market_slug,
         "last_cycle_label": last_cycle_label,
         "last_cycle_payload": {},
@@ -651,18 +759,47 @@ def main():
             if time_since_last_query < 3.0:
                 time.sleep(3.0 - time_since_last_query)
             last_rest_query_ts = time.time()
+            flags.last_api_latency_ms = 0.0
+            cycle_had_slow_api = False
+            cycle_ws_age = current_ws_age()
 
             now = datetime.now()
             key = current_5min_key(now)
             update_window(risk, key)
 
             try:
-                acct = ex.get_account()
-                open_positions, sync_notes = sync_open_positions(ex, open_positions)
+                acct, acct_ms = timed_call(ex.get_account)
+                cycle_had_slow_api = observe_api_latency(flags, "get_account", acct_ms) or cycle_had_slow_api
+                synced_result, sync_ms = timed_call(sync_open_positions, ex, open_positions)
+                cycle_had_slow_api = observe_api_latency(flags, "sync_open_positions", sync_ms) or cycle_had_slow_api
+                open_positions, sync_notes = synced_result
                 for note in sync_notes:
                     log(note)
             except Exception as sync_err:
+                network_notes = update_network_guard(
+                    flags,
+                    ws_age=current_ws_age(),
+                    cycle_had_slow_api=cycle_had_slow_api,
+                    cycle_api_error=True,
+                )
+                for note in network_notes:
+                    log(note)
                 log(f"API sync error (account/positions): {sync_err}")
+                save_runtime_state(
+                    risk,
+                    last_market_slug=last_market_slug,
+                    yes_price_window=yes_price_window,
+                    up_price_window=up_price_window,
+                    down_price_window=down_price_window,
+                    last_trade_ts=last_trade_ts,
+                    prev_up=prev_up,
+                    prev_down=prev_down,
+                    error_cooldown_until=error_cooldown_until,
+                    open_positions=open_positions,
+                    flags=flags,
+                    last_cycle_label=state.get("last_cycle_label", ""),
+                    panic_market_slug=panic_market_slug,
+                )
                 smart_sleep(SETTINGS.poll_seconds)
                 continue
             flags = load_runtime_flags({
@@ -739,7 +876,8 @@ def main():
                     previous_market_slug = last_market_slug
                     previous_up = prev_up
                     previous_down = prev_down
-                    market = resolve_latest_btc_5m_token_ids()
+                    market, resolve_ms = timed_call(resolve_latest_btc_5m_token_ids)
+                    cycle_had_slow_api = observe_api_latency(flags, "resolve_latest_btc_5m_token_ids", resolve_ms) or cycle_had_slow_api
                     if market["slug"] != last_market_slug:
                         # Clear price history to prevent artificial momentum / mean-reversion signals
                         if last_market_slug != "None":
@@ -783,10 +921,13 @@ def main():
                             
                     token_up = market.get("token_up", "")
                     token_down = market.get("token_down", "")
-                    poly_ob_up = ex.get_full_orderbook(token_up)
-                    poly_ob_down = ex.get_full_orderbook(token_down)
+                    poly_ob_up, ob_up_ms = timed_call(ex.get_full_orderbook, token_up)
+                    cycle_had_slow_api = observe_api_latency(flags, "get_full_orderbook_up", ob_up_ms) or cycle_had_slow_api
+                    poly_ob_down, ob_down_ms = timed_call(ex.get_full_orderbook, token_down)
+                    cycle_had_slow_api = observe_api_latency(flags, "get_full_orderbook_down", ob_down_ms) or cycle_had_slow_api
 
                     secs_left = seconds_to_market_end(market)
+                    cycle_ws_age = current_ws_age()
 
                     # Use LIVE CLOB mid-prices instead of stale Gamma API outcomePrices
                     up = None
@@ -1462,13 +1603,49 @@ def main():
                         smart_sleep(SETTINGS.poll_seconds)
                         continue
                 except Exception as e:
+                    network_notes = update_network_guard(
+                        flags,
+                        ws_age=current_ws_age(),
+                        cycle_had_slow_api=cycle_had_slow_api,
+                        cycle_api_error=True,
+                    )
+                    for note in network_notes:
+                        log(note)
                     log(f"unexpected network or API error in main loop: {e}. Retrying in 5s...")
+                    save_runtime_state(
+                        risk,
+                        last_market_slug=last_market_slug,
+                        yes_price_window=yes_price_window,
+                        up_price_window=up_price_window,
+                        down_price_window=down_price_window,
+                        last_trade_ts=last_trade_ts,
+                        prev_up=prev_up,
+                        prev_down=prev_down,
+                        error_cooldown_until=error_cooldown_until,
+                        open_positions=open_positions,
+                        flags=flags,
+                        last_cycle_label=state.get("last_cycle_label", ""),
+                        panic_market_slug=panic_market_slug,
+                    )
                     smart_sleep(5.0)
                     continue
             else:
                 price_now = ex.get_btc_price()
                 signal_side = "UP" if int(price_now) % 2 == 0 else "DOWN"
                 signal_origin = "dry-run-fallback"
+
+            network_notes = update_network_guard(
+                flags,
+                ws_age=cycle_ws_age,
+                cycle_had_slow_api=cycle_had_slow_api,
+                cycle_api_error=False,
+            )
+            for note in network_notes:
+                log(note)
+                if "network fail-safe mode ACTIVATED" in note:
+                    notify_discord(SETTINGS.discord_webhook_url, "🛡️ Network fail-safe activated: new entries paused")
+                elif "network fail-safe mode CLEARED" in note:
+                    notify_discord(SETTINGS.discord_webhook_url, "✅ Network fail-safe cleared: entry engine resumed")
 
             save_runtime_state(
                 risk,
@@ -1498,6 +1675,33 @@ def main():
                             mock_value += p.shares * 0.5
                     acct.equity = acct.cash + mock_value
                 log(f"no signal | equity={acct.equity:.2f} cash={acct.cash:.2f}")
+                smart_sleep(SETTINGS.poll_seconds)
+                continue
+
+            if cycle_ws_age > float(getattr(SETTINGS, "ws_stale_max_age_sec", 5.0)):
+                maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="ws-stale")
+                log(
+                    f"skip entry: Binance WS stale | age={cycle_ws_age:.1f}s "
+                    f"threshold={float(getattr(SETTINGS, 'ws_stale_max_age_sec', 5.0)):.1f}s"
+                )
+                smart_sleep(SETTINGS.poll_seconds)
+                continue
+
+            if cycle_had_slow_api:
+                maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="slow-api-latency")
+                log(
+                    f"skip entry: slow API latency this cycle | last_latency_ms={flags.last_api_latency_ms:.0f} "
+                    f"threshold_ms={float(getattr(SETTINGS, 'api_slow_threshold_ms', 1500.0)):.0f}"
+                )
+                smart_sleep(SETTINGS.poll_seconds)
+                continue
+
+            if flags.network_fail_safe_mode:
+                maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="network-fail-safe")
+                log(
+                    f"network_fail_safe_mode active: block new entries | api_fail_streak={flags.api_fail_streak} "
+                    f"slow_api_streak={flags.slow_api_streak} ws_stale_streak={flags.ws_stale_streak}"
+                )
                 smart_sleep(SETTINGS.poll_seconds)
                 continue
 
@@ -1640,7 +1844,15 @@ def main():
                 except Exception:
                     pass
 
-                resp = ex.place_order(signal_side, order_usd, token_override, simulated_price=sim_price, force_taker=force_taker_snipe)
+                resp, order_ms = timed_call(
+                    ex.place_order,
+                    signal_side,
+                    order_usd,
+                    token_override,
+                    simulated_price=sim_price,
+                    force_taker=force_taker_snipe,
+                )
+                observe_api_latency(flags, "place_order", order_ms)
                 risk.orders_this_window += 1
                 last_trade_ts = time.time()
                 risk.consec_losses = flags.live_consec_losses
@@ -1654,7 +1866,14 @@ def main():
                     if hedge_token_id and hedge_usd >= 0.5:
                         log(f"executing structured hedge | side={hedge_side} cost=${hedge_usd:.4f}")
                         h_sim_price = (float(down) if down is not None else None) if signal_side == "UP" else (float(up) if up is not None else None)
-                        h_res = ex.place_order(hedge_side, hedge_usd, token_id_override=hedge_token_id, simulated_price=h_sim_price)
+                        h_res, hedge_ms = timed_call(
+                            ex.place_order,
+                            hedge_side,
+                            hedge_usd,
+                            token_id_override=hedge_token_id,
+                            simulated_price=h_sim_price,
+                        )
+                        observe_api_latency(flags, "place_order_hedge", hedge_ms)
                         try:
                             hr = h_res.get("response", {}) if isinstance(h_res, dict) else {}
                             h_shares = float(hr.get("takingAmount", 0) or 0)
@@ -1756,6 +1975,14 @@ def main():
                 log(f"order placed: {resp}")
                 notify_discord(SETTINGS.discord_webhook_url, f"✅ Order {signal_side} ${order_usd:.2f} ({resp.get('mode')})")
             except Exception as e:
+                network_notes = update_network_guard(
+                    flags,
+                    ws_age=current_ws_age(),
+                    cycle_had_slow_api=cycle_had_slow_api,
+                    cycle_api_error=True,
+                )
+                for note in network_notes:
+                    log(note)
                 log(f"order skipped: {e}")
                 maybe_record_cycle_label(state, "signal-but-no-fill", slug=last_market_slug, side=signal_side, reason=str(e))
                 append_event({
