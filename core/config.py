@@ -84,8 +84,8 @@ class Settings:
     stop_loss_partial_fraction: float = _f("STOP_LOSS_PARTIAL_FRACTION", 0.50)
     max_hold_seconds: int = _i("MAX_HOLD_SECONDS", 180)
     take_profit_scaleout_pct: float = _f("TAKE_PROFIT_SCALEOUT_PCT", 0.03)
-    take_profit_soft_pct: float = _f("TAKE_PROFIT_SOFT_PCT", 0.05)
-    take_profit_hard_pct: float = _f("TAKE_PROFIT_HARD_PCT", 0.08)
+    take_profit_soft_pct: float = _f("TAKE_PROFIT_SOFT_PCT", 0.30)   # Stage 1: sell partial at +30%
+    take_profit_hard_pct: float = _f("TAKE_PROFIT_HARD_PCT", 0.50)   # Stage 2: extract principal at +50%
     momentum_ticks: int = _i("MOMENTUM_TICKS", 3)
     momentum_min_move: float = _f("MOMENTUM_MIN_MOVE", 0.005)
     exit_deadline_sec: int = _i("EXIT_DEADLINE_SEC", 20)
