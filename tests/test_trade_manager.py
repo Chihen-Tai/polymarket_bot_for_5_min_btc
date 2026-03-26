@@ -39,6 +39,7 @@ def main():
     SETTINGS.edge_threshold = 0.02
     SETTINGS.late_entry_edge_penalty = 0.015
     SETTINGS.rich_price_edge_penalty = 0.015
+    SETTINGS.scoreboard_aux_weight = 0.10
     SETTINGS.binary_kelly_divisor = 4.0
     SETTINGS.force_full_exit_on_take_profit = False
     SETTINGS.force_full_exit_on_stop_loss_scaleout = False
