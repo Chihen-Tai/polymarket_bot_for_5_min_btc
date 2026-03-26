@@ -1,93 +1,165 @@
 # polymarket-bot-by_openclaw
-[English Version Below / 英文版附於文末↓](#english-version)
 
-Polymarket 自動量化交易機器人 (專攻 5 分鐘比特幣市場)
+Polymarket 5-minute BTC market trading bot.
 
-## 🎯 核心特色機制
-- **高頻事件驅動架構 (Event-Driven Sniper)**：透過專屬 WebSocket 背景長連線 (Daemon) 實時訂閱幣安 `@aggTrade` 與 `@bookTicker`。
-- **訂單流失衡與微秒級中斷 (OFI & CVD)**：毫秒級解析全網買賣動能，一旦失衡立刻「打斷睡眠週期」光速交易，徹底消除傳統 REST API 固定輪詢產生的「逆向選擇 (Adverse Selection)」風險。
-- **ZLSMA + 枝形吊燈停損 (Chandelier Exit)**：內建高效能趨勢捕捉指標，過濾盤整雜訊。
-- **凱利公式注碼控制 (Quarter Kelly Sizing)**：根據策略歷史勝率動態決定下注金額。
-- **每日熔斷系統 (Daily Circuit Breaker)**：當日虧損達標自動關機，拒絕攤平。
-- **階梯停利 (Principal Extraction)**：暴漲時自動抽離本金，留下無風險彩票 (Risk-Free Moonbag) 繼續奔跑。
+這個 repo 目前以「dry-run 優化」為主，不是包裝過的量產版產品。現在的重點是把進場、風控、分批出場、報表和 journaling 這條鏈路打磨穩定，再決定哪些參數要收斂回來。
 
-## 🚀 快速開始
+## 現在這版在做什麼
 
-### 1. 環境安裝
+- 自動切到最新的 Polymarket `btc-updown-5m-*` 市場
+- 用 Binance WebSocket 資料輔助做方向判斷
+- 只允許同一時間持有一個開倉部位
+- 進場前會檢查價格區間、進場時窗、模型 edge、流動性、網路狀態
+- 出場支援分批停損、抽本金、deadline flat/loss close、stop-loss
+- 結束執行時會自動生成 run report
+
+## 目前預設
+
+目前 repo 內建的預設值是偏「優化模式」：
+
+- `DRY_RUN=true`
+- `MAX_ORDER_USD=1.0`
+- `AUTO_MARKET_SELECTION=true`
+- `MAX_EXPOSURE_USD` / `MAX_CONSEC_LOSS` / `DAILY_MAX_LOSS` 已刻意設很高，避免優化階段太早被風控打斷
+
+也就是說，這份設定比較適合觀察策略行為，不是保守實盤設定。
+
+## 安裝
+
 ```bash
-git clone https://github.com/Chihen-Tai/polymarket-bot-by_openclaw.git
-cd polymarket-bot-by_openclaw
+git clone https://github.com/Chihen-Tai/polymarket_bot_for_5_min_btc.git
+cd polymarket_bot_for_5_min_btc
 conda env create -f environment.yml
 conda activate polymarket-bot
-cp .env.example .env
 ```
 
-### 2. 環境變數設定 (`.env`)
-實盤交易前必填：
-- `PRIVATE_KEY`：你的錢包私鑰
-- `FUNDER_ADDRESS`：你的錢包地址
-- `DRY_RUN=True`：強烈建議先開紙上模擬，True 為不動用真金白銀。
-- `AUTO_MARKET_SELECTION=True`：讓系統自動每 5 分鐘抓取最新的 BTC 市場。
+如果你本來就在舊 repo 路徑上工作，也可以直接沿用現有 clone。
 
-### 3. 啟動機器人
-所有的實盤與模擬交易整合至單一主程式：
+## 設定 `.env`
+
+這個 repo 現在是直接追蹤 `.env`，不是用 `.env.example` 複製出來。
+
+你要做的是直接修改 repo 根目錄的 `.env`。
+
+最常改的欄位：
+
+- `DRY_RUN`
+- `AUTO_MARKET_SELECTION`
+- `PRIVATE_KEY`
+- `FUNDER_ADDRESS`
+- `CLOB_API_KEY`
+- `CLOB_API_SECRET`
+- `CLOB_API_PASSPHRASE`
+- `MAX_ORDER_USD`
+- `ENTRY_WINDOW_MIN_SEC`
+- `ENTRY_WINDOW_MAX_SEC`
+- `MIN_ENTRY_PRICE`
+- `MAX_ENTRY_PRICE`
+- `STOP_LOSS_*`
+- `TAKE_PROFIT_*`
+
+重要提醒：
+
+- repo 內的 `.env` 預設會保留空白敏感欄位
+- 如果你本機填入真實私鑰或 API 憑證，不要把那些內容再 commit 上去
+- 要切實盤時，把 `DRY_RUN=false`，並先再次確認金鑰和地址
+
+## 執行
+
 ```bash
 python main.py
 ```
 
-### 4. 結算與對帳分析
-按下 `Ctrl+C` 終止主程式後，系統會自動印出當次成績單。若需手動匯出報表：
+程式啟動後會：
+
+- 把 console 輸出同步寫到 `data/log-<mode>-<timestamp>.txt`
+- 持續輪詢 / 監控最新市場
+- 在結束時自動產生報表
+
+## 執行後產物
+
+每次執行後，常用輸出會在 `data/`：
+
+- `log-dryrun-*.txt` 或 `log-live-*.txt`
+- `report-dryrun-*.txt` 或 `report-live-*.txt`
+- `latest_run_report.txt`
+
+`latest_run_report.txt` 是最快速查看最近一次結果的檔案。
+
+## 常用報表指令
+
+看最近交易配對與 summary：
+
 ```bash
-# 確保在 conda 環境內執行 (conda activate polymarket-bot)
-python scripts/verify_close_accounting.py --limit 50 --format json --output data/close_accounting.json
-python scripts/trade_pair_ledger.py --limit 50 --format csv --output data/trade_ledger.csv
+python scripts/trade_pair_ledger.py --limit 30 --summary
 ```
+
+驗證 actual / observed close accounting：
+
+```bash
+python scripts/verify_close_accounting.py --limit 30 --summary
+```
+
+匯出 CSV / JSON 也可以：
+
+```bash
+python scripts/trade_pair_ledger.py --limit 50 --format csv --output data/trade_ledger.csv
+python scripts/verify_close_accounting.py --limit 50 --format json --output data/close_accounting.json
+```
+
+## 測試
+
+目前 repo 內有兩組核心 smoke tests：
+
+```bash
+conda run -n polymarket-bot python -m pytest -q tests/test_trade_manager.py tests/test_exit_fix.py
+```
+
+## 專案結構
+
+- `main.py`: 啟動入口，負責建立 log tee
+- `core/runner.py`: 主迴圈、進出場協調、run report 生成
+- `core/decision_engine.py`: 訊號與方向判斷
+- `core/trade_manager.py`: 出場規則、分批處理、re-entry gate
+- `core/exchange.py`: dry-run / live exchange 介面與部位帳務
+- `core/config.py`: 所有 `.env` 設定載入
+- `scripts/trade_pair_ledger.py`: 交易配對報表
+- `scripts/verify_close_accounting.py`: 平倉對帳檢查
+- `config_presets/dryrun_aggressive.env`: 目前主要的 dry-run preset
+
+## 建議工作流程
+
+1. 先用 `DRY_RUN=true`
+2. 每次只改少數幾個參數
+3. 跑一輪後先看 `data/latest_run_report.txt`
+4. 再回頭看 `trade_pair_ledger` 和 log，確認是「真的改善」還是只是減少交易數
+5. 如果要切實盤，先把高到幾乎關閉的風控門檻收回來
+
+## 注意
+
+- 這是高風險交易工具，不是投資建議
+- Polymarket、Data API、CLOB、Binance WS 任一端延遲或異常都可能影響結果
+- repo 目前仍在快速調整，README 會跟著策略演進更新
 
 ---
 
-<br><br>
+## English Summary
 
-<a name="english-version"></a>
-# English Version
+This repository is an event-driven trading bot for Polymarket 5-minute BTC markets. The current branch is tuned for dry-run optimization, not conservative live deployment.
 
-Polymarket Automated Quantitative Trading Bot (Optimized for 5-Minute BTC Markets)
+Quick start:
 
-## 🎯 Core Features
-- **High-Frequency Event-Driven Architecture**: Employs a dedicated background WebSocket daemon to stream live Binance `@aggTrade` and `@bookTicker` data.
-- **OFI & CVD Interrupt Sniping**: Computes real-time Order Flow Imbalance. Instantly interrupts sleep cycles to snipe Polymarket contracts upon severe momentum shifts, eliminating Adverse Selection latency.
-- **ZLSMA + Chandelier Exit**: Built-in high-performance trend-following indicators to filter ranging market noise.
-- **Quarter Kelly Position Sizing**: Dynamically adjusts bet size based on the historical win rate of the strategy.
-- **Daily Circuit Breaker**: Automatically halts trading when the maximum daily drawdown limit is hit, preventing revenge trading.
-- **Tiered Take-Profit (Principal Extraction)**: Extracts initial capital upon sudden profit surges, leaving a "Risk-Free Moonbag" to capture exponential upside without baseline risk.
-
-## 🚀 Quick Start
-
-### 1. Installation
 ```bash
-git clone https://github.com/Chihen-Tai/polymarket-bot-by_openclaw.git
-cd polymarket-bot-by_openclaw
+git clone https://github.com/Chihen-Tai/polymarket_bot_for_5_min_btc.git
+cd polymarket_bot_for_5_min_btc
 conda env create -f environment.yml
 conda activate polymarket-bot
-cp .env.example .env
-```
-
-### 2. Environment Setup (`.env`)
-Required before live trading:
-- `PRIVATE_KEY`: Your wallet private key.
-- `FUNDER_ADDRESS`: Your wallet public address.
-- `DRY_RUN=True`: Highly recommended to start in paper-trading simulation mode.
-- `AUTO_MARKET_SELECTION=True`: Enables the bot to autonomously cycle through upcoming 5m BTC markets.
-
-### 3. Running the Bot
-Launch the unified core engine:
-```bash
 python main.py
 ```
 
-### 4. Accounting & Analysis
-Terminating `main.py` via `Ctrl+C` will automatically print the run report. For manual exports:
-```bash
-# Export JSON/CSV ledger and analysis to data/ directory
-python scripts/verify_close_accounting.py --limit 50 --format json --output data/close_accounting.json
-python scripts/trade_pair_ledger.py --limit 50 --format csv --output data/trade_ledger.csv
-```
+Important notes:
+
+- Edit the tracked `.env` directly
+- Default settings are currently optimization-oriented
+- Logs and reports are written under `data/`
+- The fastest post-run check is `data/latest_run_report.txt`
