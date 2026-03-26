@@ -34,10 +34,14 @@ def decide_exit(
 ) -> ExitDecision:
     # 1. Tiered Take Profit (Risk-Free Moonbag Strategy)
     if not has_extracted_principal and pnl_pct >= getattr(SETTINGS, "take_profit_hard_pct", 0.50):
+        if getattr(SETTINGS, "force_full_exit_on_take_profit", False):
+            return ExitDecision(True, "take-profit-full", pnl_pct, hold_sec)
         # Sell enough to recover principal -> guaranteed risk-free
         return ExitDecision(True, "take-profit-principal", pnl_pct, hold_sec)
         
     if not has_taken_partial and not has_extracted_principal and pnl_pct >= getattr(SETTINGS, "take_profit_soft_pct", 0.30):
+        if getattr(SETTINGS, "force_full_exit_on_take_profit", False):
+            return ExitDecision(True, "take-profit-full", pnl_pct, hold_sec)
         # Sell 30% to lock in early profit and reduce anxiety
         return ExitDecision(True, "take-profit-partial", pnl_pct, hold_sec)
 
@@ -57,11 +61,15 @@ def decide_exit(
         if pnl_pct <= -getattr(SETTINGS, "stop_loss_warn_pct", 0.08) and recovery_chance_low:
             return ExitDecision(True, "smart-stop-loss", pnl_pct, hold_sec)
         if not has_scaled_out_loss and pnl_pct <= -getattr(SETTINGS, "stop_loss_partial_pct", 0.05):
+            if getattr(SETTINGS, "force_full_exit_on_stop_loss_scaleout", False):
+                return ExitDecision(True, "stop-loss-full", pnl_pct, hold_sec)
             return ExitDecision(True, "stop-loss-scale-out", pnl_pct, hold_sec)
     else:
         if pnl_pct <= -SETTINGS.stop_loss_pct:
             return ExitDecision(True, "stop-loss", pnl_pct, hold_sec)
         if not has_scaled_out_loss and pnl_pct <= -getattr(SETTINGS, "stop_loss_partial_pct", 0.05):
+            if getattr(SETTINGS, "force_full_exit_on_stop_loss_scaleout", False):
+                return ExitDecision(True, "stop-loss-full", pnl_pct, hold_sec)
             return ExitDecision(True, "stop-loss-scale-out", pnl_pct, hold_sec)
 
     if secs_left is not None and secs_left <= getattr(SETTINGS, "exit_deadline_sec", 20) and pnl_pct < 0:

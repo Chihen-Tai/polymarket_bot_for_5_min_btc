@@ -10,6 +10,7 @@ from core.decision_engine import explain_choose_side
 from core.journal import replay_open_positions
 from core.runner import (
     RuntimeFlags,
+    refresh_runtime_flags,
     observe_api_latency,
     paper_settlement_from_last_mark,
     price_aware_kelly_fraction,
@@ -34,6 +35,8 @@ def main():
     SETTINGS.late_entry_edge_penalty = 0.015
     SETTINGS.rich_price_edge_penalty = 0.015
     SETTINGS.binary_kelly_divisor = 4.0
+    SETTINGS.force_full_exit_on_take_profit = False
+    SETTINGS.force_full_exit_on_stop_loss_scaleout = False
     SETTINGS.failed_follow_through_window_sec = 45
     SETTINGS.failed_follow_through_loss_pct = 0.03
     SETTINGS.failed_follow_through_max_mfe_pct = 0.02
@@ -148,14 +151,42 @@ def main():
     stale_flags = RuntimeFlags(0, "", 0, False)
     stale_notes_1 = update_network_guard(stale_flags, ws_age=7.0, cycle_had_slow_api=False, cycle_api_error=False)
     stale_notes_2 = update_network_guard(stale_flags, ws_age=7.0, cycle_had_slow_api=False, cycle_api_error=False)
+    reloaded_flags = refresh_runtime_flags(
+        RuntimeFlags(
+            live_consec_losses=1,
+            last_loss_side="UP",
+            close_fail_streak=2,
+            panic_exit_mode=True,
+            network_fail_safe_mode=True,
+            api_fail_streak=4,
+            slow_api_streak=3,
+            ws_stale_streak=2,
+            network_recovery_streak=1,
+            last_api_latency_ms=2222.0,
+        ),
+        [],
+        "",
+    )
 
     cases = [
         ("stop_loss_scale_out", decide_exit(pnl_pct=-0.07, hold_sec=5).reason == "stop-loss-scale-out"),
+        (
+            "force_full_exit_on_stop_scaleout",
+            (setattr(SETTINGS, "force_full_exit_on_stop_loss_scaleout", True) or True)
+            and decide_exit(pnl_pct=-0.07, hold_sec=5).reason == "stop-loss-full"
+            and (setattr(SETTINGS, "force_full_exit_on_stop_loss_scaleout", False) or True),
+        ),
         ("failed_follow_through", decide_exit(pnl_pct=-0.04, hold_sec=50, secs_left=200, mfe_pnl_pct=0.01).reason == "failed-follow-through"),
         ("failed_follow_through_skips_if_signal_showed_life", decide_exit(pnl_pct=-0.04, hold_sec=50, secs_left=200, mfe_pnl_pct=0.05).reason != "failed-follow-through"),
         ("smart_stop_loss_after_scale_out", decide_exit(pnl_pct=-0.08, hold_sec=5, recovery_chance_low=True, has_scaled_out_loss=True).reason == "smart-stop-loss"),
         ("smart_stop_loss_at_threshold", decide_exit(pnl_pct=-0.08, hold_sec=5, recovery_chance_low=True).reason == "smart-stop-loss"),
         ("hard_stop_loss", decide_exit(pnl_pct=-0.55, hold_sec=5).reason == "hard-stop-loss"),
+        (
+            "force_full_exit_on_take_profit",
+            (setattr(SETTINGS, "force_full_exit_on_take_profit", True) or True)
+            and decide_exit(pnl_pct=0.31, hold_sec=5).reason == "take-profit-full"
+            and (setattr(SETTINGS, "force_full_exit_on_take_profit", False) or True),
+        ),
         ("max_hold_extended", decide_exit(pnl_pct=-0.01, hold_sec=190).reason == "max-hold-loss-extended"),
         ("max_hold_loss_low_recovery", decide_exit(pnl_pct=-0.01, hold_sec=95, recovery_chance_low=True).reason == "max-hold-loss"),
         (
@@ -186,6 +217,17 @@ def main():
         ("network_fail_safe_activates_on_slow_api_streak", activated_after_slow is True and any("ACTIVATED" in note for note in slow_notes_3)),
         ("network_fail_safe_clears_after_recovery", cleared_after_recovery is False and any("CLEARED" in note for note in clear_notes_2)),
         ("network_fail_safe_activates_on_ws_stale_streak", stale_flags.network_fail_safe_mode is True and any("ACTIVATED" in note for note in stale_notes_2) and any("ws stale detected" in note for note in stale_notes_1)),
+        (
+            "refresh_runtime_flags_preserves_network_state",
+            reloaded_flags.close_fail_streak == 0
+            and reloaded_flags.panic_exit_mode is False
+            and reloaded_flags.network_fail_safe_mode is True
+            and reloaded_flags.api_fail_streak == 4
+            and reloaded_flags.slow_api_streak == 3
+            and reloaded_flags.ws_stale_streak == 2
+            and reloaded_flags.network_recovery_streak == 1
+            and abs(reloaded_flags.last_api_latency_ms - 2222.0) < 1e-9
+        ),
         ("actual_source_tier_maker_balance_delta", classify_actual_source_tier("maker-balance-delta", 1.0) == "high"),
         ("strategy_name_for_reversed_side", strategy_name_for_side("model-ws_order_flow_down", "UP") == "model-ws_order_flow_up"),
         ("hard_stop_shield_opt_in_default", SETTINGS.enable_hard_stop_shield is False),

@@ -559,6 +559,22 @@ def load_runtime_flags(state: dict, open_positions: list[OpenPos]) -> RuntimeFla
     )
 
 
+def refresh_runtime_flags(flags: RuntimeFlags, open_positions: list[OpenPos], panic_market_slug: str) -> RuntimeFlags:
+    return load_runtime_flags({
+        "live_consec_losses": flags.live_consec_losses,
+        "last_loss_side": flags.last_loss_side,
+        "close_fail_streak": flags.close_fail_streak,
+        "panic_exit_mode": flags.panic_exit_mode,
+        "network_fail_safe_mode": flags.network_fail_safe_mode,
+        "api_fail_streak": flags.api_fail_streak,
+        "slow_api_streak": flags.slow_api_streak,
+        "ws_stale_streak": flags.ws_stale_streak,
+        "network_recovery_streak": flags.network_recovery_streak,
+        "last_api_latency_ms": flags.last_api_latency_ms,
+        "panic_market_slug": panic_market_slug,
+    }, open_positions)
+
+
 def save_runtime_state(
     risk: RiskState,
     *,
@@ -802,13 +818,7 @@ def main():
                 )
                 smart_sleep(SETTINGS.poll_seconds)
                 continue
-            flags = load_runtime_flags({
-                "live_consec_losses": flags.live_consec_losses,
-                "last_loss_side": flags.last_loss_side,
-                "close_fail_streak": flags.close_fail_streak,
-                "panic_exit_mode": flags.panic_exit_mode,
-                "panic_market_slug": panic_market_slug,
-            }, open_positions)
+            flags = refresh_runtime_flags(flags, open_positions, panic_market_slug)
 
             # --- PENDING ORDERS / KILL-SWITCH ---
             if 'pending_orders' not in locals():
@@ -1090,7 +1100,7 @@ def main():
                                 p.has_panic_dumped = True
                             
                             # 2. Let Profits Run
-                            if getattr(exit_decision, "should_close", False) and exit_decision.reason in ("take-profit-partial", "take-profit-principal"):
+                            if getattr(exit_decision, "should_close", False) and exit_decision.reason in ("take-profit-partial", "take-profit-principal", "take-profit-full"):
                                 is_pump = (p.side == "UP" and ws_vel > SETTINGS.tp_hold_velocity) or \
                                           (p.side == "DOWN" and ws_vel < -SETTINGS.tp_hold_velocity)
                                 if is_pump:
