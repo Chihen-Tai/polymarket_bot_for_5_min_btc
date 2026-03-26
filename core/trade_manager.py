@@ -61,7 +61,8 @@ def decide_exit(
         and secs_left is not None
         and secs_left >= getattr(SETTINGS, "stalled_exit_min_secs_left", 45)
         and not has_extracted_principal
-        and abs(pnl_pct) <= getattr(SETTINGS, "stalled_exit_max_abs_pnl_pct", 0.02)
+        and pnl_pct <= -getattr(SETTINGS, "stalled_exit_min_loss_pct", 0.01)
+        and pnl_pct >= -getattr(SETTINGS, "stalled_exit_max_abs_pnl_pct", 0.02)
         and mfe_pnl_pct <= getattr(SETTINGS, "stalled_exit_max_mfe_pct", 0.02)
     ):
         return ExitDecision(True, "stalled-trade", pnl_pct, hold_sec)

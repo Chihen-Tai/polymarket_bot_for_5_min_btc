@@ -505,6 +505,12 @@ def required_trade_edge(entry_price: float, secs_left: float | None, history_cou
     if entry_price >= 0.68:
         required += rich_price_penalty
 
+    center_distance = abs(float(entry_price) - 0.5)
+    if center_distance <= float(getattr(SETTINGS, "entry_neutral_band_half_width", 0.0)):
+        required += float(getattr(SETTINGS, "entry_neutral_edge_penalty", 0.0))
+    if center_distance <= float(getattr(SETTINGS, "entry_micro_band_half_width", 0.0)):
+        required += float(getattr(SETTINGS, "entry_micro_edge_penalty", 0.0))
+
     return required
 
 

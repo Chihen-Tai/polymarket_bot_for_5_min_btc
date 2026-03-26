@@ -58,7 +58,12 @@ def main():
     SETTINGS.exit_deadline_sec = 20
     SETTINGS.exit_deadline_flat_pnl_pct = 0.0
     SETTINGS.edge_threshold = 0.02
+    SETTINGS.entry_neutral_band_half_width = 0.03
+    SETTINGS.entry_neutral_edge_penalty = 0.02
+    SETTINGS.entry_micro_band_half_width = 0.01
+    SETTINGS.entry_micro_edge_penalty = 0.02
     SETTINGS.report_assumed_taker_fee_rate = 0.0156
+    SETTINGS.report_scratch_pnl_pct = 0.03
     SETTINGS.late_entry_edge_penalty = 0.015
     SETTINGS.rich_price_edge_penalty = 0.015
     SETTINGS.scoreboard_aux_weight = 0.10
@@ -70,6 +75,7 @@ def main():
     SETTINGS.failed_follow_through_max_mfe_pct = 0.02
     SETTINGS.failed_follow_through_min_secs_left = 90
     SETTINGS.stalled_exit_window_sec = 35
+    SETTINGS.stalled_exit_min_loss_pct = 0.01
     SETTINGS.stalled_exit_max_abs_pnl_pct = 0.02
     SETTINGS.stalled_exit_max_mfe_pct = 0.02
     SETTINGS.stalled_exit_min_secs_left = 45
@@ -209,6 +215,37 @@ def main():
         },
     ])
     fee_summary = summarize_trade_pairs(fee_summary_rows)
+    scratch_summary_rows = build_trade_pairs([
+        {
+            "kind": "entry",
+            "ts": "2026-03-19T10:10:00",
+            "event_id": "entry_scratch",
+            "position_id": "pos_scratch",
+            "slug": "m_scratch",
+            "side": "UP",
+            "token_id": "tok_scratch",
+            "shares": 10,
+            "cost_usd": 1.0,
+            "execution_style": "unknown",
+        },
+        {
+            "kind": "exit",
+            "ts": "2026-03-19T10:10:40",
+            "event_id": "exit_scratch",
+            "position_id": "pos_scratch",
+            "slug": "m_scratch",
+            "side": "UP",
+            "token_id": "tok_scratch",
+            "closed_shares": 10,
+            "remaining_shares": 0,
+            "realized_cost_usd": 1.0,
+            "actual_exit_value_usd": 1.0,
+            "observed_exit_value_usd": 1.0,
+            "reason": "stalled-trade",
+            "exit_execution_style": "unknown",
+        },
+    ])
+    scratch_summary = summarize_trade_pairs(scratch_summary_rows)
     book_gate_ok = assess_entry_liquidity(
         book={"best_bid": 0.49, "best_ask": 0.51, "best_ask_size": 5.0, "asks_volume": 20.0},
         est_shares=2.0,
@@ -241,6 +278,7 @@ def main():
     SETTINGS.entry_window_min_sec = 15
     SETTINGS.entry_window_max_sec = 180
     natural_window_edge = required_trade_edge(0.70, 150, history_count=30)
+    natural_window_center_edge = required_trade_edge(0.50, 150, history_count=30)
     SETTINGS.entry_window_min_sec = original_min_sec
     SETTINGS.entry_window_max_sec = original_max_sec
 
@@ -384,7 +422,8 @@ def main():
         ),
         ("failed_follow_through", decide_exit(pnl_pct=-0.04, hold_sec=50, secs_left=200, mfe_pnl_pct=0.01).reason == "failed-follow-through"),
         ("failed_follow_through_skips_if_signal_showed_life", decide_exit(pnl_pct=-0.04, hold_sec=50, secs_left=200, mfe_pnl_pct=0.05).reason != "failed-follow-through"),
-        ("stalled_trade_exit", decide_exit(pnl_pct=0.0, hold_sec=40, secs_left=55, mfe_pnl_pct=0.01).reason == "stalled-trade"),
+        ("stalled_trade_exit", decide_exit(pnl_pct=-0.01, hold_sec=40, secs_left=55, mfe_pnl_pct=0.01).reason == "stalled-trade"),
+        ("stalled_trade_skips_exact_flat", decide_exit(pnl_pct=0.0, hold_sec=40, secs_left=55, mfe_pnl_pct=0.01).reason != "stalled-trade"),
         ("stalled_trade_skips_if_trade_showed_life", decide_exit(pnl_pct=0.0, hold_sec=40, secs_left=55, mfe_pnl_pct=0.05).reason != "stalled-trade"),
         ("stalled_trade_skips_if_reentry_window_too_short", decide_exit(pnl_pct=0.0, hold_sec=40, secs_left=40, mfe_pnl_pct=0.01).reason != "stalled-trade"),
         ("deadline_exit_flat_without_principal", decide_exit(pnl_pct=0.0, hold_sec=50, secs_left=10).reason == "deadline-exit-flat"),
@@ -429,8 +468,11 @@ def main():
         ("required_trade_edge_relaxes_for_fresh_strategy", abs(required_trade_edge(0.45, 250, history_count=0) - 0.005) < 1e-9),
         ("required_trade_edge_penalizes_late_rich_price_under_wide_window", abs(required_trade_edge(0.70, 150, history_count=30) - 0.065) < 1e-9),
         ("required_trade_edge_skips_late_penalty_at_150_under_natural_window", abs(natural_window_edge - 0.05) < 1e-9),
+        ("required_trade_edge_penalizes_center_prices", abs(required_trade_edge(0.50, 250, history_count=30) - 0.06) < 1e-9),
+        ("required_trade_edge_penalizes_center_prices_under_natural_window", abs(natural_window_center_edge - 0.06) < 1e-9),
         ("summarize_entry_edge_blocks_weak_late_trade", summarize_entry_edge(win_rate=0.56, entry_price=0.55, secs_left=140, history_count=30)["ok"] is False),
-        ("summarize_entry_edge_allows_fresh_discounted_trade", summarize_entry_edge(win_rate=0.50, entry_price=0.48, secs_left=250, history_count=0)["ok"] is True),
+        ("summarize_entry_edge_allows_fresh_discounted_trade", summarize_entry_edge(win_rate=0.50, entry_price=0.45, secs_left=250, history_count=0)["ok"] is True),
+        ("summarize_entry_edge_blocks_fresh_neutral_band_trade", summarize_entry_edge(win_rate=0.50, entry_price=0.48, secs_left=250, history_count=0)["ok"] is False),
         ("stabilize_entry_win_rate_floors_sparse_history", abs(stabilize_entry_win_rate(0.18, 1) - 0.50) < 1e-9),
         ("entry_response_actionable_on_fill", entry_response_has_actionable_state({"response": {"takingAmount": "1.25"}}) is True),
         ("entry_response_actionable_on_order_id", entry_response_has_actionable_state({"response": {"orderID": "abc123"}}) is True),
@@ -508,6 +550,12 @@ def main():
             and abs((fee_summary["fee_adjusted_actual_pnl"]["sum"] or 0.0) - (0.16568 + 0.7844)) < 1e-6
             and abs((fee_summary["close_bucket_pnl"]["active-close"]["fee_adjusted_actual_pnl"]["sum"] or 0.0) - 0.16568) < 1e-6
             and abs((fee_summary["close_bucket_pnl"]["expiry-binary-win"]["fee_adjusted_actual_pnl"]["sum"] or 0.0) - 0.7844) < 1e-6
+        ),
+        (
+            "summary_tracks_scratch_trades",
+            scratch_summary["scratch_trades"]["count"] == 1
+            and abs((scratch_summary["scratch_trades"]["ratio"] or 0.0) - 1.0) < 1e-9
+            and scratch_summary["scratch_trades"]["close_reason_counts"] == {"stalled-trade": 1}
         ),
         ("strategy_name_for_reversed_side", strategy_name_for_side("model-ws_order_flow_down", "UP") == "model-ws_order_flow_up"),
         ("hard_stop_shield_opt_in_default", SETTINGS.enable_hard_stop_shield is False),

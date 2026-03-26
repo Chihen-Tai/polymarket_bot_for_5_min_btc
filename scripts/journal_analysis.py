@@ -654,6 +654,7 @@ def summarize_trade_pairs(rows: list[TradePairRow]) -> dict[str, Any]:
     observed_rows = [row for row in rows if row.observed_pnl_usd is not None]
     fee_actual_rows = [row for row in rows if row.fee_adjusted_actual_pnl_usd is not None]
     fee_observed_rows = [row for row in rows if row.fee_adjusted_observed_pnl_usd is not None]
+    scratch_threshold = max(0.0, float(getattr(SETTINGS, "report_scratch_pnl_pct", 0.03)))
 
     def _summarize_values(items: list[TradePairRow], attr: str) -> dict[str, Any]:
         values = [getattr(row, attr) for row in items if getattr(row, attr) is not None]
@@ -662,6 +663,23 @@ def summarize_trade_pairs(rows: list[TradePairRow]) -> dict[str, Any]:
             "sum": sum(values) if values else None,
             "average": (sum(values) / len(values)) if values else None,
         }
+
+    def _scratch_like(row: TradePairRow) -> bool:
+        if row.close_reason in {"stalled-trade", "deadline-exit-flat"}:
+            return True
+        basis_pnl = (
+            row.fee_adjusted_actual_pnl_usd
+            if row.fee_adjusted_actual_pnl_usd is not None
+            else row.actual_pnl_usd
+            if row.actual_pnl_usd is not None
+            else row.observed_pnl_usd
+        )
+        if basis_pnl is None or row.entry_cost_usd <= EPS:
+            return False
+        return abs(float(basis_pnl)) / max(float(row.entry_cost_usd), EPS) <= scratch_threshold
+
+    scratch_rows = [row for row in rows if _scratch_like(row)]
+    scratch_reasons = Counter(row.close_reason for row in scratch_rows if row.close_reason)
 
     bucket_summary: dict[str, Any] = {}
     for bucket in sorted(by_bucket):
@@ -685,6 +703,12 @@ def summarize_trade_pairs(rows: list[TradePairRow]) -> dict[str, Any]:
         "observed_pnl": _summarize_values(observed_rows, "observed_pnl_usd"),
         "fee_adjusted_actual_pnl": _summarize_values(fee_actual_rows, "fee_adjusted_actual_pnl_usd"),
         "fee_adjusted_observed_pnl": _summarize_values(fee_observed_rows, "fee_adjusted_observed_pnl_usd"),
+        "scratch_trades": {
+            "count": len(scratch_rows),
+            "ratio": (len(scratch_rows) / total) if total else None,
+            "close_reason_counts": dict(sorted(scratch_reasons.items())),
+            "fee_adjusted_actual_pnl": _summarize_values(scratch_rows, "fee_adjusted_actual_pnl_usd"),
+        },
         "mae": {
             "count": sum(1 for row in rows if row.mae_pnl_usd is not None),
             "average": (sum(row.mae_pnl_usd for row in rows if row.mae_pnl_usd is not None) / max(1, sum(1 for row in rows if row.mae_pnl_usd is not None))),

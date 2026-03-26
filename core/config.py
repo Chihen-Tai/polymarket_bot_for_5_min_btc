@@ -75,9 +75,14 @@ class Settings:
     entry_window_max_sec: float = _f("ENTRY_WINDOW_MAX_SEC", 999999.0)
     min_entry_price: float = _f("MIN_ENTRY_PRICE", 0.35)
     max_entry_price: float = _f("MAX_ENTRY_PRICE", 0.75)
+    entry_neutral_band_half_width: float = _f("ENTRY_NEUTRAL_BAND_HALF_WIDTH", 0.03)
+    entry_neutral_edge_penalty: float = _f("ENTRY_NEUTRAL_EDGE_PENALTY", 0.02)
+    entry_micro_band_half_width: float = _f("ENTRY_MICRO_BAND_HALF_WIDTH", 0.01)
+    entry_micro_edge_penalty: float = _f("ENTRY_MICRO_EDGE_PENALTY", 0.02)
     entry_max_spread: float = _f("ENTRY_MAX_SPREAD", 0.03)
     entry_min_best_ask_multiple: float = _f("ENTRY_MIN_BEST_ASK_MULTIPLE", 2.0)
     entry_min_total_ask_multiple: float = _f("ENTRY_MIN_TOTAL_ASK_MULTIPLE", 6.0)
+    report_scratch_pnl_pct: float = _f("REPORT_SCRATCH_PNL_PCT", 0.03)
 
     # Cadence guard: avoid long no-trade stretches
     max_idle_minutes: int = _i("MAX_IDLE_MINUTES", 120)
@@ -151,6 +156,7 @@ class Settings:
     failed_follow_through_max_mfe_pct: float = _f("FAILED_FOLLOW_THROUGH_MAX_MFE_PCT", 0.02)
     failed_follow_through_min_secs_left: int = _i("FAILED_FOLLOW_THROUGH_MIN_SECS_LEFT", 90)
     stalled_exit_window_sec: int = _i("STALLED_EXIT_WINDOW_SEC", 35)
+    stalled_exit_min_loss_pct: float = _f("STALLED_EXIT_MIN_LOSS_PCT", 0.01)
     stalled_exit_max_abs_pnl_pct: float = _f("STALLED_EXIT_MAX_ABS_PNL_PCT", 0.02)
     stalled_exit_max_mfe_pct: float = _f("STALLED_EXIT_MAX_MFE_PCT", 0.02)
     stalled_exit_min_secs_left: int = _i("STALLED_EXIT_MIN_SECS_LEFT", 45)
