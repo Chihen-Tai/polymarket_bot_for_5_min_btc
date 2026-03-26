@@ -29,6 +29,9 @@ from scripts.journal_analysis import build_exit_accounting_rows, build_trade_pai
 
 
 def main():
+    # Keep these tests independent from the repository .env so strategy-tuning
+    # changes do not silently invalidate the expected baseline behaviors here.
+    SETTINGS.smart_stop_loss_enabled = True
     SETTINGS.stop_loss_partial_pct = 0.05
     SETTINGS.stop_loss_warn_pct = 0.07
     SETTINGS.stop_loss_pct = 0.10
@@ -36,6 +39,7 @@ def main():
     SETTINGS.min_entry_price = 0.35
     SETTINGS.max_entry_price = 0.75
     SETTINGS.entry_window_min_sec = 120
+    SETTINGS.entry_window_max_sec = 999999.0
     SETTINGS.edge_threshold = 0.02
     SETTINGS.late_entry_edge_penalty = 0.015
     SETTINGS.rich_price_edge_penalty = 0.015
