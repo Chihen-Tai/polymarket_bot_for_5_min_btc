@@ -11,6 +11,7 @@ from core.journal import replay_open_positions
 from core.learning import StrategyScoreboard
 from core.runner import (
     RuntimeFlags,
+    apply_scoreboard_aux_probability,
     refresh_runtime_flags,
     observe_api_latency,
     paper_settlement_from_last_mark,
@@ -139,6 +140,24 @@ def main():
             {"p": 100001.0, "q": 1.0, "m": False},
             {"p": 100002.0, "q": 1.0, "m": False},
             {"p": 100003.0, "q": 0.2, "m": True},
+        ],
+    )
+    dual_signal_decision = explain_choose_side(
+        market={
+            "outcomes": ["up", "down"],
+            "outcomePrices": [0.64, 0.36],
+            "endDate": future_end,
+        },
+        yes_window=deque([0.41, 0.42, 0.43, 0.44, 0.45, 0.46, 0.47, 0.48, 0.49, 0.50], maxlen=20),
+        up_window=deque([0.62, 0.63, 0.64], maxlen=5),
+        down_window=deque([0.33, 0.34, 0.36], maxlen=5),
+        observed_up=0.64,
+        observed_down=0.36,
+        ws_trades=[
+            {"p": 100000.0, "q": 1.5, "m": False},
+            {"p": 100001.0, "q": 1.2, "m": False},
+            {"p": 100002.0, "q": 1.0, "m": False},
+            {"p": 100003.0, "q": 0.1, "m": True},
         ],
     )
 
@@ -271,10 +290,13 @@ def main():
         ("trade_pair_actual_pnl", len(pair_rows) == 1 and abs((pair_rows[0].actual_pnl_usd or 0.0) - 0.2) < 1e-9),
         ("trade_pair_mae_mfe", len(pair_rows) == 1 and pair_rows[0].mae_pnl_usd == -0.1 and pair_rows[0].mfe_pnl_usd == 0.2),
         ("decision_engine_uses_observed_prices", observed_price_decision.get("ok") and observed_price_decision.get("side") == "UP" and abs((observed_price_decision.get("entry_price") or 0.0) - 0.45) < 1e-9),
+        ("decision_engine_returns_model_probability", observed_price_decision.get("ok") and (observed_price_decision.get("model_probability") or 0.0) > (observed_price_decision.get("entry_price") or 1.0)),
+        ("decision_engine_prefers_better_priced_side_edge", dual_signal_decision.get("ok") and dual_signal_decision.get("side") == "DOWN" and (dual_signal_decision.get("model_edge") or 0.0) > 0.0),
         ("paper_settlement_win", paper_settlement_from_last_mark(0.72) == (1.0, "binary-win")),
         ("paper_settlement_loss", paper_settlement_from_last_mark(0.28) == (0.0, "binary-lose")),
         ("paper_settlement_neutral", paper_settlement_from_last_mark(0.50) == (0.5, "binary-neutral")),
         ("price_aware_kelly_fraction", abs(price_aware_kelly_fraction(0.60, 0.45) - (((0.60 - 0.45) / (1.0 - 0.45)) / 4.0)) < 1e-9),
+        ("apply_scoreboard_aux_probability_stays_small", abs(apply_scoreboard_aux_probability(0.62, 0.20) - 0.59) < 1e-9),
         ("required_trade_edge_relaxes_for_fresh_strategy", abs(required_trade_edge(0.45, 250, history_count=0) - 0.005) < 1e-9),
         ("required_trade_edge_penalizes_late_rich_price", abs(required_trade_edge(0.70, 150, history_count=30) - 0.065) < 1e-9),
         ("summarize_entry_edge_blocks_weak_late_trade", summarize_entry_edge(win_rate=0.56, entry_price=0.55, secs_left=140, history_count=30)["ok"] is False),

@@ -270,6 +270,12 @@ def price_aware_kelly_fraction(win_rate: float, entry_price: float) -> float:
     return raw_fraction / max(1.0, float(getattr(SETTINGS, "binary_kelly_divisor", 4.0)))
 
 
+def apply_scoreboard_aux_probability(model_probability: float, scoreboard_win_rate: float) -> float:
+    aux_weight = max(0.0, float(getattr(SETTINGS, "scoreboard_aux_weight", 0.0)))
+    adjusted = float(model_probability) + ((float(scoreboard_win_rate) - 0.5) * aux_weight)
+    return min(0.99, max(0.01, adjusted))
+
+
 def summarize_entry_edge(*, win_rate: float, entry_price: float, secs_left: float | None, history_count: int = 0) -> dict:
     required = required_trade_edge(entry_price, secs_left, history_count=history_count)
     raw_edge = win_rate - entry_price
@@ -891,6 +897,7 @@ def main():
             signal_origin = ""
             no_entry_reason = ""
             entry_price = None
+            signal_probability = None
 
             # The daily loss circuit breaker is handled properly in `can_place_order`
             # Removing the unconditional continue so open positions are still managed.
@@ -1019,11 +1026,11 @@ def main():
                         )
                         signal_side = model_decision.get("side") if model_decision.get("ok") else None
                         no_entry_reason = model_decision.get("reason")
+                        signal_probability = model_decision.get("model_probability") if model_decision.get("ok") else None
                         if signal_side:
-                            _raw_reason = model_decision.get('reason', '')
-                            # Strip existing 'model-' prefix to avoid double-prefix (model-model-...)
-                            _clean_reason = _raw_reason.removeprefix('model-')
-                            signal_origin = f"model-{_clean_reason}"
+                            signal_origin = model_decision.get("strategy_name") or model_decision.get("reason", "")
+                            if signal_origin and not signal_origin.startswith("model-"):
+                                signal_origin = f"model-{signal_origin}"
 
                         # --- Entry Quality Gate ---
                         # Block entry when Binance velocity is strongly opposing the signal direction.
@@ -1044,6 +1051,7 @@ def main():
                                     log(f"ENTRY GATE BLOCKED: signal={signal_side} Binance vel={_entry_ws_vel:.4%} (min={_entry_vel_min:.4%})")
                                     no_entry_reason = f"entry_gate_velocity_mismatch_{_entry_ws_vel:.4f}"
                                     signal_side = None
+                                    signal_probability = None
                         # --------------------------
 
                         if signal_side is None and secs_left is not None and 90 <= secs_left <= 240:
@@ -1052,6 +1060,7 @@ def main():
                                 signal_side = dumped_side
                                 signal_origin = "dump-trigger"
                                 no_entry_reason = ""
+                                signal_probability = None
                                 log(f"dump trigger | side={dumped_side} prev_up={prev_up} up={up} prev_down={prev_down} down={down}")
 
                     prev_up, prev_down = up, down
@@ -1581,6 +1590,7 @@ def main():
                             if _rev_wr > 0.55:
                                 signal_side = entry_decision.side
                                 signal_origin = f"{signal_origin}+{entry_decision.reason}" if signal_origin else entry_decision.reason
+                                signal_probability = None
                                 log(f"{entry_decision.reason} applied | consec_losses={flags.live_consec_losses} last_loss_side={flags.last_loss_side} -> side={signal_side} (WR={_rev_wr:.1%})")
                             else:
                                 log(f"loss-reversal SKIPPED: reversed side WR={_rev_wr:.1%} <= 55% threshold, keeping original signal={signal_side}")
@@ -1657,6 +1667,7 @@ def main():
                 price_now = ex.get_btc_price()
                 signal_side = "UP" if int(price_now) % 2 == 0 else "DOWN"
                 signal_origin = "dry-run-fallback"
+                signal_probability = None
 
             network_notes = update_network_guard(
                 flags,
@@ -1733,6 +1744,7 @@ def main():
             strategy_trade_count = 0
             strategy_decisive_trade_count = 0
             entry_edge = None
+            effective_probability = signal_probability
             if signal_side and signal_origin and entry_price and float(entry_price) > 0:
                 try:
                     from core.learning import SCOREBOARD
@@ -1742,8 +1754,12 @@ def main():
                 except Exception as e:
                     log(f"scoreboard lookup error: {e}")
                 strategy_win_rate = stabilize_entry_win_rate(strategy_win_rate, strategy_decisive_trade_count)
+                if effective_probability is None:
+                    effective_probability = strategy_win_rate
+                else:
+                    effective_probability = apply_scoreboard_aux_probability(effective_probability, strategy_win_rate)
                 entry_edge = summarize_entry_edge(
-                    win_rate=strategy_win_rate,
+                    win_rate=effective_probability,
                     entry_price=float(entry_price),
                     secs_left=secs_left if "secs_left" in locals() else None,
                     history_count=strategy_decisive_trade_count,
@@ -1754,10 +1770,12 @@ def main():
                         "signal-blocked",
                         slug=last_market_slug,
                         side=signal_side,
-                        reason="weak-scoreboard-edge",
+                        reason="weak-model-edge",
                     )
                     log(
-                        f"skip entry: weak scoreboard edge | strategy={signal_origin} WR={strategy_win_rate:.1%} "
+                        f"skip entry: weak model edge | strategy={signal_origin} "
+                        f"modelP={(signal_probability if signal_probability is not None else strategy_win_rate):.1%} "
+                        f"auxWR={strategy_win_rate:.1%} effectiveP={effective_probability:.1%} "
                         f"price={float(entry_price):.3f} raw_edge={entry_edge['raw_edge']:.3f} "
                         f"required={entry_edge['required_edge']:.3f} history={strategy_trade_count} decisive={strategy_decisive_trade_count}"
                     )
@@ -1767,7 +1785,7 @@ def main():
             order_usd = SETTINGS.max_order_usd
             if getattr(SETTINGS, "use_kelly_sizing", False) and signal_origin:
                 try:
-                    win_rate = strategy_win_rate
+                    win_rate = effective_probability if effective_probability is not None else strategy_win_rate
                     entry_price_value = float(entry_price) if entry_price and float(entry_price) > 0 else 0.0
                     q_kelly = price_aware_kelly_fraction(win_rate, entry_price_value) if entry_price_value > 0 else 0.0
                     if q_kelly > 0:
@@ -1777,12 +1795,12 @@ def main():
                         min_bet = SETTINGS.max_order_usd  # never bet less than baseline
                         order_usd = max(min_bet, min(kelly_bet, getattr(SETTINGS, "max_bet_cap_usd", 50.0)))
                         log(
-                            f"Kelly Sizing | Strategy={signal_origin} WR={win_rate:.1%} price={entry_price_value:.3f} "
+                            f"Kelly Sizing | Strategy={signal_origin} estP={win_rate:.1%} price={entry_price_value:.3f} "
                             f"qK={q_kelly:.2%} Bankroll=${bankroll:.2f} -> Bet=${order_usd:.2f}"
                         )
                     else:
                         log(
-                            f"Kelly Sizing | Strategy={signal_origin} WR={win_rate:.1%} "
+                            f"Kelly Sizing | Strategy={signal_origin} estP={win_rate:.1%} "
                             f"price={entry_price_value:.3f} -> no size edge, baseline bet=${order_usd:.2f}"
                         )
                 except Exception as e:

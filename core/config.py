@@ -63,6 +63,7 @@ class Settings:
     fee_buffer: float = _f("FEE_BUFFER", 0.01)
     scoreboard_neutral_pnl_pct: float = _f("SCOREBOARD_NEUTRAL_PNL_PCT", 0.001)
     scoreboard_entry_gate_min_decisive_trades: int = _i("SCOREBOARD_ENTRY_GATE_MIN_DECISIVE_TRADES", 5)
+    scoreboard_aux_weight: float = _f("SCOREBOARD_AUX_WEIGHT", 0.10)
     zscore_window: int = _i("ZSCORE_WINDOW", 20)
     zscore_threshold: float = _f("ZSCORE_THRESHOLD", 2.0)
     entry_window_min_sec: float = _f("ENTRY_WINDOW_MIN_SEC", 120.0)

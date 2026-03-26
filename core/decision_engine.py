@@ -15,6 +15,10 @@ def _sf(x: Any) -> Optional[float]:
         return None
 
 
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
 def _parse_listish(x: Any):
     if isinstance(x, list):
         return x
@@ -66,21 +70,21 @@ def _check_imbalance(ob: dict) -> float:
     return bids / (bids + asks)
 
 
-def mean_reversion_side(yes_price: Optional[float], yes_window: deque) -> Optional[str]:
+def mean_reversion_signal(yes_price: Optional[float], yes_window: deque) -> tuple[Optional[str], Optional[float]]:
     if yes_price is None or len(yes_window) < 10:  # Require at least 10 ticks (~150s of data) for stability
-        return None
+        return None, None
     vals = list(yes_window)
     mean = sum(vals) / len(vals)
     var = sum((x - mean) ** 2 for x in vals) / len(vals)
     std = var ** 0.5
     if std <= 1e-9:
-        return None
+        return None, None
     z = (yes_price - mean) / std
     if z > SETTINGS.zscore_threshold:
-        return "DOWN"
+        return "DOWN", z
     if z < -SETTINGS.zscore_threshold:
-        return "UP"
-    return None
+        return "UP", z
+    return None, z
 
 
 # Strategies that already encode velocity / order-flow — skip extra momentum filter
@@ -104,6 +108,63 @@ def _has_momentum(side: str, up_window: deque, down_window: deque, min_move: flo
     recent = target[-ticks:]
     move = recent[-1] - recent[0]
     return move >= min_move
+
+
+def _confidence_from_signal(strength: float, trigger: float, ceiling: float) -> float:
+    if ceiling <= trigger:
+        return 1.0 if strength >= trigger else 0.0
+    return _clamp((strength - trigger) / max(ceiling - trigger, 1e-9), 0.0, 1.0)
+
+
+def _probability_from_confidence(confidence: float, *, floor: float, ceiling: float) -> float:
+    confidence = _clamp(confidence, 0.0, 1.0)
+    return floor + (ceiling - floor) * confidence
+
+
+def _build_candidate(
+    base_result: dict,
+    *,
+    side: str,
+    strategy_key: str,
+    entry_price: float,
+    model_probability: float,
+    signal_confidence: float,
+    extras: Optional[dict] = None,
+) -> dict:
+    result = base_result.copy()
+    result.update(
+        {
+            "ok": True,
+            "side": side,
+            "reason": f"model-{strategy_key}",
+            "strategy_name": f"model-{strategy_key}",
+            "entry_price": float(entry_price),
+            "market_probability": float(entry_price),
+            "model_probability": _clamp(float(model_probability), 0.01, 0.99),
+            "signal_confidence": _clamp(float(signal_confidence), 0.0, 1.0),
+        }
+    )
+    result["model_edge"] = result["model_probability"] - result["market_probability"]
+    if extras:
+        result.update(extras)
+    return result
+
+
+def _select_best_candidate(candidates: dict[str, dict]) -> Optional[dict]:
+    if not candidates:
+        return None
+    ranked = sorted(
+        candidates.values(),
+        key=lambda candidate: (
+            candidate.get("model_edge", float("-inf")),
+            candidate.get("model_probability", 0.5),
+            candidate.get("signal_confidence", 0.0),
+        ),
+        reverse=True,
+    )
+    best = ranked[0].copy()
+    best["candidate_count"] = len(ranked)
+    return best
 
 
 def explain_choose_side(
@@ -197,13 +258,33 @@ def explain_choose_side(
         if total_vol > 0:
             ofi_ratio = buy_vol / total_vol
             ofi_threshold = getattr(SETTINGS, "ofi_bypass_threshold", 0.70)
+            ofi_confidence = _confidence_from_signal(
+                abs(ofi_ratio - 0.5),
+                max(0.0, ofi_threshold - 0.5),
+                0.5,
+            )
+            ofi_probability = _probability_from_confidence(ofi_confidence, floor=0.54, ceiling=0.74)
             if ofi_ratio > ofi_threshold and valid_up:
-                r = base_result.copy()
-                r.update({"ok": True, "side": "UP", "reason": "model-ws_order_flow_up", "entry_price": up})
+                r = _build_candidate(
+                    base_result,
+                    side="UP",
+                    strategy_key="ws_order_flow_up",
+                    entry_price=float(up),
+                    model_probability=ofi_probability,
+                    signal_confidence=ofi_confidence,
+                    extras={"ofi_ratio": ofi_ratio},
+                )
                 candidates["ws_order_flow_up"] = r
             elif ofi_ratio < (1.0 - ofi_threshold) and valid_down:
-                r = base_result.copy()
-                r.update({"ok": True, "side": "DOWN", "reason": "model-ws_order_flow_down", "entry_price": down})
+                r = _build_candidate(
+                    base_result,
+                    side="DOWN",
+                    strategy_key="ws_order_flow_down",
+                    entry_price=float(down),
+                    model_probability=ofi_probability,
+                    signal_confidence=ofi_confidence,
+                    extras={"ofi_ratio": ofi_ratio},
+                )
                 candidates["ws_order_flow_down"] = r
 
     # Strategy 7: WS Flash Snipe (WebSocket 閃電狙擊 0.3%)
@@ -213,13 +294,30 @@ def explain_choose_side(
             # Guard: skip if WS has been silent for > 5 seconds (disconnected)
             if BINANCE_WS.get_last_update_age() < 5.0:
                 vel = BINANCE_WS.get_price_velocity(seconds=3.0)
+                flash_threshold = float(SETTINGS.ws_flash_snipe_threshold)
+                flash_confidence = _confidence_from_signal(abs(vel), flash_threshold, flash_threshold * 2.0)
+                flash_probability = _probability_from_confidence(flash_confidence, floor=0.54, ceiling=0.72)
                 if vel > SETTINGS.ws_flash_snipe_threshold and valid_up:
-                    r = base_result.copy()
-                    r.update({"ok": True, "side": "UP", "reason": "model-ws_flash_snipe_up", "entry_price": up})
+                    r = _build_candidate(
+                        base_result,
+                        side="UP",
+                        strategy_key="ws_flash_snipe_up",
+                        entry_price=float(up),
+                        model_probability=flash_probability,
+                        signal_confidence=flash_confidence,
+                        extras={"velocity_3s": vel},
+                    )
                     candidates["ws_flash_snipe_up"] = r
                 elif vel < -SETTINGS.ws_flash_snipe_threshold and valid_down:
-                    r = base_result.copy()
-                    r.update({"ok": True, "side": "DOWN", "reason": "model-ws_flash_snipe_down", "entry_price": down})
+                    r = _build_candidate(
+                        base_result,
+                        side="DOWN",
+                        strategy_key="ws_flash_snipe_down",
+                        entry_price=float(down),
+                        model_probability=flash_probability,
+                        signal_confidence=flash_confidence,
+                        extras={"velocity_3s": vel},
+                    )
                     candidates["ws_flash_snipe_down"] = r
         except Exception:
             pass
@@ -231,12 +329,30 @@ def explain_choose_side(
         
         # If bids dominate asks heavily
         if imbalance_up > 0.85 and valid_up:
-            r = base_result.copy()
-            r.update({"ok": True, "side": "UP", "reason": "model-poly_ob_imbalance_up", "entry_price": up})
+            imbalance_confidence = _confidence_from_signal(imbalance_up - 0.5, 0.35, 0.5)
+            imbalance_probability = _probability_from_confidence(imbalance_confidence, floor=0.53, ceiling=0.72)
+            r = _build_candidate(
+                base_result,
+                side="UP",
+                strategy_key="poly_ob_imbalance_up",
+                entry_price=float(up),
+                model_probability=imbalance_probability,
+                signal_confidence=imbalance_confidence,
+                extras={"orderbook_imbalance": imbalance_up},
+            )
             candidates["poly_ob_imbalance_up"] = r
         elif imbalance_down > 0.85 and valid_down:
-            r = base_result.copy()
-            r.update({"ok": True, "side": "DOWN", "reason": "model-poly_ob_imbalance_down", "entry_price": down})
+            imbalance_confidence = _confidence_from_signal(imbalance_down - 0.5, 0.35, 0.5)
+            imbalance_probability = _probability_from_confidence(imbalance_confidence, floor=0.53, ceiling=0.72)
+            r = _build_candidate(
+                base_result,
+                side="DOWN",
+                strategy_key="poly_ob_imbalance_down",
+                entry_price=float(down),
+                model_probability=imbalance_probability,
+                signal_confidence=imbalance_confidence,
+                extras={"orderbook_imbalance": imbalance_down},
+            )
             candidates["poly_ob_imbalance_down"] = r
 
     # Strategy 9: Time-Based Snipe (disabled: leads to predictable naive entries and adverse selection)
@@ -276,14 +392,28 @@ def explain_choose_side(
     #         pass
 
     # Mean Reversion
-    mr = mean_reversion_side(up, yes_window)
+    mr, mr_zscore = mean_reversion_signal(up, yes_window)
     base_result["mr_side"] = mr
+    base_result["mr_zscore"] = mr_zscore
     if mr:
         side = mr
         entry_price = up if side == "UP" else down
         if (side == "UP" and valid_up) or (side == "DOWN" and valid_down):
-            r = base_result.copy()
-            r.update({"ok": True, "side": side, "reason": "model-mean_reversion_signal", "entry_price": entry_price})
+            mr_confidence = _confidence_from_signal(
+                abs(float(mr_zscore or 0.0)),
+                float(SETTINGS.zscore_threshold),
+                float(SETTINGS.zscore_threshold) * 2.0,
+            )
+            mr_probability = _probability_from_confidence(mr_confidence, floor=0.52, ceiling=0.68)
+            r = _build_candidate(
+                base_result,
+                side=side,
+                strategy_key="mean_reversion_signal",
+                entry_price=float(entry_price),
+                model_probability=mr_probability,
+                signal_confidence=mr_confidence,
+                extras={"mr_zscore": mr_zscore},
+            )
             candidates["mean_reversion_signal"] = r
 
 
@@ -307,9 +437,7 @@ def explain_choose_side(
             r["reason"] = "no_valid_signals"
         return r
 
-    # Learning Engine Scoreboard Integration
-    from core.learning import SCOREBOARD
-    best_decision = SCOREBOARD.get_best_strategy(filtered_candidates)
+    best_decision = _select_best_candidate(filtered_candidates)
     if best_decision:
         return best_decision
 
