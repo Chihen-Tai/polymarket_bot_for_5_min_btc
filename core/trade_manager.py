@@ -31,6 +31,9 @@ def decide_exit(
     has_taken_partial: bool = False,
     has_extracted_principal: bool = False,
     mfe_pnl_pct: float = 0.0,
+    runner_drawdown_pct: float = 0.0,
+    runner_peak_age_sec: Optional[float] = None,
+    runner_peak_value_usd: float = 0.0,
 ) -> ExitDecision:
     # 1. Tiered Take Profit (Risk-Free Moonbag Strategy)
     if not has_extracted_principal and pnl_pct >= getattr(SETTINGS, "take_profit_hard_pct", 0.50):
@@ -44,6 +47,18 @@ def decide_exit(
             return ExitDecision(True, "take-profit-full", pnl_pct, hold_sec)
         # Sell 30% to lock in early profit and reduce anxiety
         return ExitDecision(True, "take-profit-partial", pnl_pct, hold_sec)
+
+    if has_extracted_principal:
+        if (
+            runner_peak_value_usd >= getattr(SETTINGS, "moonbag_min_peak_value_usd", 0.10)
+            and runner_peak_age_sec is not None
+            and runner_peak_age_sec <= getattr(SETTINGS, "moonbag_drawdown_window_sec", 30)
+            and runner_drawdown_pct <= -getattr(SETTINGS, "moonbag_drawdown_pct", 0.30)
+        ):
+            return ExitDecision(True, "moonbag-drawdown-stop", pnl_pct, hold_sec)
+        # Once principal has been recovered, the remainder is treated as a free runner.
+        # Let it ride until the market resolves; manual claim / redeem can happen later.
+        return ExitDecision(False, "", pnl_pct, hold_sec)
 
     if (
         hold_sec >= getattr(SETTINGS, "failed_follow_through_window_sec", 45)

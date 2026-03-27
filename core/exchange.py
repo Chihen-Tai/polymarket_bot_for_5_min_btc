@@ -711,17 +711,22 @@ class PolymarketExchange:
         
         while remaining > 0.0001 and attempts < 8:
             attempts += 1
-            # progressively smaller chunks on retries
-            if attempts == 1:
-                chunk = remaining
-            elif attempts == 2:
-                chunk = max(remaining * 0.85, 0.01)
-            elif attempts == 3:
-                chunk = max(remaining * 0.7, 0.01)
-            elif attempts == 4:
-                chunk = max(remaining * 0.5, 0.01)
+            # For aggressive taker exits, keep sweeping the full residual size.
+            # Shrinking chunks creates dust-like leftovers that are hard to clear.
+            if force_taker:
+                chunk = max(remaining, 0.01)
             else:
-                chunk = max(remaining * 0.35, 0.01)
+                # progressively smaller chunks on retries
+                if attempts == 1:
+                    chunk = remaining
+                elif attempts == 2:
+                    chunk = max(remaining * 0.85, 0.01)
+                elif attempts == 3:
+                    chunk = max(remaining * 0.7, 0.01)
+                elif attempts == 4:
+                    chunk = max(remaining * 0.5, 0.01)
+                else:
+                    chunk = max(remaining * 0.35, 0.01)
 
             try:
                 open_ords = self.get_open_orders(token_id)

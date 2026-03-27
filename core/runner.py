@@ -89,6 +89,9 @@ class OpenPos:
     has_taken_partial: bool = False
     has_extracted_principal: bool = False
     has_panic_dumped: bool = False
+    force_close_only: bool = False
+    runner_peak_value_usd: float = 0.0
+    runner_peak_ts: float = 0.0
     dust_retry_count: int = 0  # Number of times this residual lot has been kept for retry
 
     @property
@@ -217,6 +220,74 @@ def extract_entry_cost_usd(resp: dict | None, fallback_usd: float) -> float:
 def entry_response_has_actionable_state(resp: dict | None) -> bool:
     shares, order_id = extract_entry_response_details(resp)
     return shares > 0 or bool(order_id)
+
+
+LOSS_EXIT_REASONS = {
+    "moonbag-drawdown-stop",
+    "residual-force-close",
+    "failed-follow-through",
+    "hard-stop-loss",
+    "smart-stop-loss",
+    "stop-loss",
+    "stop-loss-full",
+    "stop-loss-scale-out",
+    "deadline-exit-loss",
+    "max-hold-loss",
+    "max-hold-loss-extended",
+}
+
+
+def is_loss_exit_reason(reason: str | None) -> bool:
+    return str(reason or "").strip().lower() in LOSS_EXIT_REASONS
+
+
+def effective_stop_loss_partial_fraction(*, dry_run: bool) -> float:
+    configured = (
+        getattr(SETTINGS, "stop_loss_partial_fraction", 0.50)
+        if dry_run
+        else getattr(
+            SETTINGS,
+            "live_stop_loss_partial_fraction",
+            getattr(SETTINGS, "stop_loss_partial_fraction", 0.50),
+        )
+    )
+    return min(0.99, max(0.01, float(configured or 0.50)))
+
+
+def should_force_full_loss_exit(*, reason: str | None, dry_run: bool) -> bool:
+    normalized = str(reason or "").strip().lower()
+    return (
+        not dry_run
+        and bool(getattr(SETTINGS, "live_force_full_loss_exit", True))
+        and is_loss_exit_reason(normalized)
+        and normalized != "stop-loss-scale-out"
+    )
+
+
+def should_force_taker_exit(*, reason: str | None, dry_run: bool, has_panic_dumped: bool = False) -> bool:
+    if has_panic_dumped:
+        return True
+    return (
+        not dry_run
+        and bool(getattr(SETTINGS, "live_loss_exit_force_taker", True))
+        and is_loss_exit_reason(reason)
+    )
+
+
+def update_runner_peak(pos: OpenPos, current_value_usd: float, *, now_ts: float | None = None) -> tuple[float, float | None]:
+    value = max(0.0, float(current_value_usd or 0.0))
+    if value <= LOT_EPS_COST_USD:
+        return 0.0, None
+    now_value = float(now_ts or time.time())
+    peak = max(0.0, float(getattr(pos, "runner_peak_value_usd", 0.0) or 0.0))
+    peak_ts = float(getattr(pos, "runner_peak_ts", 0.0) or 0.0)
+    if peak <= LOT_EPS_COST_USD or value >= peak - 1e-9:
+        pos.runner_peak_value_usd = value
+        pos.runner_peak_ts = now_value
+        return 0.0, 0.0
+    drawdown_pct = (value - peak) / max(peak, 1e-9)
+    peak_age_sec = max(0.0, now_value - peak_ts) if peak_ts > 0 else None
+    return drawdown_pct, peak_age_sec
 
 
 def decide_pending_order_action(
@@ -809,6 +880,9 @@ def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos
             has_scaled_out_loss=getattr(p, "has_scaled_out_loss", False),
             has_taken_partial=getattr(p, "has_taken_partial", False),
             has_extracted_principal=getattr(p, "has_extracted_principal", False),
+            force_close_only=getattr(p, "force_close_only", False),
+            runner_peak_value_usd=float(getattr(p, "runner_peak_value_usd", 0.0) or 0.0),
+            runner_peak_ts=float(getattr(p, "runner_peak_ts", 0.0) or 0.0),
         ))
     return synced, notes
 
@@ -1592,6 +1666,13 @@ def main():
                         pnl_pct = (effective_exit_value - p.cost_usd) / max(p.cost_usd, 1e-9)
                         hard_stop_pnl_pct = (hard_stop_value - p.cost_usd) / max(p.cost_usd, 1e-9)
                         mfe_pnl_pct = p.max_favorable_pnl_usd / max(p.cost_usd, 1e-9)
+                        runner_drawdown_pct = 0.0
+                        runner_peak_age_sec = None
+                        if getattr(p, "has_extracted_principal", False):
+                            runner_drawdown_pct, runner_peak_age_sec = update_runner_peak(
+                                p,
+                                effective_exit_value,
+                            )
                         hold_sec = time.time() - p.opened_ts
                         recovery_chance_low = False
                         if getattr(SETTINGS, "smart_stop_loss_enabled", False) and hard_stop_pnl_pct < -0.10:
@@ -1600,17 +1681,23 @@ def main():
                             elif hold_sec >= 90.0 and (secs_left or 1000.0) <= 60.0:
                                 recovery_chance_low = True
 
-                        exit_decision = decide_exit(
-                            pnl_pct=hard_stop_pnl_pct, 
-                            hold_sec=hold_sec, 
-                            secs_left=secs_left, 
-                            has_scaled_out=getattr(p, "has_scaled_out", False), 
-                            recovery_chance_low=recovery_chance_low,
-                            has_scaled_out_loss=getattr(p, "has_scaled_out_loss", False),
-                            has_taken_partial=getattr(p, "has_taken_partial", False),
-                            has_extracted_principal=getattr(p, "has_extracted_principal", False),
-                            mfe_pnl_pct=mfe_pnl_pct,
-                        )
+                        if getattr(p, "force_close_only", False):
+                            exit_decision = ExitDecision(True, "residual-force-close", hard_stop_pnl_pct, hold_sec)
+                        else:
+                            exit_decision = decide_exit(
+                                pnl_pct=hard_stop_pnl_pct,
+                                hold_sec=hold_sec,
+                                secs_left=secs_left,
+                                has_scaled_out=getattr(p, "has_scaled_out", False),
+                                recovery_chance_low=recovery_chance_low,
+                                has_scaled_out_loss=getattr(p, "has_scaled_out_loss", False),
+                                has_taken_partial=getattr(p, "has_taken_partial", False),
+                                has_extracted_principal=getattr(p, "has_extracted_principal", False),
+                                mfe_pnl_pct=mfe_pnl_pct,
+                                runner_drawdown_pct=runner_drawdown_pct,
+                                runner_peak_age_sec=runner_peak_age_sec,
+                                runner_peak_value_usd=float(getattr(p, "runner_peak_value_usd", 0.0) or 0.0),
+                            )
 
                         # --- Phase 2: Advanced Loophole Exploitation ---
                         try:
@@ -1685,6 +1772,17 @@ def main():
                             log(f"stop-loss warning | side={p.side} observed_return={pnl_pct:.2%} hold={hold_sec:.0f}s")
 
                         if exit_decision.should_close:
+                            force_full_loss_exit = should_force_full_loss_exit(
+                                reason=exit_decision.reason,
+                                dry_run=SETTINGS.dry_run,
+                            )
+                            if force_full_loss_exit and exit_decision.reason == "stop-loss-scale-out":
+                                log(
+                                    f"LIVE LOSS EXIT OVERRIDE: {p.side} {p.token_id[-6:]} "
+                                    "stop-loss-scale-out -> stop-loss-full"
+                                )
+                                exit_decision.reason = "stop-loss-full"
+
                             if exit_decision.reason == "scale-out":
                                 sell_fraction = min(0.99, p.cost_usd / max(observed_value, 1e-9))
                                 sell_shares = p.shares * sell_fraction
@@ -1734,7 +1832,9 @@ def main():
                                 continue
 
                             if exit_decision.reason == "stop-loss-scale-out":
-                                sell_fraction = getattr(SETTINGS, "stop_loss_partial_fraction", 0.50)
+                                sell_fraction = effective_stop_loss_partial_fraction(
+                                    dry_run=SETTINGS.dry_run,
+                                )
                                 sell_shares = p.shares * sell_fraction
                                 
                                 try:
@@ -1810,6 +1910,10 @@ def main():
                                                 target_principal_usd,
                                             )
                                             p.has_extracted_principal = principal_done
+                                            if principal_done:
+                                                remaining_runner_value = effective_exit_value * max(0.0, 1.0 - actual_fraction)
+                                                p.runner_peak_value_usd = max(0.0, float(remaining_runner_value or 0.0))
+                                                p.runner_peak_ts = time.time()
                                             _realized_pnl = _act_val - realized_cost if _act_val > 0 else _obs_val - realized_cost
                                             risk.daily_pnl += _realized_pnl
                                             tp_reason = "take-profit-principal" if principal_done else "take-profit-principal-partial"
@@ -1876,7 +1980,16 @@ def main():
                                 continue
 
                             try:
-                                close_resp = ex.close_position(p.token_id, p.shares, simulated_price=float(mark) if mark is not None else None, force_taker=getattr(p, "has_panic_dumped", False))
+                                close_resp = ex.close_position(
+                                    p.token_id,
+                                    p.shares,
+                                    simulated_price=float(mark) if mark is not None else None,
+                                    force_taker=should_force_taker_exit(
+                                        reason=exit_decision.reason,
+                                        dry_run=SETTINGS.dry_run,
+                                        has_panic_dumped=getattr(p, "has_panic_dumped", False),
+                                    ),
+                                )
                                 if close_resp.get("ok"):
                                     sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), p.shares)
                                     remaining_hint = max(0.0, float(close_resp.get("remaining_shares", p.shares - sold_shares) or 0.0))
@@ -1901,6 +2014,10 @@ def main():
                                         elif "not enough balance" in err_text.lower() or "allowance" in err_text.lower() or (live_after_fail is not None and float(live_after_fail.size) < max(LOT_EPS_SHARES, p.shares - LOT_EPS_SHARES)):
                                             resized_shares = float(live_after_fail.size)
                                             resized_cost = p.avg_cost_per_share * resized_shares
+                                            residual_force_close = should_force_full_loss_exit(
+                                                reason=exit_decision.reason,
+                                                dry_run=SETTINGS.dry_run,
+                                            )
                                             log(
                                                 f"{exit_decision.reason} close reconciled live position | token={p.token_id} "
                                                 f"local_shares={p.shares:.6f} live_shares={resized_shares:.6f} err={err_text or 'n/a'}"
@@ -1928,6 +2045,14 @@ def main():
                                                 has_scaled_out_loss=getattr(p, "has_scaled_out_loss", False),
                                                 has_taken_partial=getattr(p, "has_taken_partial", False),
                                                 has_extracted_principal=getattr(p, "has_extracted_principal", False),
+                                                has_panic_dumped=should_force_taker_exit(
+                                                    reason=exit_decision.reason,
+                                                    dry_run=SETTINGS.dry_run,
+                                                    has_panic_dumped=getattr(p, "has_panic_dumped", False),
+                                                ),
+                                                force_close_only=residual_force_close,
+                                                runner_peak_value_usd=float(getattr(p, "runner_peak_value_usd", 0.0) or 0.0),
+                                                runner_peak_ts=float(getattr(p, "runner_peak_ts", 0.0) or 0.0),
                                             ))
                                         else:
                                             log(f"{exit_decision.reason} close failed: zero shares closed | resp={close_resp}")
@@ -2034,8 +2159,45 @@ def main():
                                                 timestamp=time.time()
                                             )
                                         if remaining_shares > LOT_EPS_SHARES and remaining_cost > LOT_EPS_COST_USD:
+                                            residual_force_close = should_force_full_loss_exit(
+                                                reason=exit_decision.reason,
+                                                dry_run=SETTINGS.dry_run,
+                                            )
                                             dust_retry = int(getattr(p, "dust_retry_count", 0)) + 1
-                                            if dust_retry > 3:  # DUST_MAX_RETRIES = 3
+                                            if residual_force_close:
+                                                log(
+                                                    f"residual liquidation mode | token={p.token_id} remaining_shares={remaining_shares:.6f} "
+                                                    f"remaining_cost={remaining_cost:.6f}"
+                                                )
+                                                keep_positions.append(OpenPos(
+                                                    slug=p.slug,
+                                                    side=p.side,
+                                                    token_id=p.token_id,
+                                                    shares=remaining_shares,
+                                                    cost_usd=remaining_cost,
+                                                    opened_ts=p.opened_ts,
+                                                    position_id=p.position_id,
+                                                    entry_reason=p.entry_reason,
+                                                    source=p.source,
+                                                    max_favorable_value_usd=p.max_favorable_value_usd,
+                                                    max_adverse_value_usd=p.max_adverse_value_usd,
+                                                    max_favorable_pnl_usd=p.max_favorable_pnl_usd,
+                                                    max_adverse_pnl_usd=p.max_adverse_pnl_usd,
+                                                    has_scaled_out=getattr(p, "has_scaled_out", False),
+                                                    has_scaled_out_loss=getattr(p, "has_scaled_out_loss", False),
+                                                    has_taken_partial=getattr(p, "has_taken_partial", False),
+                                                    has_extracted_principal=getattr(p, "has_extracted_principal", False),
+                                                    has_panic_dumped=should_force_taker_exit(
+                                                        reason=exit_decision.reason,
+                                                        dry_run=SETTINGS.dry_run,
+                                                        has_panic_dumped=getattr(p, "has_panic_dumped", False),
+                                                    ),
+                                                    force_close_only=True,
+                                                    runner_peak_value_usd=float(getattr(p, "runner_peak_value_usd", 0.0) or 0.0),
+                                                    runner_peak_ts=float(getattr(p, "runner_peak_ts", 0.0) or 0.0),
+                                                    dust_retry_count=dust_retry,
+                                                ))
+                                            elif dust_retry > 3:  # DUST_MAX_RETRIES = 3
                                                 log(
                                                     f"dust_abandoned | token={p.token_id} remaining_shares={remaining_shares:.6f} "
                                                     f"after {dust_retry} retries — forcing drop to avoid zombie position"
@@ -2059,6 +2221,10 @@ def main():
                                                     has_scaled_out_loss=getattr(p, "has_scaled_out_loss", False),
                                                     has_taken_partial=getattr(p, "has_taken_partial", False),
                                                     has_extracted_principal=getattr(p, "has_extracted_principal", False),
+                                                    has_panic_dumped=getattr(p, "has_panic_dumped", False),
+                                                    force_close_only=getattr(p, "force_close_only", False),
+                                                    runner_peak_value_usd=float(getattr(p, "runner_peak_value_usd", 0.0) or 0.0),
+                                                    runner_peak_ts=float(getattr(p, "runner_peak_ts", 0.0) or 0.0),
                                                     dust_retry_count=dust_retry,
                                                 ))
                                         else:
@@ -2072,14 +2238,30 @@ def main():
                                         flags.panic_exit_mode = True
                                         panic_market_slug = p.slug
                                     log(f"{exit_decision.reason} close failed: {close_resp}")
-                                    keep_positions.append(p)
+                                    kept = OpenPos(**p.__dict__)
+                                    if should_force_full_loss_exit(reason=exit_decision.reason, dry_run=SETTINGS.dry_run):
+                                        kept.force_close_only = True
+                                        kept.has_panic_dumped = should_force_taker_exit(
+                                            reason=exit_decision.reason,
+                                            dry_run=SETTINGS.dry_run,
+                                            has_panic_dumped=getattr(p, "has_panic_dumped", False),
+                                        )
+                                    keep_positions.append(kept)
                             except Exception as e:
                                 flags.close_fail_streak += 1
                                 if urgent_exit:
                                     flags.panic_exit_mode = True
                                     panic_market_slug = p.slug
                                 log(f"{exit_decision.reason} close failed: {e}")
-                                keep_positions.append(p)
+                                kept = OpenPos(**p.__dict__)
+                                if should_force_full_loss_exit(reason=exit_decision.reason, dry_run=SETTINGS.dry_run):
+                                    kept.force_close_only = True
+                                    kept.has_panic_dumped = should_force_taker_exit(
+                                        reason=exit_decision.reason,
+                                        dry_run=SETTINGS.dry_run,
+                                        has_panic_dumped=getattr(p, "has_panic_dumped", False),
+                                    )
+                                keep_positions.append(kept)
                         else:
                             keep_positions.append(p)
                     open_positions, residual_notes = sanitize_open_positions(keep_positions, source="post-close")

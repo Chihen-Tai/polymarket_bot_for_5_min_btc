@@ -79,6 +79,9 @@ def main():
     SETTINGS.stalled_exit_max_abs_pnl_pct = 0.02
     SETTINGS.stalled_exit_max_mfe_pct = 0.02
     SETTINGS.stalled_exit_min_secs_left = 45
+    SETTINGS.moonbag_drawdown_pct = 0.30
+    SETTINGS.moonbag_drawdown_window_sec = 30
+    SETTINGS.moonbag_min_peak_value_usd = 0.10
     SETTINGS.same_market_reentry_min_secs_left = 45
     SETTINGS.ws_stale_max_age_sec = 5.0
     SETTINGS.ws_stale_fail_safe_streak = 2
@@ -478,6 +481,41 @@ def main():
         ("deadline_exit_allows_moonbag_hold", decide_exit(pnl_pct=0.0, hold_sec=50, secs_left=10, has_extracted_principal=True).reason != "deadline-exit-flat"),
         ("deadline_exit_weak_win_without_principal", decide_exit(pnl_pct=0.22, hold_sec=50, secs_left=10).reason == "deadline-exit-weak-win"),
         ("deadline_exit_weak_win_skips_risk_free_moonbag", decide_exit(pnl_pct=0.22, hold_sec=50, secs_left=10, has_extracted_principal=True).reason != "deadline-exit-weak-win"),
+        ("deadline_exit_loss_skips_risk_free_moonbag", decide_exit(pnl_pct=-0.40, hold_sec=50, secs_left=10, has_extracted_principal=True).should_close is False),
+        ("max_hold_loss_skips_risk_free_moonbag", decide_exit(pnl_pct=-0.05, hold_sec=500, has_extracted_principal=True).should_close is False),
+        (
+            "moonbag_drawdown_triggers_fast_protection",
+            decide_exit(
+                pnl_pct=0.05,
+                hold_sec=55,
+                has_extracted_principal=True,
+                runner_drawdown_pct=-0.35,
+                runner_peak_age_sec=10.0,
+                runner_peak_value_usd=0.25,
+            ).reason == "moonbag-drawdown-stop",
+        ),
+        (
+            "moonbag_drawdown_skips_if_peak_is_stale",
+            decide_exit(
+                pnl_pct=0.05,
+                hold_sec=55,
+                has_extracted_principal=True,
+                runner_drawdown_pct=-0.35,
+                runner_peak_age_sec=45.0,
+                runner_peak_value_usd=0.25,
+            ).should_close is False,
+        ),
+        (
+            "moonbag_drawdown_skips_if_runner_is_tiny",
+            decide_exit(
+                pnl_pct=0.05,
+                hold_sec=55,
+                has_extracted_principal=True,
+                runner_drawdown_pct=-0.35,
+                runner_peak_age_sec=10.0,
+                runner_peak_value_usd=0.05,
+            ).should_close is False,
+        ),
         ("smart_stop_loss_after_scale_out", decide_exit(pnl_pct=-0.08, hold_sec=5, recovery_chance_low=True, has_scaled_out_loss=True).reason == "smart-stop-loss"),
         ("smart_stop_loss_at_threshold", decide_exit(pnl_pct=-0.08, hold_sec=5, recovery_chance_low=True).reason == "smart-stop-loss"),
         ("hard_stop_loss", decide_exit(pnl_pct=-0.55, hold_sec=5).reason == "hard-stop-loss"),

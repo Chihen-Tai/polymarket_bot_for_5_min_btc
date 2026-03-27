@@ -7,6 +7,8 @@
 
 # Runtime / state / journals
 .runtime_state.json
+.runtime_state-*.json
+core/.runtime_state*.json
 run_journal.jsonl
 trade_journal.jsonl
 trade_journal_reconciled.jsonl

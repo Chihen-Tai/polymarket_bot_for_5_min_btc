@@ -114,10 +114,14 @@ class Settings:
     smart_stop_loss_enabled: bool = _b("SMART_STOP_LOSS_ENABLED", True)
     stop_loss_partial_pct: float = _f("STOP_LOSS_PARTIAL_PCT", 0.10)
     stop_loss_partial_fraction: float = _f("STOP_LOSS_PARTIAL_FRACTION", 0.50)
+    live_stop_loss_partial_fraction: float = _f("LIVE_STOP_LOSS_PARTIAL_FRACTION", 0.80)
     max_hold_seconds: int = _i("MAX_HOLD_SECONDS", 180)
     take_profit_scaleout_pct: float = _f("TAKE_PROFIT_SCALEOUT_PCT", 0.03)
     take_profit_soft_pct: float = _f("TAKE_PROFIT_SOFT_PCT", 0.30)   # Stage 1: sell partial at +30%
     take_profit_hard_pct: float = _f("TAKE_PROFIT_HARD_PCT", 0.50)   # Stage 2: extract principal at +50%
+    moonbag_drawdown_pct: float = _f("MOONBAG_DRAWDOWN_PCT", 0.30)
+    moonbag_drawdown_window_sec: int = _i("MOONBAG_DRAWDOWN_WINDOW_SEC", 30)
+    moonbag_min_peak_value_usd: float = _f("MOONBAG_MIN_PEAK_VALUE_USD", 0.10)
     momentum_ticks: int = _i("MOMENTUM_TICKS", 3)
     momentum_min_move: float = _f("MOMENTUM_MIN_MOVE", 0.005)
     exit_deadline_sec: int = _i("EXIT_DEADLINE_SEC", 20)
@@ -166,6 +170,8 @@ class Settings:
     binary_kelly_divisor: float = _f("BINARY_KELLY_DIVISOR", 4.0)
     force_full_exit_on_take_profit: bool = _b("FORCE_FULL_EXIT_ON_TAKE_PROFIT", False)
     force_full_exit_on_stop_loss_scaleout: bool = _b("FORCE_FULL_EXIT_ON_STOP_LOSS_SCALEOUT", False)
+    live_force_full_loss_exit: bool = _b("LIVE_FORCE_FULL_LOSS_EXIT", True)
+    live_loss_exit_force_taker: bool = _b("LIVE_LOSS_EXIT_FORCE_TAKER", True)
     failed_follow_through_window_sec: int = _i("FAILED_FOLLOW_THROUGH_WINDOW_SEC", 45)
     failed_follow_through_loss_pct: float = _f("FAILED_FOLLOW_THROUGH_LOSS_PCT", 0.03)
     failed_follow_through_max_mfe_pct: float = _f("FAILED_FOLLOW_THROUGH_MAX_MFE_PCT", 0.02)
