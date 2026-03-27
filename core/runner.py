@@ -145,6 +145,19 @@ def normalize_execution_style(style: str | None, *, default: str = "unknown") ->
     return raw
 
 
+def principal_extraction_complete(
+    recovered_usd: float,
+    target_principal_usd: float,
+    *,
+    recovery_ratio: float = 0.95,
+) -> bool:
+    recovered = max(0.0, float(recovered_usd or 0.0))
+    target = max(0.0, float(target_principal_usd or 0.0))
+    if target <= LOT_EPS_COST_USD:
+        return True
+    return recovered >= target * max(0.0, float(recovery_ratio))
+
+
 def extract_entry_response_details(resp: dict | None) -> tuple[float, str]:
     payload = resp.get("response", {}) if isinstance(resp, dict) else {}
     if not isinstance(payload, dict):
@@ -1750,9 +1763,15 @@ def main():
                                 current_value = max(p.shares * effective_exit_value, 1e-9)
                                 sell_fraction = min(0.99, p.cost_usd / current_value)
                                 sell_shares = p.shares * sell_fraction
+                                target_principal_usd = max(p.cost_usd, 0.0)
                                 
                                 try:
-                                    close_resp = ex.close_position(p.token_id, sell_shares, simulated_price=float(mark) if mark is not None else None)
+                                    close_resp = ex.close_position(
+                                        p.token_id,
+                                        sell_shares,
+                                        simulated_price=float(mark) if mark is not None else None,
+                                        force_taker=True,
+                                    )
                                     if close_resp.get("ok"):
                                         sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
                                         if sold_shares > 0:
@@ -1760,12 +1779,18 @@ def main():
                                             realized_cost = p.cost_usd * actual_fraction
                                             p.shares -= sold_shares
                                             p.cost_usd *= max(0.0, 1.0 - actual_fraction)
-                                            p.has_extracted_principal = True
                                             
                                             _act_val = close_resp.get("actual_exit_value_usd", 0.0)
                                             _obs_val = sold_shares * effective_exit_value
+                                            _principal_recovered = _act_val if _act_val > 0 else _obs_val
+                                            principal_done = principal_extraction_complete(
+                                                _principal_recovered,
+                                                target_principal_usd,
+                                            )
+                                            p.has_extracted_principal = principal_done
                                             _realized_pnl = _act_val - realized_cost if _act_val > 0 else _obs_val - realized_cost
                                             risk.daily_pnl += _realized_pnl
+                                            tp_reason = "take-profit-principal" if principal_done else "take-profit-principal-partial"
                                             append_event({
                                                 "kind": "exit",
                                                 "slug": p.slug,
@@ -1783,13 +1808,21 @@ def main():
                                                 "observed_realized_pnl_usd": _obs_val - realized_cost,
                                                 "exit_execution_style": normalize_execution_style(close_resp.get("execution_style"), default="maker"),
                                                 "status": "partial",
-                                                "reason": "take-profit-principal",
+                                                "reason": tp_reason,
                                                 "mfe_pnl_usd": p.max_favorable_pnl_usd,
                                                 "mae_pnl_usd": p.max_adverse_pnl_usd
                                             })
-                                            
-                                            log(f"PRINCIPAL EXTRACTED! Sold {sold_shares:.2f} shares. Risk-Free Moonbag active.")
-                                            maybe_record_cycle_label(state, "take-profit-principal", slug=p.slug, side=p.side)
+
+                                            if principal_done:
+                                                log(f"PRINCIPAL EXTRACTED! Sold {sold_shares:.2f} shares. Risk-Free Moonbag active.")
+                                                maybe_record_cycle_label(state, "take-profit-principal", slug=p.slug, side=p.side)
+                                            else:
+                                                log(
+                                                    f"principal extraction incomplete | side={p.side} "
+                                                    f"recovered=${_principal_recovered:.4f} target=${target_principal_usd:.4f} "
+                                                    f"sold_shares={sold_shares:.4f} remaining_shares={p.shares:.4f}"
+                                                )
+                                                maybe_record_cycle_label(state, "take-profit-principal-partial", slug=p.slug, side=p.side)
                                 except Exception as e:
                                     log(f"Take-profit principal error: {e}")
                                 keep_positions.append(p)

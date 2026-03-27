@@ -10,7 +10,7 @@ from core.exchange import (
     order_below_minimum_shares,
     plan_live_order,
 )
-from core.runner import extract_entry_cost_usd
+from core.runner import extract_entry_cost_usd, principal_extraction_complete
 
 
 def make_paper_exchange() -> PolymarketExchange:
@@ -73,6 +73,8 @@ def main():
         ("entry_response_cost_from_making_amount", abs((entry_cost or 0.0) - 1.938) < 1e-9),
         ("entry_response_cost_source", entry_cost_source == "entry_response_makingAmount"),
         ("runner_prefers_actual_entry_cost", abs(runner_entry_cost - 1.938) < 1e-9),
+        ("principal_extraction_rejects_tiny_partial_fill", principal_extraction_complete(0.0286, 1.0) is False),
+        ("principal_extraction_accepts_near_full_recovery", principal_extraction_complete(0.97, 1.0) is True),
         ("limit_order_type_prefers_post_only_when_available", _limit_order_type(LegacyOrderType) == "POST_ONLY"),
         ("limit_order_type_falls_back_to_gtc", _limit_order_type(ModernOrderType) == "GTC"),
         ("minimum_order_usd_for_five_shares", abs(minimum_order_usd(0.535, 5.0) - 2.675) < 1e-9),
