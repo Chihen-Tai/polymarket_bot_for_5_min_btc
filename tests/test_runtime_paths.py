@@ -3,7 +3,15 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from core.runner import OpenPos, PendingOrder, clear_expired_market_state
+from core.runner import (
+    OpenPos,
+    PendingOrder,
+    clear_expired_market_state,
+    idle_sleep_seconds,
+    next_cycle_interval_seconds,
+    pending_order_poll_interval_seconds,
+    sync_open_positions,
+)
 from core.runtime_paths import mode_label, run_journal_path, runtime_state_path, trade_journal_path
 
 
@@ -65,6 +73,24 @@ def main():
         ("expired_market_keeps_only_current_pending_order", len(kept_pending) == 1 and kept_pending[0].slug == "btc-updown-5m-current"),
         ("expired_market_cancels_old_pending_order", canceled == ["old-order"]),
         ("expired_market_logs_cleanup", any("clear expired live runtime position" in note for note in cleanup_notes)),
+    ])
+
+    class DummyExchange:
+        def __init__(self):
+            self.calls = 0
+
+        def get_positions(self):
+            self.calls += 1
+            return []
+
+    dummy = DummyExchange()
+    synced_positions, synced_notes = sync_open_positions(dummy, [])
+    cases.extend([
+        ("sync_open_positions_short_circuits_when_empty", synced_positions == [] and synced_notes == [] and dummy.calls == 0),
+        ("pending_orders_poll_every_second", abs(pending_order_poll_interval_seconds() - 1.0) < 1e-9),
+        ("next_cycle_interval_uses_fast_pending_poll", abs(next_cycle_interval_seconds(has_pending_orders=True) - 1.0) < 1e-9),
+        ("next_cycle_interval_uses_two_second_market_poll_floor", abs(next_cycle_interval_seconds(has_pending_orders=False) - 2.0) < 1e-9),
+        ("idle_sleep_prefers_fast_pending_poll", abs(idle_sleep_seconds(has_open_positions=False, has_pending_orders=True) - 1.0) < 1e-9),
     ])
 
     failed = [name for name, ok in cases if not ok]

@@ -165,6 +165,8 @@ class PolymarketExchange:
         self._last_price = 73933.39
         self._position_cost: dict[str, float] = {}  # token_id -> cost_usd (for exposure accounting)
         self._position_shares: dict[str, float] = {}  # token_id -> shares (for dry-run cost-basis accounting)
+        self._live_account_cache: Account | None = None
+        self._live_account_cache_ts: float = 0.0
 
         self.paper_balance_file = os.path.join(SETTINGS.data_dir, "paper_balance.json")
         self._load_paper_balance()
@@ -173,6 +175,10 @@ class PolymarketExchange:
         self._funder = SETTINGS.funder_address
 
         self._init_real_client()
+
+    def invalidate_live_account_cache(self) -> None:
+        self._live_account_cache = None
+        self._live_account_cache_ts = 0.0
 
     def _load_paper_balance(self):
         self._cash = 100.0
@@ -386,12 +392,30 @@ class PolymarketExchange:
                 open_exposure=self._open_exposure,
             )
 
+        cache_ttl_sec = max(0.0, float(getattr(SETTINGS, "live_account_cache_ttl_sec", 0.0) or 0.0))
+        now_ts = time.time()
+        if (
+            cache_ttl_sec > 0.0
+            and self._live_account_cache is not None
+            and (now_ts - self._live_account_cache_ts) <= cache_ttl_sec
+        ):
+            cached = self._live_account_cache
+            return Account(
+                equity=float(cached.equity),
+                cash=float(cached.cash),
+                open_exposure=float(cached.open_exposure),
+            )
+
         cash = self._get_cash_balance()
         positions_value = self._get_positions_value()
         equity = cash + positions_value
 
         # open exposure 先用保守值 0（後續可擴充為掃 open orders）
-        return Account(equity=equity, cash=cash, open_exposure=0.0)
+        acct = Account(equity=equity, cash=cash, open_exposure=0.0)
+        if cache_ttl_sec > 0.0:
+            self._live_account_cache = acct
+            self._live_account_cache_ts = now_ts
+        return Account(equity=acct.equity, cash=acct.cash, open_exposure=acct.open_exposure)
 
     def get_positions(self) -> list[Position]:
         if self.dry_run or not self._funder:
@@ -621,6 +645,7 @@ class PolymarketExchange:
             if filled_cost_usd is not None and filled_cost_usd > 0
             else actual_order_usd
         )
+        self.invalidate_live_account_cache()
 
         return {
             "ok": True,
@@ -939,6 +964,8 @@ class PolymarketExchange:
             execution_style = "maker"
         else:
             execution_style = "unknown"
+        if sold_total > 0:
+            self.invalidate_live_account_cache()
         return {
             "ok": ok,
             "mode": "live",

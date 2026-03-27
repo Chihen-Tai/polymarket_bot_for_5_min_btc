@@ -51,6 +51,8 @@ class Settings:
     ofi_bypass_threshold: float = _f("OFI_BYPASS_THRESHOLD", 0.65)
 
     poll_seconds: int = _i("POLL_SECONDS", 15)
+    live_account_cache_ttl_sec: float = _f("LIVE_ACCOUNT_CACHE_TTL_SEC", 6.0)
+    pending_order_poll_seconds: float = _f("PENDING_ORDER_POLL_SECONDS", 1.0)
 
     discord_webhook_url: str = os.getenv("DISCORD_WEBHOOK_URL", "")
 

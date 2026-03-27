@@ -54,6 +54,31 @@ def smart_sleep(seconds: float):
         time.sleep(1.0)
 
 
+def normal_poll_interval_seconds() -> float:
+    return max(2.0, float(getattr(SETTINGS, "poll_seconds", 3) or 3.0))
+
+
+def pending_order_poll_interval_seconds() -> float:
+    requested = max(0.5, float(getattr(SETTINGS, "pending_order_poll_seconds", 1.0) or 1.0))
+    return min(normal_poll_interval_seconds(), requested)
+
+
+def next_cycle_interval_seconds(*, has_pending_orders: bool) -> float:
+    if has_pending_orders:
+        return pending_order_poll_interval_seconds()
+    return normal_poll_interval_seconds()
+
+
+def idle_sleep_seconds(*, has_open_positions: bool, has_pending_orders: bool, secs_left: float | None = None) -> float:
+    if has_pending_orders:
+        return pending_order_poll_interval_seconds()
+    if has_open_positions:
+        return min(1.5, normal_poll_interval_seconds())
+    if secs_left is not None and 200 <= secs_left <= 260:
+        return 1.0
+    return float(getattr(SETTINGS, "poll_seconds", 3) or 3.0)
+
+
 
 STATE_VERSION = 2
 
@@ -952,6 +977,9 @@ def merge_recovery_positions(runtime_positions: list[OpenPos], rebuilt_positions
 
 
 def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos], list[str]]:
+    if not open_positions:
+        return [], []
+
     # Only reconcile positions already tracked by this bot.
     # This avoids importing unrelated legacy holdings from the wallet.
     live_list = ex.get_positions()
@@ -969,13 +997,21 @@ def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos
 
     synced: list[OpenPos] = []
     notes: list[str] = []
+    base_grace_sec = max(5.0, float(getattr(SETTINGS, "live_position_grace_sec", 90) or 90.0))
+    base_miss_limit = max(1, int(getattr(SETTINGS, "live_position_miss_limit", 3) or 3))
     for p in open_positions:
         ap = actual.get(p.token_id)
         if ap is None or ap.size <= 0:
             age_sec = max(0.0, time.time() - float(p.opened_ts or 0.0)) if p.opened_ts else 999999.0
             miss_count = int(getattr(p, "live_miss_count", 0) or 0) + 1  # Only increment when API responded!
-            # Give ALL missing positions a longer grace period to survive API delays/hiccups
-            in_grace = age_sec <= 300 and miss_count <= 5
+            grace_sec = base_grace_sec
+            miss_limit = base_miss_limit
+            if getattr(p, "pending_confirmation", False):
+                # Freshly filled live orders can take a little longer to show up in the
+                # positions API. Give them extra breathing room before treating them as missing.
+                grace_sec = max(grace_sec, 30.0)
+                miss_limit = max(miss_limit, base_miss_limit + 2)
+            in_grace = age_sec <= grace_sec and miss_count <= miss_limit
             if in_grace:
                 held = OpenPos(**p.__dict__)
                 held.live_miss_count = miss_count
@@ -1374,8 +1410,9 @@ def main():
     try:
         while True:
             time_since_last_query = time.time() - last_rest_query_ts
-            if time_since_last_query < 3.0:
-                time.sleep(3.0 - time_since_last_query)
+            cycle_interval = next_cycle_interval_seconds(has_pending_orders=bool(pending_orders))
+            if time_since_last_query < cycle_interval:
+                time.sleep(cycle_interval - time_since_last_query)
             last_rest_query_ts = time.time()
             flags.last_api_latency_ms = 0.0
             cycle_had_slow_api = False
@@ -3120,20 +3157,21 @@ def main():
                     last_cycle_label=state.get("last_cycle_label", ""),
                     panic_market_slug=panic_market_slug,
                 )
-                has_active = bool(open_positions) or bool(pending_orders)
-                if has_active:
-                    smart_sleep(1.5)
-                else:
-                    smart_sleep(SETTINGS.poll_seconds)
+                smart_sleep(
+                    idle_sleep_seconds(
+                        has_open_positions=bool(open_positions),
+                        has_pending_orders=bool(pending_orders),
+                    )
+                )
                 continue
 
-            has_active = bool(open_positions) or bool(pending_orders)
-            if has_active:
-                smart_sleep(1.5)
-            elif "secs_left" in locals() and secs_left is not None and 200 <= secs_left <= 260:
-                smart_sleep(1.0)
-            else:
-                smart_sleep(SETTINGS.poll_seconds)
+            smart_sleep(
+                idle_sleep_seconds(
+                    has_open_positions=bool(open_positions),
+                    has_pending_orders=bool(pending_orders),
+                    secs_left=secs_left if "secs_left" in locals() else None,
+                )
+            )
     except GracefulStop:
         reason = "manual-stop" if STOP_REQUEST["signal"] == signal.SIGINT else "timeout-or-sigterm"
         run_journal.finalize(status="terminated", reason=reason, notes=["graceful signal stop"])

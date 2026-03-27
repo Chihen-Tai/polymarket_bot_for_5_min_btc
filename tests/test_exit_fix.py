@@ -79,6 +79,26 @@ def main():
         "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance: "
         "the balance is not enough -> balance: 1198827, order amount: 1200000'}]"
     )
+    live_acct_ex = make_paper_exchange()
+    live_acct_ex.dry_run = False
+    live_acct_ex._funder = "0xabc"
+    cash_calls = {"count": 0}
+    value_calls = {"count": 0}
+
+    def fake_cash_balance():
+        cash_calls["count"] += 1
+        return 7.0
+
+    def fake_positions_value():
+        value_calls["count"] += 1
+        return 3.0
+
+    live_acct_ex._get_cash_balance = fake_cash_balance
+    live_acct_ex._get_positions_value = fake_positions_value
+    acct_first = live_acct_ex.get_account()
+    acct_second = live_acct_ex.get_account()
+    live_acct_ex.invalidate_live_account_cache()
+    acct_third = live_acct_ex.get_account()
 
     entry = ex.place_order("UP", 1.0, token_id_override="tok1", simulated_price=0.5)
     partial = ex.close_position("tok1", 1.0, simulated_price=0.6)
@@ -128,6 +148,7 @@ def main():
         ("estimate_book_exit_value_is_conservative_when_depth_is_thin", abs((thin_value or 0.0) - 0.2) < 1e-9 and abs(thin_fill_ratio - 0.5) < 1e-9),
         ("realistic_exit_value_uses_depth_aware_bids", abs((realistic_value or 0.0) - 0.595) < 1e-9),
         ("parse_balance_allowance_available_shares_handles_live_error", abs((parsed_balance_shares or 0.0) - 1.198827) < 1e-9),
+        ("live_account_cache_reuses_recent_snapshot", cash_calls["count"] == 2 and value_calls["count"] == 2 and acct_first.cash == acct_second.cash == acct_third.cash == 7.0 and acct_first.equity == acct_second.equity == acct_third.equity == 10.0),
         ("paper_entry_is_taker_simulated", entry.get("execution_style") == "taker-simulated"),
         ("paper_partial_close_value", abs(float(partial["actual_exit_value_usd"]) - 0.6) < 1e-9),
         ("paper_partial_close_remaining_shares", abs(float(partial["remaining_shares"]) - 1.0) < 1e-9),
