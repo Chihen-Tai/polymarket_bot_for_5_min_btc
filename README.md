@@ -37,32 +37,62 @@ conda activate polymarket-bot
 
 ## 設定 `.env`
 
-這個 repo 現在是直接追蹤 `.env`，不是用 `.env.example` 複製出來。
+這個 repo 目前保留一份追蹤中的 `.env` 供本地優化使用，但 GitHub 使用者不要直接把它當成 live 模板。
 
-你要做的是直接修改 repo 根目錄的 `.env`。
+建議做法：
 
-最常改的欄位：
+- dry-run：參考 [.env.example](/Applications/codes/polymarket-bot-by_openclaw/.env.example)
+- live：參考 [.env.live.example](/Applications/codes/polymarket-bot-by_openclaw/.env.live.example)
+- 你自己的私鑰和 API 憑證只放在本機，不要 commit
+
+目前 bot 真正會讀的 live 相關欄位主要是：
 
 - `DRY_RUN`
-- `AUTO_MARKET_SELECTION`
 - `PRIVATE_KEY`
 - `FUNDER_ADDRESS`
+- `SIGNATURE_TYPE`
 - `CLOB_API_KEY`
 - `CLOB_API_SECRET`
 - `CLOB_API_PASSPHRASE`
-- `MAX_ORDER_USD`
-- `ENTRY_WINDOW_MIN_SEC`
-- `ENTRY_WINDOW_MAX_SEC`
-- `MIN_ENTRY_PRICE`
-- `MAX_ENTRY_PRICE`
-- `STOP_LOSS_*`
-- `TAKE_PROFIT_*`
+- `AUTO_MARKET_SELECTION`
+- `TOKEN_ID_UP`
+- `TOKEN_ID_DOWN`
+
+實盤常見的 `invalid signature` 幾乎都來自這三個不匹配：
+
+- `PRIVATE_KEY`
+- `FUNDER_ADDRESS`
+- `SIGNATURE_TYPE`
+
+`SIGNATURE_TYPE` 的用法：
+
+- `0`：一般 EOA 錢包
+- `1`：email / Magic wallet
+- `2`：proxy wallet / smart wallet
+
+如果你是 proxy / smart wallet，通常要同時提供：
+
+- 正確的 `SIGNATURE_TYPE=2`
+- 真正持有資金的 `FUNDER_ADDRESS`
+- 與這組 signer / funder 對應的 `CLOB_API_*`
+
+如果不確定 `CLOB_API_*` 是否過期，可以先清空，讓 bot 重新 derive。
+
+這個 repo 目前不會讀這些欄位，所以就算你填了也不會影響 bot：
+
+- `RELAYER_URL`
+- `RELAYER_API_KEY`
+- `RELAYER_API_KEY_ADDRESS`
+- `PROXY_WALLET`
+- `BUILDER_KEY`
+- `BUILDER_SECRET`
+- `BUILDER_PASSPHRASE`
 
 重要提醒：
 
-- repo 內的 `.env` 預設會保留空白敏感欄位
-- 如果你本機填入真實私鑰或 API 憑證，不要把那些內容再 commit 上去
-- 要切實盤時，把 `DRY_RUN=false`，並先再次確認金鑰和地址
+- live 前先把 `DRY_RUN=false`
+- 先確認 `.env.live.example` 裡的欄位和你的帳戶型態一致
+- 如果本機填入真實私鑰或 API 憑證，不要把那些內容再 commit 上去
 
 ## 執行
 
@@ -85,6 +115,22 @@ python main.py
 - `latest_run_report.txt`
 
 `latest_run_report.txt` 是最快速查看最近一次結果的檔案。
+
+## Live Notes
+
+如果你要先用很小部位實戰，建議：
+
+- 先從 [.env.live.example](/Applications/codes/polymarket-bot-by_openclaw/.env.live.example) 開始
+- 保持 `MAX_ORDER_USD=1.0`
+- 先跑小量 live 驗證 signer / funder / API creds 都對
+
+如果 log 出現 `invalid signature`，先檢查：
+
+- `SIGNATURE_TYPE` 是否正確
+- `FUNDER_ADDRESS` 是否真的是 Polymarket 上持有資金的地址
+- `CLOB_API_*` 是否屬於同一組 signer / funder
+
+如果 log 出現 live limit order 送單錯誤，確認你已經拉到包含 `GTC` limit-order 相容修正的版本。
 
 ## 常用報表指令
 
