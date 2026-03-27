@@ -10,6 +10,7 @@ from core.exchange import (
     order_below_minimum_shares,
     plan_live_order,
 )
+from core.runner import extract_entry_cost_usd
 
 
 def make_paper_exchange() -> PolymarketExchange:
@@ -42,6 +43,15 @@ def main():
 
     value, source = ex._extract_close_usdc_received({"takingAmount": 0.9823, "makingAmount": 2.094658})
     filled, filled_source = ex._extract_close_shares_sold({"takingAmount": 0.9823, "makingAmount": 2.094658})
+    entry_cost, entry_cost_source = ex._extract_entry_cost_usd({"takingAmount": 6.46, "makingAmount": 1.938})
+    runner_entry_cost = extract_entry_cost_usd(
+        {
+            "amount_usd": 3.0039,
+            "actual_entry_cost_usd": 1.938,
+            "response": {"takingAmount": "6.46", "makingAmount": "1.938", "status": "matched"},
+        },
+        3.0039,
+    )
 
     entry = ex.place_order("UP", 1.0, token_id_override="tok1", simulated_price=0.5)
     partial = ex.close_position("tok1", 1.0, simulated_price=0.6)
@@ -60,6 +70,9 @@ def main():
         ("close_response_value_source", source == "close_response_takingAmount"),
         ("close_response_filled_shares_from_making_amount", abs((filled or 0.0) - 2.094658) < 1e-9),
         ("close_response_filled_shares_source", filled_source == "close_response_makingAmount"),
+        ("entry_response_cost_from_making_amount", abs((entry_cost or 0.0) - 1.938) < 1e-9),
+        ("entry_response_cost_source", entry_cost_source == "entry_response_makingAmount"),
+        ("runner_prefers_actual_entry_cost", abs(runner_entry_cost - 1.938) < 1e-9),
         ("limit_order_type_prefers_post_only_when_available", _limit_order_type(LegacyOrderType) == "POST_ONLY"),
         ("limit_order_type_falls_back_to_gtc", _limit_order_type(ModernOrderType) == "GTC"),
         ("minimum_order_usd_for_five_shares", abs(minimum_order_usd(0.535, 5.0) - 2.675) < 1e-9),

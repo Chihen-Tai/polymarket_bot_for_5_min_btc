@@ -292,6 +292,15 @@ class PolymarketExchange:
                 return value, f"close_response_{key}"
         return None, "close_response_missing_filled_shares"
 
+    def _extract_entry_cost_usd(self, payload: Any) -> tuple[float | None, str]:
+        """Extract actual USDC spent for a BUY fill."""
+        if not isinstance(payload, dict):
+            return None, "entry_response_unavailable"
+        making = _to_float(payload.get("makingAmount"), -1.0)
+        if making > 0:
+            return making, "entry_response_makingAmount"
+        return None, "entry_response_missing_makingAmount"
+
 
     def get_account(self) -> Account:
         if self.dry_run:
@@ -468,30 +477,37 @@ class PolymarketExchange:
         min_live_order_shares = float(getattr(SETTINGS, "min_live_order_shares", 5.0) or 0.0)
         min_live_order_usd = float(getattr(SETTINGS, "min_live_order_usd", 1.0) or 0.0)
         live_order_hard_cap_usd = float(getattr(SETTINGS, "live_order_hard_cap_usd", 0.0) or 0.0)
-        size_rounded, actual_order_usd = plan_live_order(
-            amount_usd,
-            price_rounded,
-            min_live_order_shares,
-            min_live_order_usd,
-        )
-        if live_order_hard_cap_usd > 0.0 and actual_order_usd > live_order_hard_cap_usd + 1e-9:
-            raise ValueError(
-                f"order notional exceeds live cap: requested=${amount_usd:.2f} "
-                f"actual=${actual_order_usd:.4f} cap=${live_order_hard_cap_usd:.2f}"
-            )
+        use_market_entry = force_taker or bool(getattr(SETTINGS, "live_entry_use_market_orders", True))
 
-        if force_taker:
+        if use_market_entry:
+            actual_order_usd = round(max(float(amount_usd), min_live_order_usd), 4)
+            if live_order_hard_cap_usd > 0.0 and actual_order_usd > live_order_hard_cap_usd + 1e-9:
+                raise ValueError(
+                    f"order notional exceeds live cap: requested=${amount_usd:.2f} "
+                    f"actual=${actual_order_usd:.4f} cap=${live_order_hard_cap_usd:.2f}"
+                )
             from py_clob_client.clob_types import MarketOrderArgs
             order = self.client.create_market_order(
                 MarketOrderArgs(
                     token_id=token_id,
-                    amount=float(size_rounded),
+                    amount=float(actual_order_usd),
                     side=BUY,
                     order_type=OrderType.FAK,
                 )
             )
             resp = self.client.post_order(order, OrderType.FAK)
         else:
+            size_rounded, actual_order_usd = plan_live_order(
+                amount_usd,
+                price_rounded,
+                min_live_order_shares,
+                min_live_order_usd,
+            )
+            if live_order_hard_cap_usd > 0.0 and actual_order_usd > live_order_hard_cap_usd + 1e-9:
+                raise ValueError(
+                    f"order notional exceeds live cap: requested=${amount_usd:.2f} "
+                    f"actual=${actual_order_usd:.4f} cap=${live_order_hard_cap_usd:.2f}"
+                )
             book = self.get_full_orderbook(token_id)
             if book:
                 best_bid = float(book.get("best_bid", 0.01))
@@ -526,13 +542,23 @@ class PolymarketExchange:
                 raise AttributeError("py_clob_client OrderType missing both POST_ONLY and GTC")
             resp = self.client.post_order(order, limit_order_type)
 
+        filled_cost_usd, filled_cost_source = self._extract_entry_cost_usd(resp)
+        effective_amount_usd = (
+            float(filled_cost_usd)
+            if filled_cost_usd is not None and filled_cost_usd > 0
+            else actual_order_usd
+        )
+
         return {
             "ok": True,
             "mode": "live",
             "side": side,
             "requested_amount_usd": amount_usd,
-            "amount_usd": actual_order_usd,
-            "execution_style": "taker" if force_taker else "maker",
+            "amount_usd": effective_amount_usd,
+            "planned_amount_usd": actual_order_usd,
+            "actual_entry_cost_usd": filled_cost_usd,
+            "actual_entry_cost_source": filled_cost_source,
+            "execution_style": "taker" if use_market_entry else "maker",
             "response": resp,
         }
 

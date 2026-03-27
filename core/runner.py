@@ -106,6 +106,8 @@ class PendingOrder:
     order_usd: float
     entry_reason: str = "signal"
     fallback_attempted: bool = False
+    disappeared_since_ts: float = 0.0
+    cancel_requested: bool = False
 
 
 @dataclass
@@ -150,6 +152,28 @@ def extract_entry_response_details(resp: dict | None) -> tuple[float, str]:
     shares = float(payload.get("takingAmount", 0) or 0.0)
     order_id = str(payload.get("orderID") or "")
     return shares, order_id
+
+
+def extract_entry_cost_usd(resp: dict | None, fallback_usd: float) -> float:
+    if not isinstance(resp, dict):
+        return float(fallback_usd)
+    actual_cost = resp.get("actual_entry_cost_usd")
+    if actual_cost is not None:
+        try:
+            actual_cost = float(actual_cost)
+            if actual_cost > 0:
+                return actual_cost
+        except Exception:
+            pass
+    amount_usd = resp.get("amount_usd")
+    if amount_usd is not None:
+        try:
+            amount_usd = float(amount_usd)
+            if amount_usd > 0:
+                return amount_usd
+        except Exception:
+            pass
+    return float(fallback_usd)
 
 
 def entry_response_has_actionable_state(resp: dict | None) -> bool:
@@ -351,6 +375,7 @@ def place_entry_order_with_retry(
                 "order size below minimum" in err_text
                 or ("lower than the minimum" in err_text and "size" in err_text)
                 or "order notional exceeds live cap" in err_text
+                or "not enough balance / allowance" in err_text
             ):
                 raise
             if attempt >= attempts:
@@ -1177,6 +1202,9 @@ def main():
                         live_pos = live_positions_by_token.get(po.token_id)
                         has_live_position = live_pos is not None
                         order_still_open = bool(po.order_id) and po.order_id in open_order_ids
+                        if order_still_open:
+                            po.disappeared_since_ts = 0.0
+                            po.cancel_requested = False
                         action = decide_pending_order_action(
                             order_still_open=order_still_open,
                             age_sec=time.time() - po.placed_ts,
@@ -1205,8 +1233,16 @@ def main():
                             continue
 
                         if action == "gone":
-                            log(f"Pending order {po.order_id or 'n/a'} disappeared with no live position; treating as canceled/unfilled.")
-                            pending_orders.remove(po)
+                            if po.disappeared_since_ts <= 0.0:
+                                po.disappeared_since_ts = time.time()
+                                cancel_ok = False
+                                if po.order_id and not po.cancel_requested:
+                                    cancel_ok = ex.cancel_order(po.order_id)
+                                    po.cancel_requested = True
+                                log(
+                                    f"Pending order {po.order_id or 'n/a'} disappeared from open-orders view with no live position; "
+                                    f"keeping it blocked until fill/cancel/market switch (cancel_requested={po.cancel_requested} cancel_ok={cancel_ok})"
+                                )
                             continue
 
                         if action == "cancel-reversal":
@@ -2284,38 +2320,64 @@ def main():
                     min_live_order_usd = float(getattr(SETTINGS, "min_live_order_usd", 1.0) or 0.0)
                     live_order_hard_cap_usd = float(getattr(SETTINGS, "live_order_hard_cap_usd", 0.0) or 0.0)
                     requested_shares = est_shares
-                    required_shares, required_usd = plan_live_order(
-                        order_usd,
-                        float(entry_price),
-                        min_live_order_shares,
-                        min_live_order_usd,
-                    )
-                    if live_order_hard_cap_usd > 0.0 and required_usd > live_order_hard_cap_usd + 1e-9:
-                        maybe_record_cycle_label(
-                            state,
-                            "signal-blocked",
-                            slug=last_market_slug,
-                            side=signal_side,
-                            reason="order-size-below-minimum",
+                    live_market_entry = bool(getattr(SETTINGS, "live_entry_use_market_orders", True))
+                    if live_market_entry:
+                        required_usd = round(max(order_usd, min_live_order_usd), 4)
+                        if live_order_hard_cap_usd > 0.0 and required_usd > live_order_hard_cap_usd + 1e-9:
+                            maybe_record_cycle_label(
+                                state,
+                                "signal-blocked",
+                                slug=last_market_slug,
+                                side=signal_side,
+                                reason="order-size-below-minimum",
+                            )
+                            log(
+                                f"skip entry: order size below minimum | requested=${order_usd:.2f} "
+                                f"price={float(entry_price):.3f} requested_shares={requested_shares:.2f} "
+                                f"required_usd=${required_usd:.2f} cap_usd=${live_order_hard_cap_usd:.2f}"
+                            )
+                            smart_sleep(SETTINGS.poll_seconds)
+                            continue
+                        if required_usd > order_usd + 1e-9:
+                            log(
+                                f"live market order auto-bump | requested=${order_usd:.2f} "
+                                f"-> actual=${required_usd:.4f} min_notional=${min_live_order_usd:.2f}"
+                            )
+                            order_usd = required_usd
+                        est_shares = order_usd / float(entry_price)
+                    else:
+                        required_shares, required_usd = plan_live_order(
+                            order_usd,
+                            float(entry_price),
+                            min_live_order_shares,
+                            min_live_order_usd,
                         )
-                        log(
-                            f"skip entry: order size below minimum | requested=${order_usd:.2f} "
-                            f"price={float(entry_price):.3f} requested_shares={requested_shares:.2f} "
-                            f"required_shares={required_shares:.2f} "
-                            f"min_shares={min_live_order_shares:.2f} min_notional=${min_live_order_usd:.2f} "
-                            f"required_usd=${required_usd:.2f} cap_usd=${live_order_hard_cap_usd:.2f}"
-                        )
-                        smart_sleep(SETTINGS.poll_seconds)
-                        continue
-                    if required_usd > order_usd + 1e-9:
-                        log(
-                            f"live order auto-bump | requested=${order_usd:.2f} "
-                            f"price={float(entry_price):.3f} requested_shares={requested_shares:.2f} "
-                            f"-> actual=${required_usd:.4f} shares={required_shares:.2f} "
-                            f"cap_usd={live_order_hard_cap_usd:.2f}"
-                        )
-                        order_usd = required_usd
-                    est_shares = required_shares
+                        if live_order_hard_cap_usd > 0.0 and required_usd > live_order_hard_cap_usd + 1e-9:
+                            maybe_record_cycle_label(
+                                state,
+                                "signal-blocked",
+                                slug=last_market_slug,
+                                side=signal_side,
+                                reason="order-size-below-minimum",
+                            )
+                            log(
+                                f"skip entry: order size below minimum | requested=${order_usd:.2f} "
+                                f"price={float(entry_price):.3f} requested_shares={requested_shares:.2f} "
+                                f"required_shares={required_shares:.2f} "
+                                f"min_shares={min_live_order_shares:.2f} min_notional=${min_live_order_usd:.2f} "
+                                f"required_usd=${required_usd:.2f} cap_usd=${live_order_hard_cap_usd:.2f}"
+                            )
+                            smart_sleep(SETTINGS.poll_seconds)
+                            continue
+                        if required_usd > order_usd + 1e-9:
+                            log(
+                                f"live order auto-bump | requested=${order_usd:.2f} "
+                                f"price={float(entry_price):.3f} requested_shares={requested_shares:.2f} "
+                                f"-> actual=${required_usd:.4f} shares={required_shares:.2f} "
+                                f"cap_usd={live_order_hard_cap_usd:.2f}"
+                            )
+                            order_usd = required_usd
+                        est_shares = required_shares
                 try:
                     entry_book_quality = assess_entry_liquidity(
                         book=ex.get_full_orderbook(token_override),
@@ -2354,6 +2416,12 @@ def main():
             if flags.panic_exit_mode:
                 maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="panic-exit-mode")
                 log("panic_exit_mode active: block new entries")
+                smart_sleep(SETTINGS.poll_seconds)
+                continue
+
+            if any(po.slug == last_market_slug for po in pending_orders):
+                maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="existing-pending-order-still-open")
+                log("skip entry: existing pending order still open")
                 smart_sleep(SETTINGS.poll_seconds)
                 continue
 
@@ -2428,6 +2496,8 @@ def main():
                         force_taker_snipe = True
                 except Exception:
                     pass
+                use_market_entry = (not SETTINGS.dry_run) and bool(getattr(SETTINGS, "live_entry_use_market_orders", True))
+                force_taker_entry = force_taker_snipe or use_market_entry
 
                 resp, order_latencies, order_attempts = place_entry_order_with_retry(
                     ex,
@@ -2435,7 +2505,7 @@ def main():
                     order_usd,
                     token_override,
                     simulated_price=sim_price,
-                    force_taker=force_taker_snipe,
+                    force_taker=force_taker_entry,
                     max_attempts=int(getattr(SETTINGS, "entry_retry_attempts", 3)),
                     backoff_sec=float(getattr(SETTINGS, "entry_retry_backoff_sec", 2.0)),
                 )
@@ -2485,7 +2555,7 @@ def main():
                             log(f"hedge parsing error: {e}")
                 try:
                     r = resp.get("response", {}) if isinstance(resp, dict) else {}
-                    actual_entry_cost_usd = float(resp.get("amount_usd", order_usd) or order_usd) if isinstance(resp, dict) else order_usd
+                    actual_entry_cost_usd = extract_entry_cost_usd(resp, order_usd)
                     shares, order_id = extract_entry_response_details(resp)
                     token_id = token_override or (market["token_up"] if signal_side == "UP" else market["token_down"])
                     if shares > 0 and token_id:
@@ -2520,7 +2590,7 @@ def main():
                             "classification": "good-entry-candidate",
                             "execution_style": normalize_execution_style(
                                 resp.get("execution_style") if isinstance(resp, dict) else "",
-                                default="taker" if force_taker_snipe else "maker",
+                                default="taker" if force_taker_entry else "maker",
                             ),
                             "entry_price": float(entry_price),
                             "entry_book_spread": (float(entry_book_quality.get("spread")) if entry_book_quality and entry_book_quality.get("spread") is not None else None),
