@@ -84,6 +84,17 @@ def decide_exit(
     ):
         return ExitDecision(True, "stalled-trade", pnl_pct, hold_sec)
 
+    if (
+        has_scaled_out_loss
+        and hold_sec >= getattr(SETTINGS, "post_scaleout_loss_exit_delay_sec", 20)
+        and pnl_pct <= -getattr(
+            SETTINGS,
+            "post_scaleout_loss_exit_pct",
+            getattr(SETTINGS, "stop_loss_warn_pct", 0.08),
+        )
+    ):
+        return ExitDecision(True, "post-scaleout-stop-loss", pnl_pct, hold_sec)
+
     # 2. Stop Loss Handling
     if getattr(SETTINGS, "smart_stop_loss_enabled", False):
         if pnl_pct <= -SETTINGS.stop_loss_pct:

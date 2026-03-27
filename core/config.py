@@ -185,6 +185,8 @@ class Settings:
     stalled_exit_max_abs_pnl_pct: float = _f("STALLED_EXIT_MAX_ABS_PNL_PCT", 0.02)
     stalled_exit_max_mfe_pct: float = _f("STALLED_EXIT_MAX_MFE_PCT", 0.02)
     stalled_exit_min_secs_left: int = _i("STALLED_EXIT_MIN_SECS_LEFT", 45)
+    post_scaleout_loss_exit_delay_sec: int = _i("POST_SCALEOUT_LOSS_EXIT_DELAY_SEC", 20)
+    post_scaleout_loss_exit_pct: float = _f("POST_SCALEOUT_LOSS_EXIT_PCT", 0.10)
     same_market_reentry_min_secs_left: int = _i("SAME_MARKET_REENTRY_MIN_SECS_LEFT", 60)
     binance_signal_lag_sec: float = _f("BINANCE_SIGNAL_LAG_SEC", 0.5)
     entry_dual_velocity_confirm: bool = _b("ENTRY_DUAL_VELOCITY_CONFIRM", True)

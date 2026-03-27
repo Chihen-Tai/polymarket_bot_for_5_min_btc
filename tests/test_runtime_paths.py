@@ -119,9 +119,30 @@ def main():
             ),
         ],
     )
+    protected_positions, protected_notes = sync_open_positions(
+        mismatch,
+        [
+            OpenPos(
+                slug="btc-updown-5m-current",
+                side="DOWN",
+                token_id="residual-token",
+                shares=0.3,
+                cost_usd=0.2,
+                opened_ts=time.time() - 120.0,
+                has_scaled_out_loss=True,
+                live_miss_count=9,
+            ),
+        ],
+    )
     cases.extend([
         ("sync_open_positions_short_circuits_when_empty", synced_positions == [] and synced_notes == [] and dummy.calls == 0),
         ("pending_confirmation_holds_until_grace_expires", len(held_positions) == 1 and any("sync_hold token=pending-token" in note for note in held_notes)),
+        (
+            "loss_residual_missing_live_is_force_close_protected",
+            len(protected_positions) == 1
+            and protected_positions[0].force_close_only is True
+            and any("sync_protect token=residual-token" in note for note in protected_notes)
+        ),
         ("pending_orders_poll_every_second", abs(pending_order_poll_interval_seconds() - 1.0) < 1e-9),
         ("next_cycle_interval_uses_fast_pending_poll", abs(next_cycle_interval_seconds(has_pending_orders=True) - 1.0) < 1e-9),
         ("next_cycle_interval_uses_two_second_market_poll_floor", abs(next_cycle_interval_seconds(has_pending_orders=False) - 2.0) < 1e-9),

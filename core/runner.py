@@ -285,6 +285,7 @@ def entry_response_has_actionable_state(resp: dict | None) -> bool:
 
 LOSS_EXIT_REASONS = {
     "moonbag-drawdown-stop",
+    "post-scaleout-stop-loss",
     "residual-force-close",
     "failed-follow-through",
     "hard-stop-loss",
@@ -1040,20 +1041,44 @@ def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos
             miss_count = int(getattr(p, "live_miss_count", 0) or 0) + 1  # Only increment when API responded!
             grace_sec = base_grace_sec
             miss_limit = base_miss_limit
+            protect_missing_partial = bool(
+                getattr(p, "has_scaled_out", False)
+                or getattr(p, "has_scaled_out_loss", False)
+                or getattr(p, "has_taken_partial", False)
+                or getattr(p, "has_extracted_principal", False)
+                or getattr(p, "force_close_only", False)
+            )
             if getattr(p, "pending_confirmation", False):
                 # Freshly filled live orders can take a little longer to show up in the
                 # positions API. Give them extra breathing room before treating them as missing.
                 grace_sec = max(grace_sec, 30.0)
                 miss_limit = max(miss_limit, base_miss_limit + 2)
                 in_grace = age_sec <= grace_sec
+            elif protect_missing_partial:
+                # After a partial exit, prefer a conservative local hold over forgetting
+                # the residual lot because the live positions API briefly missed it.
+                grace_sec = max(grace_sec, base_grace_sec)
+                miss_limit = max(miss_limit, base_miss_limit + 3)
+                in_grace = age_sec <= grace_sec
             else:
                 in_grace = age_sec <= grace_sec and miss_count <= miss_limit
             if in_grace:
                 held = OpenPos(**p.__dict__)
                 held.live_miss_count = miss_count
+                if getattr(p, "has_scaled_out_loss", False) or getattr(p, "force_close_only", False):
+                    held.force_close_only = True
                 synced.append(held)
                 notes.append(
                     f"sync_hold token={p.token_id} slug={p.slug} reason=missing-live-position age_sec={age_sec:.1f} miss_count={miss_count}"
+                )
+                continue
+            if getattr(p, "has_scaled_out_loss", False) or getattr(p, "force_close_only", False):
+                held = OpenPos(**p.__dict__)
+                held.live_miss_count = miss_count
+                held.force_close_only = True
+                synced.append(held)
+                notes.append(
+                    f"sync_protect token={p.token_id} slug={p.slug} reason=missing-live-position-force-close age_sec={age_sec:.1f} miss_count={miss_count}"
                 )
                 continue
             notes.append(f"sync_drop token={p.token_id} slug={p.slug} reason=missing-live-position age_sec={age_sec:.1f} miss_count={miss_count}")

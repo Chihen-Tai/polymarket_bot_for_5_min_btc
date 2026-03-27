@@ -82,6 +82,8 @@ def main():
     SETTINGS.stalled_exit_max_abs_pnl_pct = 0.02
     SETTINGS.stalled_exit_max_mfe_pct = 0.02
     SETTINGS.stalled_exit_min_secs_left = 45
+    SETTINGS.post_scaleout_loss_exit_delay_sec = 20
+    SETTINGS.post_scaleout_loss_exit_pct = 0.10
     SETTINGS.moonbag_drawdown_pct = 0.30
     SETTINGS.moonbag_drawdown_window_sec = 30
     SETTINGS.moonbag_min_peak_value_usd = 0.10
@@ -533,6 +535,7 @@ def main():
         ("stalled_trade_skips_exact_flat", decide_exit(pnl_pct=0.0, hold_sec=40, secs_left=55, mfe_pnl_pct=0.01).reason != "stalled-trade"),
         ("stalled_trade_skips_if_trade_showed_life", decide_exit(pnl_pct=0.0, hold_sec=40, secs_left=55, mfe_pnl_pct=0.05).reason != "stalled-trade"),
         ("stalled_trade_skips_if_reentry_window_too_short", decide_exit(pnl_pct=0.0, hold_sec=40, secs_left=40, mfe_pnl_pct=0.01).reason != "stalled-trade"),
+        ("post_scaleout_loss_promotes_to_full_exit", decide_exit(pnl_pct=-0.12, hold_sec=30, secs_left=120, has_scaled_out_loss=True).reason == "post-scaleout-stop-loss"),
         ("deadline_exit_flat_without_principal", decide_exit(pnl_pct=0.0, hold_sec=50, secs_left=10).reason == "deadline-exit-flat"),
         ("deadline_exit_allows_moonbag_hold", decide_exit(pnl_pct=0.0, hold_sec=50, secs_left=10, has_extracted_principal=True).reason != "deadline-exit-flat"),
         ("deadline_exit_weak_win_without_principal", decide_exit(pnl_pct=0.22, hold_sec=50, secs_left=10).reason == "deadline-exit-weak-win"),
