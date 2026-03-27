@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 from random import uniform
 from typing import Any
 import time
@@ -37,6 +38,43 @@ def _to_float(v: Any, default: float = 0.0) -> float:
 def _limit_order_type(order_type_cls: Any):
     """Support both old POST_ONLY enums and current py-clob-client GTC limit orders."""
     return getattr(order_type_cls, "POST_ONLY", getattr(order_type_cls, "GTC", None))
+
+
+def estimate_order_shares(amount_usd: float, price: float) -> float:
+    if price <= 0:
+        return 0.0
+    return round(float(amount_usd) / float(price), 2)
+
+
+def _round_up_to_step(value: float, step: float) -> float:
+    if step <= 0:
+        return float(value)
+    return math.ceil((float(value) - 1e-12) / float(step)) * float(step)
+
+
+def minimum_order_usd(price: float, min_shares: float) -> float:
+    if price <= 0 or min_shares <= 0:
+        return 0.0
+    return round(float(price) * float(min_shares), 4)
+
+
+def order_below_minimum_shares(amount_usd: float, price: float, min_shares: float) -> tuple[bool, float, float]:
+    est_shares = estimate_order_shares(amount_usd, price)
+    required_usd = minimum_order_usd(price, min_shares)
+    return est_shares + 1e-9 < float(min_shares), est_shares, required_usd
+
+
+def plan_live_order(amount_usd: float, price: float, min_shares: float, min_order_usd: float) -> tuple[float, float]:
+    if price <= 0:
+        return 0.0, 0.0
+    required_shares = max(
+        float(amount_usd) / float(price),
+        float(min_shares) if min_shares > 0 else 0.0,
+        float(min_order_usd) / float(price) if min_order_usd > 0 else 0.0,
+    )
+    rounded_shares = round(_round_up_to_step(required_shares, 0.01), 2)
+    actual_usd = round(rounded_shares * float(price), 4)
+    return rounded_shares, actual_usd
 
 
 class PolymarketExchange:
@@ -427,7 +465,14 @@ class PolymarketExchange:
         # Use simulated_price (which refers to the real observed price passed from runner)
         price = simulated_price if simulated_price and simulated_price > 0 else 0.5
         price_rounded = round(price, 3) 
-        size_rounded = round(amount_usd / price_rounded, 2)
+        min_live_order_shares = float(getattr(SETTINGS, "min_live_order_shares", 5.0) or 0.0)
+        min_live_order_usd = float(getattr(SETTINGS, "min_live_order_usd", 1.0) or 0.0)
+        size_rounded, actual_order_usd = plan_live_order(
+            amount_usd,
+            price_rounded,
+            min_live_order_shares,
+            min_live_order_usd,
+        )
 
         if force_taker:
             from py_clob_client.clob_types import MarketOrderArgs
@@ -450,7 +495,12 @@ class PolymarketExchange:
                 safe_price = max(safe_price, best_bid + 0.001)
                 price_rounded = round(safe_price, 3)
                 # recalculate size if price changed
-                size_rounded = round(amount_usd / price_rounded, 2)
+                size_rounded, actual_order_usd = plan_live_order(
+                    amount_usd,
+                    price_rounded,
+                    min_live_order_shares,
+                    min_live_order_usd,
+                )
 
             order = self.client.create_order(
                 OrderArgs(
@@ -469,7 +519,8 @@ class PolymarketExchange:
             "ok": True,
             "mode": "live",
             "side": side,
-            "amount_usd": amount_usd,
+            "requested_amount_usd": amount_usd,
+            "amount_usd": actual_order_usd,
             "execution_style": "taker" if force_taker else "maker",
             "response": resp,
         }

@@ -7,7 +7,7 @@ from random import uniform
 
 from core.config import SETTINGS
 from core.decision_engine import choose_side, explain_choose_side, get_outcome_prices, seconds_to_market_end
-from core.exchange import PolymarketExchange, Position
+from core.exchange import PolymarketExchange, Position, order_below_minimum_shares, plan_live_order
 from core.hedge_logic import should_trigger_dump
 from core.notifier import notify_discord
 from core.risk import RiskState, can_place_order, current_5min_key, update_window
@@ -346,6 +346,9 @@ def place_entry_order_with_retry(
         except Exception as exc:
             latencies_ms.append((time.perf_counter() - started) * 1000.0)
             last_error = exc
+            err_text = str(exc).lower()
+            if "order size below minimum" in err_text or ("lower than the minimum" in err_text and "size" in err_text):
+                raise
             if attempt >= attempts:
                 raise
 
@@ -2216,6 +2219,40 @@ def main():
 
             if signal_side and token_override and entry_price and float(entry_price) > 0:
                 est_shares = order_usd / float(entry_price)
+                if not SETTINGS.dry_run:
+                    min_live_order_shares = float(getattr(SETTINGS, "min_live_order_shares", 5.0) or 0.0)
+                    min_live_order_usd = float(getattr(SETTINGS, "min_live_order_usd", 1.0) or 0.0)
+                    auto_bump_usd = float(getattr(SETTINGS, "live_order_auto_bump_usd", 0.05) or 0.0)
+                    rounded_est_shares, required_usd = plan_live_order(
+                        order_usd,
+                        float(entry_price),
+                        min_live_order_shares,
+                        min_live_order_usd,
+                    )
+                    if required_usd > order_usd + auto_bump_usd + 1e-9:
+                        maybe_record_cycle_label(
+                            state,
+                            "signal-blocked",
+                            slug=last_market_slug,
+                            side=signal_side,
+                            reason="order-size-below-minimum",
+                        )
+                        log(
+                            f"skip entry: order size below minimum | amount=${order_usd:.2f} "
+                            f"price={float(entry_price):.3f} est_shares={rounded_est_shares:.2f} "
+                            f"min_shares={min_live_order_shares:.2f} min_notional=${min_live_order_usd:.2f} "
+                            f"required_usd=${required_usd:.2f}"
+                        )
+                        smart_sleep(SETTINGS.poll_seconds)
+                        continue
+                    if required_usd > order_usd + 1e-9:
+                        log(
+                            f"live order auto-bump | requested=${order_usd:.2f} "
+                            f"price={float(entry_price):.3f} -> actual=${required_usd:.4f} "
+                            f"shares={rounded_est_shares:.2f}"
+                        )
+                        order_usd = required_usd
+                    est_shares = rounded_est_shares
                 try:
                     entry_book_quality = assess_entry_liquidity(
                         book=ex.get_full_orderbook(token_override),
@@ -2385,6 +2422,7 @@ def main():
                             log(f"hedge parsing error: {e}")
                 try:
                     r = resp.get("response", {}) if isinstance(resp, dict) else {}
+                    actual_entry_cost_usd = float(resp.get("amount_usd", order_usd) or order_usd) if isinstance(resp, dict) else order_usd
                     shares, order_id = extract_entry_response_details(resp)
                     token_id = token_override or (market["token_up"] if signal_side == "UP" else market["token_down"])
                     if shares > 0 and token_id:
@@ -2395,14 +2433,14 @@ def main():
                             side=signal_side,
                             token_id=token_id,
                             shares=shares,
-                            cost_usd=order_usd,
+                            cost_usd=actual_entry_cost_usd,
                             opened_ts=opened_ts,
                             position_id=position_id,
                             entry_reason=signal_origin or "signal",
                             source="live-order",
                             pending_confirmation=True,
-                            max_favorable_value_usd=order_usd,
-                            max_adverse_value_usd=order_usd,
+                            max_favorable_value_usd=actual_entry_cost_usd,
+                            max_adverse_value_usd=actual_entry_cost_usd,
                             max_favorable_pnl_usd=0.0,
                             max_adverse_pnl_usd=0.0,
                         ))
@@ -2413,7 +2451,7 @@ def main():
                             "token_id": token_id,
                             "position_id": position_id,
                             "shares": shares,
-                            "cost_usd": order_usd,
+                            "cost_usd": actual_entry_cost_usd,
                             "opened_ts": opened_ts,
                             "entry_reason": signal_origin or "signal",
                             "classification": "good-entry-candidate",
@@ -2437,7 +2475,7 @@ def main():
                                 side=signal_side,
                                 token_id=token_id,
                                 placed_ts=time.time(),
-                                order_usd=order_usd,
+                                order_usd=actual_entry_cost_usd,
                                 entry_reason=signal_origin or "signal",
                                 fallback_attempted=False,
                             ))
@@ -2474,7 +2512,10 @@ def main():
                     panic_market_slug=panic_market_slug,
                 )
                 log(f"order placed: {resp}")
-                notify_discord(SETTINGS.discord_webhook_url, f"✅ Order {signal_side} ${order_usd:.2f} ({resp.get('mode')})")
+                notify_discord(
+                    SETTINGS.discord_webhook_url,
+                    f"✅ Order {signal_side} ${float(resp.get('amount_usd', order_usd) or order_usd):.2f} ({resp.get('mode')})"
+                )
             except Exception as e:
                 network_notes = update_network_guard(
                     flags,
