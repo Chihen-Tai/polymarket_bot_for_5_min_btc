@@ -29,7 +29,7 @@ def main():
     ]
 
     canceled: list[str] = []
-    kept_positions, kept_pending, cleanup_notes = clear_expired_market_state(
+    kept_positions, kept_pending, cleanup_notes, cleanup_events = clear_expired_market_state(
         "btc-updown-5m-current",
         [
             OpenPos(
@@ -74,6 +74,34 @@ def main():
         ("expired_market_keeps_only_current_pending_order", len(kept_pending) == 1 and kept_pending[0].slug == "btc-updown-5m-current"),
         ("expired_market_cancels_old_pending_order", canceled == ["old-order"]),
         ("expired_market_logs_cleanup", any("clear expired live runtime position" in note for note in cleanup_notes)),
+        ("expired_market_normal_cleanup_has_no_unresolved_event", cleanup_events == []),
+    ])
+
+    _, _, unresolved_notes, unresolved_events = clear_expired_market_state(
+        "btc-updown-5m-current",
+        [
+            OpenPos(
+                slug="btc-updown-5m-old",
+                side="DOWN",
+                token_id="residual-oldtok",
+                shares=0.35,
+                cost_usd=0.21,
+                opened_ts=1.0,
+                force_close_only=True,
+                has_scaled_out_loss=True,
+                position_id="pos-old-residual",
+            ),
+        ],
+        [],
+    )
+    cases.extend([
+        ("expired_market_unresolved_logs_special_note", any("expired unresolved live runtime position" in note for note in unresolved_notes)),
+        (
+            "expired_market_unresolved_emits_event",
+            len(unresolved_events) == 1
+            and unresolved_events[0].get("status") == "expired-unresolved-position"
+            and unresolved_events[0].get("token_id") == "residual-oldtok"
+        ),
     ])
 
     class DummyExchange:

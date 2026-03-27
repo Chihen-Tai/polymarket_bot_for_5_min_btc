@@ -1225,16 +1225,45 @@ def clear_expired_market_state(
     pending_orders: list[PendingOrder],
     *,
     cancel_order=None,
-) -> tuple[list[OpenPos], list[PendingOrder], list[str]]:
+) -> tuple[list[OpenPos], list[PendingOrder], list[str], list[dict[str, object]]]:
     kept_positions: list[OpenPos] = []
     kept_pending: list[PendingOrder] = []
     notes: list[str] = []
+    unresolved_events: list[dict[str, object]] = []
 
     for pos in open_positions:
         if pos.slug and pos.slug != current_market_slug:
-            notes.append(
-                f"clear expired live runtime position | slug={pos.slug} side={pos.side} token={pos.token_id}"
+            unresolved = bool(
+                float(getattr(pos, "shares", 0.0) or 0.0) > LOT_EPS_SHARES
+                and (
+                    getattr(pos, "force_close_only", False)
+                    or getattr(pos, "has_scaled_out_loss", False)
+                    or getattr(pos, "pending_confirmation", False)
+                )
             )
+            if unresolved:
+                notes.append(
+                    f"expired unresolved live runtime position | slug={pos.slug} side={pos.side} "
+                    f"token={pos.token_id} remaining_shares={pos.shares:.6f} remaining_cost={pos.cost_usd:.6f} "
+                    f"force_close_only={getattr(pos, 'force_close_only', False)}"
+                )
+                unresolved_events.append({
+                    "kind": "runtime_cleanup",
+                    "status": "expired-unresolved-position",
+                    "slug": pos.slug,
+                    "side": pos.side,
+                    "token_id": pos.token_id,
+                    "position_id": pos.position_id,
+                    "remaining_shares": pos.shares,
+                    "remaining_cost_usd": pos.cost_usd,
+                    "force_close_only": bool(getattr(pos, "force_close_only", False)),
+                    "has_scaled_out_loss": bool(getattr(pos, "has_scaled_out_loss", False)),
+                    "pending_confirmation": bool(getattr(pos, "pending_confirmation", False)),
+                })
+            else:
+                notes.append(
+                    f"clear expired live runtime position | slug={pos.slug} side={pos.side} token={pos.token_id}"
+                )
             continue
         kept_positions.append(pos)
 
@@ -1257,7 +1286,7 @@ def clear_expired_market_state(
             continue
         kept_pending.append(po)
 
-    return kept_positions, kept_pending, notes
+    return kept_positions, kept_pending, notes, unresolved_events
 
 
 def save_runtime_state(
@@ -1753,7 +1782,7 @@ def main():
                         if ghosts:
                             acct = ex.get_account()
                     else:
-                        open_positions, pending_orders, live_cleanup_notes = clear_expired_market_state(
+                        open_positions, pending_orders, live_cleanup_notes, expired_unresolved_events = clear_expired_market_state(
                             market["slug"],
                             open_positions,
                             pending_orders,
@@ -1761,6 +1790,8 @@ def main():
                         )
                         for note in live_cleanup_notes:
                             log(note)
+                        for cleanup_event in expired_unresolved_events:
+                            append_event(cleanup_event)
 
                             
                     token_up = market.get("token_up", "")
@@ -2456,6 +2487,10 @@ def main():
                                             remaining_shares=remaining_shares,
                                         ):
                                             same_market_reentry_block_slug = p.slug
+                                            log(
+                                                f"same-market re-entry blocked | slug={p.slug} "
+                                                f"reason={exit_decision.reason} remaining_shares={remaining_shares:.6f}"
+                                            )
                                         quality_pnl = actual_realized_pnl_usd if actual_realized_pnl_usd is not None else observed_realized_pnl_usd
                                         entry_quality = "good-entry" if quality_pnl > 0 else "bad-entry" if quality_pnl < 0 else "flat-entry"
                                         exit_event = append_event({
@@ -2998,8 +3033,8 @@ def main():
                     continue
 
             if same_market_reentry_block_slug and last_market_slug == same_market_reentry_block_slug:
-                maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="same-market-blocked-after-stalled-trade")
-                log("skip entry: same market blocked after stalled-trade close")
+                maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="same-market-reentry-blocked")
+                log("skip entry: same market re-entry blocked")
                 smart_sleep(SETTINGS.poll_seconds)
                 continue
 
