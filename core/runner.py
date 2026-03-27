@@ -325,6 +325,12 @@ def should_force_full_loss_exit(*, reason: str | None, dry_run: bool) -> bool:
     )
 
 
+def should_force_taker_take_profit(*, dry_run: bool) -> bool:
+    if dry_run:
+        return False
+    return bool(getattr(SETTINGS, "live_take_profit_force_taker", True))
+
+
 def should_force_taker_exit(*, reason: str | None, dry_run: bool, has_panic_dumped: bool = False) -> bool:
     if has_panic_dumped:
         return True
@@ -858,6 +864,34 @@ def observed_mark_value(pos: OpenPos, up: float | None, down: float | None) -> f
     return pos.shares * float(mark)
 
 
+def observed_exit_value_from_mark(*, sold_shares: float, mark: float | None) -> float:
+    if mark is None or sold_shares <= 0:
+        return 0.0
+    return float(sold_shares) * float(mark)
+
+
+def sanitize_live_actual_exit_value(
+    *,
+    actual_exit_value_usd: float | None,
+    actual_exit_value_source: str,
+    sold_shares: float,
+    mark: float | None,
+    dry_run: bool,
+) -> tuple[float | None, str]:
+    value = float(actual_exit_value_usd or 0.0)
+    source = str(actual_exit_value_source or "")
+    if value <= 0.0:
+        return None, source
+    if dry_run or sold_shares <= LOT_EPS_SHARES or mark is None:
+        return value, source
+    implied_price = value / max(float(sold_shares), 1e-9)
+    if implied_price < -1e-9 or implied_price > 1.0 + 1e-6:
+        return None, f"sanity-rejected-{source or 'actual-exit'}"
+    if abs(implied_price - float(mark)) > 0.25:
+        return None, f"sanity-rejected-{source or 'actual-exit'}"
+    return value, source
+
+
 def update_position_excursions(pos: OpenPos, observed_value: float | None) -> None:
     if observed_value is None:
         return
@@ -1011,7 +1045,9 @@ def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos
                 # positions API. Give them extra breathing room before treating them as missing.
                 grace_sec = max(grace_sec, 30.0)
                 miss_limit = max(miss_limit, base_miss_limit + 2)
-            in_grace = age_sec <= grace_sec and miss_count <= miss_limit
+                in_grace = age_sec <= grace_sec
+            else:
+                in_grace = age_sec <= grace_sec and miss_count <= miss_limit
             if in_grace:
                 held = OpenPos(**p.__dict__)
                 held.live_miss_count = miss_count
@@ -2005,8 +2041,16 @@ def main():
                                             p.cost_usd *= max(0.0, 1.0 - actual_fraction)
                                             p.has_scaled_out = True
                                             
-                                            _act_val = close_resp.get("actual_exit_value_usd", 0.0)
-                                            _obs_val = sold_shares * effective_exit_value
+                                            _raw_act_val = close_resp.get("actual_exit_value_usd", 0.0)
+                                            _raw_act_src = str(close_resp.get("actual_exit_value_source") or "unavailable")
+                                            _act_val, _act_src = sanitize_live_actual_exit_value(
+                                                actual_exit_value_usd=_raw_act_val,
+                                                actual_exit_value_source=_raw_act_src,
+                                                sold_shares=sold_shares,
+                                                mark=mark,
+                                                dry_run=SETTINGS.dry_run,
+                                            )
+                                            _obs_val = observed_exit_value_from_mark(sold_shares=sold_shares, mark=mark)
                                             _realized_pnl = _act_val - realized_cost if _act_val > 0 else _obs_val - realized_cost
                                             risk.daily_pnl += _realized_pnl
                                             append_event({
@@ -2019,8 +2063,8 @@ def main():
                                                 "remaining_shares": p.shares,
                                                 "realized_cost_usd": realized_cost,
                                                 "actual_exit_value_usd": _act_val,
-                                                "actual_exit_value_source": close_resp.get("actual_exit_value_source") or "unavailable",
-                                                "actual_realized_pnl_usd": _act_val - realized_cost,
+                                                "actual_exit_value_source": _act_src or "unavailable",
+                                                "actual_realized_pnl_usd": (_act_val - realized_cost) if _act_val is not None else None,
                                                 "observed_exit_value_usd": _obs_val,
                                                 "observed_exit_value_source": "observed_mark_price",
                                                 "observed_realized_pnl_usd": _obs_val - realized_cost,
@@ -2055,8 +2099,16 @@ def main():
                                             p.cost_usd *= max(0.0, 1.0 - actual_fraction)
                                             p.has_scaled_out_loss = True
                                             
-                                            _act_val = close_resp.get("actual_exit_value_usd", 0.0)
-                                            _obs_val = sold_shares * effective_exit_value
+                                            _raw_act_val = close_resp.get("actual_exit_value_usd", 0.0)
+                                            _raw_act_src = str(close_resp.get("actual_exit_value_source") or "unavailable")
+                                            _act_val, _act_src = sanitize_live_actual_exit_value(
+                                                actual_exit_value_usd=_raw_act_val,
+                                                actual_exit_value_source=_raw_act_src,
+                                                sold_shares=sold_shares,
+                                                mark=mark,
+                                                dry_run=SETTINGS.dry_run,
+                                            )
+                                            _obs_val = observed_exit_value_from_mark(sold_shares=sold_shares, mark=mark)
                                             _realized_pnl = _act_val - realized_cost if _act_val > 0 else _obs_val - realized_cost
                                             risk.daily_pnl += _realized_pnl
                                             append_event({
@@ -2069,8 +2121,8 @@ def main():
                                                 "remaining_shares": p.shares,
                                                 "realized_cost_usd": realized_cost,
                                                 "actual_exit_value_usd": _act_val,
-                                                "actual_exit_value_source": close_resp.get("actual_exit_value_source") or "unavailable",
-                                                "actual_realized_pnl_usd": _act_val - realized_cost,
+                                                "actual_exit_value_source": _act_src or "unavailable",
+                                                "actual_realized_pnl_usd": (_act_val - realized_cost) if _act_val is not None else None,
                                                 "observed_exit_value_usd": _obs_val,
                                                 "observed_exit_value_source": "observed_mark_price",
                                                 "observed_realized_pnl_usd": _obs_val - realized_cost,
@@ -2159,6 +2211,8 @@ def main():
                                                     f"sold_shares={sold_shares:.4f} remaining_shares={p.shares:.4f}"
                                                 )
                                                 maybe_record_cycle_label(state, "take-profit-principal-partial", slug=p.slug, side=p.side)
+                                    else:
+                                        log(f"take-profit principal close failed: {close_resp}")
                                 except Exception as e:
                                     log(f"Take-profit principal error: {e}")
                                 keep_positions.append(p)
@@ -2168,7 +2222,15 @@ def main():
                                 sell_fraction = 0.30
                                 sell_shares = p.shares * sell_fraction
                                 try:
-                                    close_resp = ex.close_position(p.token_id, sell_shares, simulated_price=float(mark) if mark is not None else None, force_taker=getattr(p, "has_panic_dumped", False))
+                                    close_resp = ex.close_position(
+                                        p.token_id,
+                                        sell_shares,
+                                        simulated_price=float(mark) if mark is not None else None,
+                                        force_taker=(
+                                            getattr(p, "has_panic_dumped", False)
+                                            or should_force_taker_take_profit(dry_run=SETTINGS.dry_run)
+                                        ),
+                                    )
                                     if close_resp.get("ok"):
                                         sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
                                         if sold_shares > 0:
@@ -2205,6 +2267,8 @@ def main():
                                             })
                                             log(f"PARTIAL PROFIT TAKEN! Sold {sold_shares:.2f} shares (+30% threshold).")
                                             maybe_record_cycle_label(state, "take-profit-partial", slug=p.slug, side=p.side)
+                                    else:
+                                        log(f"take-profit partial close failed: {close_resp}")
                                 except Exception as e:
                                     log(f"Take-profit partial error: {e}")
                                 keep_positions.append(p)
@@ -2293,7 +2357,10 @@ def main():
                                         closed_any = True
                                         close_fraction = sold_shares / max(p.shares, 1e-9)
                                         realized_cost = p.cost_usd * close_fraction
-                                        observed_exit_value_usd = sold_shares * float(mark)
+                                        observed_exit_value_usd = observed_exit_value_from_mark(
+                                            sold_shares=sold_shares,
+                                            mark=mark,
+                                        )
                                         observed_realized_pnl_usd = observed_exit_value_usd - realized_cost
                                         observed_realized_return_pct = observed_realized_pnl_usd / max(realized_cost, 1e-9)
 
@@ -2303,20 +2370,30 @@ def main():
                                         close_response_value_source = str(close_resp.get("close_response_value_source") or "")
                                         close_response_amount_fields = close_resp.get("close_response_amount_fields") or {}
 
-                                        if close_response_value is not None and float(close_response_value) > 0:
+                                        if close_response_value is not None and float(close_response_value) > 0 and "balance" in close_response_value_source:
                                             actual_exit_value_usd = float(close_response_value)
                                             actual_exit_value_source = close_response_value_source or actual_exit_value_source or "close_response_value"
-                                            actual_realized_pnl_usd = actual_exit_value_usd - realized_cost
-                                            actual_realized_return_pct = actual_realized_pnl_usd / max(realized_cost, 1e-9)
-                                            pnl_source = "actual_cash_recovered" if "balance" in actual_exit_value_source else "actual_close_response_value"
-                                            risk.daily_pnl += actual_realized_pnl_usd
-                                        elif actual_exit_value_usd > 0 and actual_exit_value_source == "cash_balance_delta":
+
+                                        actual_exit_value_usd, actual_exit_value_source = sanitize_live_actual_exit_value(
+                                            actual_exit_value_usd=actual_exit_value_usd,
+                                            actual_exit_value_source=actual_exit_value_source,
+                                            sold_shares=sold_shares,
+                                            mark=mark,
+                                            dry_run=SETTINGS.dry_run,
+                                        )
+
+                                        if actual_exit_value_usd is not None and actual_exit_value_source == "cash_balance_delta":
                                             actual_realized_pnl_usd = actual_exit_value_usd - realized_cost
                                             actual_realized_return_pct = actual_realized_pnl_usd / max(realized_cost, 1e-9)
                                             pnl_source = "actual_cash_recovered"
                                             risk.daily_pnl += actual_realized_pnl_usd
+                                        elif actual_exit_value_usd is not None and "sanity-rejected" not in actual_exit_value_source:
+                                            actual_realized_pnl_usd = actual_exit_value_usd - realized_cost
+                                            actual_realized_return_pct = actual_realized_pnl_usd / max(realized_cost, 1e-9)
+                                            pnl_source = "actual_close_response_value"
+                                            risk.daily_pnl += actual_realized_pnl_usd
                                         else:
-                                            actual_exit_value_usd = actual_exit_value_usd if actual_exit_value_usd > 0 else None
+                                            actual_exit_value_usd = actual_exit_value_usd if actual_exit_value_usd and actual_exit_value_usd > 0 else None
                                             actual_realized_pnl_usd = None
                                             actual_realized_return_pct = None
                                             pnl_source = "observed_mark_estimate"

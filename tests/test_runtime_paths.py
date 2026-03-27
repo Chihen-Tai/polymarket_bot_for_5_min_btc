@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -85,8 +86,42 @@ def main():
 
     dummy = DummyExchange()
     synced_positions, synced_notes = sync_open_positions(dummy, [])
+
+    class DummyLivePos:
+        def __init__(self, token_id: str):
+            self.token_id = token_id
+            self.size = 1.0
+            self.initial_value = 1.0
+            self.current_value = 1.0
+            self.cash_pnl = 0.0
+
+    class MismatchExchange:
+        def __init__(self):
+            self.calls = 0
+
+        def get_positions(self):
+            self.calls += 1
+            return [DummyLivePos("other-token")]
+
+    mismatch = MismatchExchange()
+    held_positions, held_notes = sync_open_positions(
+        mismatch,
+        [
+            OpenPos(
+                slug="btc-updown-5m-current",
+                side="UP",
+                token_id="pending-token",
+                shares=1.0,
+                cost_usd=1.0,
+                opened_ts=time.time() - 48.0,
+                pending_confirmation=True,
+                live_miss_count=5,
+            ),
+        ],
+    )
     cases.extend([
         ("sync_open_positions_short_circuits_when_empty", synced_positions == [] and synced_notes == [] and dummy.calls == 0),
+        ("pending_confirmation_holds_until_grace_expires", len(held_positions) == 1 and any("sync_hold token=pending-token" in note for note in held_notes)),
         ("pending_orders_poll_every_second", abs(pending_order_poll_interval_seconds() - 1.0) < 1e-9),
         ("next_cycle_interval_uses_fast_pending_poll", abs(next_cycle_interval_seconds(has_pending_orders=True) - 1.0) < 1e-9),
         ("next_cycle_interval_uses_two_second_market_poll_floor", abs(next_cycle_interval_seconds(has_pending_orders=False) - 2.0) < 1e-9),

@@ -172,6 +172,7 @@ class Settings:
     rich_price_edge_penalty: float = _f("RICH_PRICE_EDGE_PENALTY", 0.015)
     binary_kelly_divisor: float = _f("BINARY_KELLY_DIVISOR", 4.0)
     force_full_exit_on_take_profit: bool = _b("FORCE_FULL_EXIT_ON_TAKE_PROFIT", False)
+    live_take_profit_force_taker: bool = _b("LIVE_TAKE_PROFIT_FORCE_TAKER", True)
     force_full_exit_on_stop_loss_scaleout: bool = _b("FORCE_FULL_EXIT_ON_STOP_LOSS_SCALEOUT", False)
     live_force_full_loss_exit: bool = _b("LIVE_FORCE_FULL_LOSS_EXIT", True)
     live_loss_exit_force_taker: bool = _b("LIVE_LOSS_EXIT_FORCE_TAKER", True)

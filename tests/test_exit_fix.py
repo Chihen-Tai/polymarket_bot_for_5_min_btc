@@ -17,12 +17,15 @@ from core.runner import (
     OpenPos,
     entry_velocity_gate_rejects,
     effective_stop_loss_partial_fraction,
+    observed_exit_value_from_mark,
     extract_entry_cost_usd,
     is_loss_exit_reason,
     principal_extraction_sell_fraction,
     principal_extraction_complete,
     realistic_exit_value,
+    sanitize_live_actual_exit_value,
     should_force_full_loss_exit,
+    should_force_taker_take_profit,
     should_force_taker_exit,
 )
 
@@ -75,6 +78,21 @@ def main():
     thin_value, thin_fill_ratio = estimate_book_exit_value({"bid_levels": [(0.2, 1.0)]}, 2.0)
     depth_pos = OpenPos(slug="m", side="UP", token_id="tok2", shares=2.0, cost_usd=1.0, opened_ts=0.0)
     realistic_value = realistic_exit_value(depth_pos, 0.52, 0.48, depth_book, None)
+    observed_partial_value = observed_exit_value_from_mark(sold_shares=1.61, mark=0.365)
+    sane_actual_value, sane_actual_source = sanitize_live_actual_exit_value(
+        actual_exit_value_usd=1.3846,
+        actual_exit_value_source="close_response_takingAmount",
+        sold_shares=1.61,
+        mark=0.365,
+        dry_run=False,
+    )
+    accepted_actual_value, accepted_actual_source = sanitize_live_actual_exit_value(
+        actual_exit_value_usd=0.5877,
+        actual_exit_value_source="close_response_takingAmount",
+        sold_shares=1.61,
+        mark=0.365,
+        dry_run=False,
+    )
     parsed_balance_shares = parse_balance_allowance_available_shares(
         "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance: "
         "the balance is not enough -> balance: 1198827, order amount: 1200000'}]"
@@ -132,6 +150,8 @@ def main():
         ("live_force_full_loss_exit_on_deadline_loss", should_force_full_loss_exit(reason="deadline-exit-loss", dry_run=False) is True),
         ("dry_run_does_not_force_full_loss_exit", should_force_full_loss_exit(reason="stop-loss-scale-out", dry_run=True) is False),
         ("live_force_taker_on_deadline_loss", should_force_taker_exit(reason="deadline-exit-loss", dry_run=False) is True),
+        ("live_take_profit_prefers_taker", should_force_taker_take_profit(dry_run=False) is True),
+        ("dry_run_take_profit_does_not_force_taker", should_force_taker_take_profit(dry_run=True) is False),
         ("panic_dump_always_forces_taker", should_force_taker_exit(reason="", dry_run=True, has_panic_dumped=True) is True),
         ("dry_run_stop_loss_partial_fraction_unchanged", abs(effective_stop_loss_partial_fraction(dry_run=True) - 0.50) < 1e-9),
         ("live_stop_loss_partial_fraction_is_heavy", abs(effective_stop_loss_partial_fraction(dry_run=False) - 0.80) < 1e-9),
@@ -147,6 +167,9 @@ def main():
         ("estimate_book_exit_value_sweeps_bid_depth", abs((depth_value or 0.0) - 0.595) < 1e-9 and abs(depth_fill_ratio - 1.0) < 1e-9),
         ("estimate_book_exit_value_is_conservative_when_depth_is_thin", abs((thin_value or 0.0) - 0.2) < 1e-9 and abs(thin_fill_ratio - 0.5) < 1e-9),
         ("realistic_exit_value_uses_depth_aware_bids", abs((realistic_value or 0.0) - 0.595) < 1e-9),
+        ("observed_exit_value_uses_sold_shares_times_mark", abs(observed_partial_value - 0.58765) < 1e-9),
+        ("sanitize_live_actual_exit_value_rejects_improbable_fill", sane_actual_value is None and sane_actual_source.startswith("sanity-rejected-")),
+        ("sanitize_live_actual_exit_value_accepts_close_to_mark_fill", abs((accepted_actual_value or 0.0) - 0.5877) < 1e-9 and accepted_actual_source == "close_response_takingAmount"),
         ("parse_balance_allowance_available_shares_handles_live_error", abs((parsed_balance_shares or 0.0) - 1.198827) < 1e-9),
         ("live_account_cache_reuses_recent_snapshot", cash_calls["count"] == 2 and value_calls["count"] == 2 and acct_first.cash == acct_second.cash == acct_third.cash == 7.0 and acct_first.equity == acct_second.equity == acct_third.equity == 10.0),
         ("paper_entry_is_taker_simulated", entry.get("execution_style") == "taker-simulated"),
