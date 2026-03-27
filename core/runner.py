@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import signal
 import time
 from collections import deque
@@ -14,7 +16,7 @@ from core.risk import RiskState, can_place_order, current_5min_key, update_windo
 from core.market_resolver import resolve_latest_btc_5m_token_ids, MarketResolutionError
 from core.run_journal import RunJournal
 from core.state_store import load_state, save_state
-from core.trade_manager import decide_exit, maybe_reverse_entry, can_reenter_same_market, should_block_same_market_reentry
+from core.trade_manager import ExitDecision, decide_exit, maybe_reverse_entry, can_reenter_same_market, should_block_same_market_reentry
 from core.ws_binance import BINANCE_WS
 from core.indicators import compute_buy_sell_pressure
 from core.journal import (

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 from core.trade_manager import decide_exit, maybe_reverse_entry

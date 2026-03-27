@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 def lsma(prices: list[float]) -> float:
     """Least Squares Moving Average (Linear Regression at the last point)"""
     n = len(prices)

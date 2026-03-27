@@ -187,7 +187,7 @@ def write_chart(points: list[tuple[datetime, float, float]], output_path: Path, 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Plot equity/cash over time from a bot log file.")
     ap.add_argument("log_file", help="Path to log-dryrun-*.txt or log-live-*.txt")
-    ap.add_argument("--output", help="Output chart path (defaults to <log_file>.balance.png)")
+    ap.add_argument("--output", help="Output chart path (defaults to <log_file>.balance.svg)")
     ap.add_argument("--title", help="Optional chart title")
     args = ap.parse_args()
 
@@ -199,7 +199,7 @@ def main() -> None:
     if not points:
         raise SystemExit("No lines with equity/cash were found in the log.")
 
-    output_path = Path(args.output).expanduser().resolve() if args.output else log_path.with_suffix(".balance.png")
+    output_path = Path(args.output).expanduser().resolve() if args.output else log_path.with_suffix(".balance.svg")
     title = args.title or f"Balance Curve: {log_path.name}"
     write_chart(points, output_path, title=title)
     print(f"parsed points: {len(points)}")
