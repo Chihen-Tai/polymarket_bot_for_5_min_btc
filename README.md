@@ -43,6 +43,7 @@ conda activate polymarket-bot
 
 - dry-run：參考 [.env.example](/Applications/codes/polymarket-bot-by_openclaw/.env.example)
 - live：參考 [.env.live.example](/Applications/codes/polymarket-bot-by_openclaw/.env.live.example)
+- 如果你偏好單一檔案管理，追蹤中的 [.env](/Applications/codes/polymarket-bot-by_openclaw/.env) 現在也已經補齊 live 相關欄位與運維欄位
 - 你自己的私鑰和 API 憑證只放在本機，不要 commit
 
 目前 bot 真正會讀的 live 相關欄位主要是：
