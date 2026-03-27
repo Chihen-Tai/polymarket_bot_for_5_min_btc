@@ -158,6 +158,31 @@ def principal_extraction_complete(
     return recovered >= target * max(0.0, float(recovery_ratio))
 
 
+def entry_velocity_gate_rejects(
+    signal_side: str | None,
+    signal_origin: str | None,
+    ws_velocity: float,
+) -> bool:
+    side = str(signal_side or "").strip().upper()
+    origin = str(signal_origin or "").strip().lower()
+    vel = float(ws_velocity or 0.0)
+
+    if side not in {"UP", "DOWN"}:
+        return False
+
+    if "ws_order_flow_" in origin:
+        return (side == "UP" and vel < 0.0) or (side == "DOWN" and vel > 0.0)
+
+    entry_vel_min = max(0.0, float(getattr(SETTINGS, "entry_velocity_min", 0.0) or 0.0))
+    if entry_vel_min <= 0.0:
+        return False
+
+    return (
+        (side == "UP" and vel < -entry_vel_min)
+        or (side == "DOWN" and vel > entry_vel_min)
+    )
+
+
 def extract_entry_response_details(resp: dict | None) -> tuple[float, str]:
     payload = resp.get("response", {}) if isinstance(resp, dict) else {}
     if not isinstance(payload, dict):
@@ -1514,25 +1539,22 @@ def main():
                         # Block entry when Binance velocity is strongly opposing the signal direction.
                         # Flat / low-velocity environments still pass (only adverse moves are blocked).
                         if signal_side is not None:
-                            _entry_vel_min = getattr(SETTINGS, "entry_velocity_min", 0.0)
-                            if _entry_vel_min > 0.0:
-                                _entry_ws_vel = 0.0
-                                try:
-                                    _entry_ws_vel = BINANCE_WS.get_price_velocity(
-                                        3.0,
-                                        lag_sec=float(getattr(SETTINGS, "binance_signal_lag_sec", 0.0)),
-                                    )
-                                except Exception:
-                                    pass
-                                _wrong_dir = (
-                                    (signal_side == "UP" and _entry_ws_vel < -_entry_vel_min) or
-                                    (signal_side == "DOWN" and _entry_ws_vel > _entry_vel_min)
+                            _entry_ws_vel = 0.0
+                            try:
+                                _entry_ws_vel = BINANCE_WS.get_price_velocity(
+                                    3.0,
+                                    lag_sec=float(getattr(SETTINGS, "binance_signal_lag_sec", 0.0)),
                                 )
-                                if _wrong_dir:
-                                    log(f"ENTRY GATE BLOCKED: signal={signal_side} Binance vel={_entry_ws_vel:.4%} (min={_entry_vel_min:.4%})")
-                                    no_entry_reason = f"entry_gate_velocity_mismatch_{_entry_ws_vel:.4f}"
-                                    signal_side = None
-                                    signal_probability = None
+                            except Exception:
+                                pass
+                            if entry_velocity_gate_rejects(signal_side, signal_origin, _entry_ws_vel):
+                                log(
+                                    f"ENTRY GATE BLOCKED: signal={signal_side} strategy={signal_origin or 'unknown'} "
+                                    f"Binance vel={_entry_ws_vel:.4%}"
+                                )
+                                no_entry_reason = f"entry_gate_velocity_mismatch_{_entry_ws_vel:.4f}"
+                                signal_side = None
+                                signal_probability = None
                         # --------------------------
 
                         if signal_side is None and secs_left is not None and 90 <= secs_left <= 240:
