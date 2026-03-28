@@ -12,6 +12,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+BOOTSTRAP_ROOT = Path(__file__).resolve().parent.parent
+if str(BOOTSTRAP_ROOT) not in sys.path:
+    sys.path.insert(0, str(BOOTSTRAP_ROOT))
+
 from core.exchange import PolymarketExchange, _to_float
 from core.market_resolver import resolve_latest_btc_5m_token_ids
 from core.runtime_paths import ROOT_DIR, trade_journal_path

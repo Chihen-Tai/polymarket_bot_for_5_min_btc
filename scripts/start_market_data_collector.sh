@@ -3,7 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-COLLECTOR_PY="${ROOT_DIR}/scripts/market_data_collector.py"
 LOG_DIR="${ROOT_DIR}/market_data/logs"
 
 MODE="live"
@@ -56,14 +55,15 @@ fi
 mkdir -p "${LOG_DIR}"
 
 CMD=(
-  conda run -n polymarket-bot python
-  "${COLLECTOR_PY}"
+  conda run -n polymarket-bot python -m scripts.market_data_collector
   --mode "${MODE}"
 )
 
 if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
   CMD+=("${EXTRA_ARGS[@]}")
 fi
+
+cd "${ROOT_DIR}"
 
 if [[ "${BACKGROUND}" -eq 1 ]]; then
   TS="$(date +"%Y-%m-%dT%H-%M-%S")"
