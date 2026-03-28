@@ -546,7 +546,7 @@ def build_trade_pairs(events: list[dict]) -> list[TradePairRow]:
             residual_counter += 1
             actual_piece = actual_value * (remaining / exit_shares) if actual_value is not None and exit_shares > EPS else None
             observed_piece = observed_total * (remaining / exit_shares) if observed_total is not None and exit_shares > EPS else None
-            residual_flags = []
+            residual_flags = ["orphan-residual", "no-entry-match", "ui-reconciliation-needed"]
             if actual_tier == "medium":
                 residual_flags.append("actual-medium-confidence")
             elif actual_tier == "low":
@@ -566,12 +566,12 @@ def build_trade_pairs(events: list[dict]) -> list[TradePairRow]:
                 matched_exit_shares=remaining,
                 exit_recovered_actual_usd=actual_piece,
                 exit_recovered_observed_usd=observed_piece,
-                actual_pnl_usd=actual_piece,
-                observed_pnl_usd=observed_piece,
-                fee_adjusted_actual_pnl_usd=actual_piece,
-                fee_adjusted_observed_pnl_usd=observed_piece,
-                estimated_total_fees_actual_usd=0.0 if actual_piece is not None else None,
-                estimated_total_fees_observed_usd=0.0 if observed_piece is not None else None,
+                actual_pnl_usd=None,
+                observed_pnl_usd=None,
+                fee_adjusted_actual_pnl_usd=None,
+                fee_adjusted_observed_pnl_usd=None,
+                estimated_total_fees_actual_usd=None,
+                estimated_total_fees_observed_usd=None,
                 actual_source=actual_source,
                 actual_source_tier=actual_tier,
                 entry_execution_style="unknown",

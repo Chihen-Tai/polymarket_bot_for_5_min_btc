@@ -213,6 +213,26 @@ def main():
         },
     ])
     zero_actual_summary = summarize_trade_pairs(zero_actual_pair_rows)
+    orphan_residual_rows = build_trade_pairs([
+        {
+            "kind": "exit",
+            "ts": "2026-03-19T10:05:30",
+            "event_id": "exit_orphan",
+            "position_id": "pos_orphan",
+            "slug": "m_orphan",
+            "side": "DOWN",
+            "token_id": "tok_orphan",
+            "closed_shares": 2.0,
+            "remaining_shares": 0.0,
+            "realized_cost_usd": 1.0,
+            "actual_exit_value_usd": 1.2,
+            "actual_exit_value_source": "close_response_takingAmount",
+            "observed_exit_value_usd": 1.1,
+            "reason": "residual-force-close",
+            "exit_execution_style": "taker",
+        },
+    ])
+    orphan_residual_summary = summarize_trade_pairs(orphan_residual_rows)
     original_fetch_market_settlement = journal_analysis_mod._fetch_market_settlement
     journal_analysis_mod._fetch_market_settlement = lambda slug, side: (0.0, "market-expired-binary-loss")
     try:
@@ -653,6 +673,21 @@ def main():
         ("trade_pair_actual_pnl", len(pair_rows) == 1 and abs((pair_rows[0].actual_pnl_usd or 0.0) - 0.2) < 1e-9),
         ("trade_pair_zero_actual_loss_is_preserved", len(zero_actual_pair_rows) == 1 and abs((zero_actual_pair_rows[0].actual_pnl_usd or 0.0) + 1.0) < 1e-9),
         ("summary_counts_zero_actual_as_available", abs((zero_actual_summary["actual_available_ratio"] or 0.0) - 1.0) < 1e-9 and abs((zero_actual_summary["actual_pnl"]["sum"] or 0.0) + 1.0) < 1e-9),
+        (
+            "orphan_residual_rows_do_not_claim_trade_pnl",
+            len(orphan_residual_rows) == 1
+            and orphan_residual_rows[0].status == "residual"
+            and orphan_residual_rows[0].actual_pnl_usd is None
+            and orphan_residual_rows[0].observed_pnl_usd is None
+            and "orphan-residual" in orphan_residual_rows[0].flags
+            and "no-entry-match" in orphan_residual_rows[0].flags
+        ),
+        (
+            "orphan_residual_rows_do_not_count_as_actual_performance",
+            (orphan_residual_summary["actual_pnl"]["count"] or 0) == 0
+            and abs((orphan_residual_summary["actual_available_ratio"] or 0.0) - 0.0) < 1e-9
+            and orphan_residual_summary["status_counts"].get("residual") == 1
+        ),
         (
             "expired_unmatched_position_is_settled_in_report",
             len(settled_unmatched_rows) == 1
