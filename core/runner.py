@@ -22,7 +22,7 @@ from core.risk import RiskState, can_place_order, current_5min_key, update_windo
 from core.market_resolver import resolve_latest_btc_5m_token_ids, MarketResolutionError
 from core.run_journal import RunJournal
 from core.state_store import load_state, save_state
-from core.trade_manager import ExitDecision, decide_exit, maybe_reverse_entry, can_reenter_same_market, should_block_same_market_reentry
+from core.trade_manager import ExitDecision, decide_exit, maybe_reverse_entry
 from core.ws_binance import BINANCE_WS
 from core.indicators import compute_buy_sell_pressure
 from core.journal import (
@@ -342,6 +342,36 @@ def extract_entry_cost_usd(resp: dict | None, fallback_usd: float) -> float:
         except Exception:
             pass
     return float(fallback_usd)
+
+
+def extract_entry_implied_avg_price(resp: dict | None, fallback_usd: float = 0.0) -> float | None:
+    shares, _ = extract_entry_response_details(resp)
+    if shares <= 0:
+        return None
+    actual_cost = extract_entry_cost_usd(resp, fallback_usd)
+    if actual_cost <= 0:
+        return None
+    return actual_cost / max(shares, 1e-9)
+
+
+def entry_slippage_breach(
+    *,
+    expected_entry_price: float | None,
+    actual_avg_price: float | None,
+    dry_run: bool,
+) -> tuple[bool, float]:
+    if dry_run or not bool(getattr(SETTINGS, "entry_slippage_guard_enabled", True)):
+        return False, 0.0
+    try:
+        expected = float(expected_entry_price or 0.0)
+        actual = float(actual_avg_price or 0.0)
+    except Exception:
+        return False, 0.0
+    if expected <= 0.0 or actual <= 0.0:
+        return False, 0.0
+    premium_pct = (actual / max(expected, 1e-9)) - 1.0
+    breach = premium_pct > max(0.0, float(getattr(SETTINGS, "entry_max_actual_slippage_pct", 0.18) or 0.18))
+    return breach, premium_pct
 
 
 def entry_response_has_actionable_state(resp: dict | None) -> bool:
@@ -2695,16 +2725,6 @@ def main():
                                         remaining_shares = max(max(0.0, p.shares - sold_shares), remaining_hint)
                                         remaining_cost = max(0.0, p.cost_usd - realized_cost)
                                         quality_pnl = actual_realized_pnl_usd if actual_realized_pnl_usd is not None else observed_realized_pnl_usd
-                                        if should_block_same_market_reentry(
-                                            exit_decision.reason,
-                                            remaining_shares=remaining_shares,
-                                            realized_pnl_usd=quality_pnl,
-                                        ):
-                                            same_market_reentry_block_slug = p.slug
-                                            log(
-                                                f"same-market re-entry blocked | slug={p.slug} "
-                                                f"reason={exit_decision.reason} remaining_shares={remaining_shares:.6f}"
-                                            )
                                         entry_quality = "good-entry" if quality_pnl > 0 else "bad-entry" if quality_pnl < 0 else "flat-entry"
                                         exit_event = append_event({
                                             "kind": "exit",
@@ -2868,30 +2888,6 @@ def main():
                     if (not open_positions) and flags.close_fail_streak == 0:
                         flags.panic_exit_mode = False
                         panic_market_slug = ""
-
-                    has_current_market_pos = any(p.slug == market["slug"] for p in open_positions)
-                    if can_reenter_same_market(
-                        has_current_market_pos=has_current_market_pos,
-                        closed_any=closed_any,
-                        secs_left=secs_left,
-                        current_market_slug=market["slug"],
-                        blocked_market_slug=same_market_reentry_block_slug,
-                    ):
-                        # Grant one extra order slot for re-entry rather than zeroing the whole window
-                        # so the per-5min rate limiter remains effective across multiple re-entries.
-                        risk.orders_this_window = max(0, risk.orders_this_window - 1)
-                        log(f"re-entry unlocked in same market | secs_left={secs_left:.0f} orders_this_window={risk.orders_this_window}")
-
-                    if closed_any and signal_side:
-                        # A pre-close signal can be dangerously stale after we flatten a position.
-                        # Force the next poll to earn a fresh entry signal instead of same-loop re-entry churn.
-                        signal_side = None
-                        signal_origin = ""
-                        signal_probability = None
-                        token_override = None
-                        entry_price = None
-                        no_entry_reason = "post-close-wait-next-cycle"
-                        log("post-close gate: cleared cycle signal after exit; waiting for next poll before re-entry")
 
                     idle_min = (time.time() - last_trade_ts) / 60.0
                     # Cadence fallback disabled per Openclaw report (prevents forced trades without edge)
@@ -3245,12 +3241,6 @@ def main():
                     smart_sleep(SETTINGS.poll_seconds)
                     continue
 
-            if same_market_reentry_block_slug and last_market_slug == same_market_reentry_block_slug:
-                maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="same-market-reentry-blocked")
-                log("skip entry: same market re-entry blocked")
-                smart_sleep(SETTINGS.poll_seconds)
-                continue
-
             if flags.panic_exit_mode:
                 maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="panic-exit-mode")
                 log("panic_exit_mode active: block new entries")
@@ -3395,8 +3385,162 @@ def main():
                     r = resp.get("response", {}) if isinstance(resp, dict) else {}
                     actual_entry_cost_usd = extract_entry_cost_usd(resp, order_usd)
                     shares, order_id = extract_entry_response_details(resp)
+                    actual_entry_avg_price = extract_entry_implied_avg_price(resp, order_usd)
                     token_id = token_override or (market["token_up"] if signal_side == "UP" else market["token_down"])
                     if shares > 0 and token_id:
+                        slippage_breach = False
+                        slippage_premium_pct = 0.0
+                        if entry_price and float(entry_price) > 0:
+                            slippage_breach, slippage_premium_pct = entry_slippage_breach(
+                                expected_entry_price=float(entry_price),
+                                actual_avg_price=actual_entry_avg_price,
+                                dry_run=SETTINGS.dry_run,
+                            )
+                        if slippage_breach:
+                            expected_price = float(entry_price)
+                            actual_avg_price = float(actual_entry_avg_price or 0.0)
+                            maybe_record_cycle_label(
+                                state,
+                                "entry-slippage-guard",
+                                slug=market["slug"],
+                                side=signal_side,
+                                reason=f"premium={slippage_premium_pct:.2%}",
+                            )
+                            append_event({
+                                "kind": "entry_attempt",
+                                "slug": market["slug"],
+                                "side": signal_side,
+                                "token_id": token_id,
+                                "status": "entry-slippage-breach",
+                                "reason": "entry-slippage-guard",
+                                "shares": shares,
+                                "cost_usd": actual_entry_cost_usd,
+                                "quoted_entry_price": expected_price,
+                                "actual_entry_avg_price": actual_avg_price,
+                                "slippage_premium_pct": slippage_premium_pct,
+                                "response_mode": resp.get("mode") if isinstance(resp, dict) else "",
+                            })
+                            log(
+                                f"ENTRY SLIPPAGE GUARD: side={signal_side} slug={market['slug']} "
+                                f"quoted={expected_price:.3f} actual_avg={actual_avg_price:.3f} "
+                                f"premium={slippage_premium_pct:.2%} shares={shares:.4f} -> forcing immediate close"
+                            )
+                            close_resp = ex.close_position(
+                                token_id,
+                                shares,
+                                simulated_price=expected_price,
+                                force_taker=True,
+                            )
+                            if close_resp.get("ok"):
+                                sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), shares)
+                                close_fraction = sold_shares / max(shares, 1e-9)
+                                realized_cost = actual_entry_cost_usd * close_fraction
+                                remaining_shares = max(0.0, shares - sold_shares)
+                                remaining_cost = max(0.0, actual_entry_cost_usd - realized_cost)
+                                _raw_act_val = close_resp.get("actual_exit_value_usd", 0.0)
+                                _raw_act_src = str(close_resp.get("actual_exit_value_source") or "unavailable")
+                                _act_val, _act_src = sanitize_live_actual_exit_value(
+                                    actual_exit_value_usd=_raw_act_val,
+                                    actual_exit_value_source=_raw_act_src,
+                                    sold_shares=sold_shares,
+                                    mark=expected_price,
+                                    dry_run=SETTINGS.dry_run,
+                                )
+                                _obs_val = observed_exit_value_from_mark(sold_shares=sold_shares, mark=expected_price)
+                                realized_exit_value = _act_val if _act_val is not None else _obs_val
+                                realized_pnl = realized_exit_value - realized_cost
+                                risk.daily_pnl += realized_pnl
+                                append_event({
+                                    "kind": "exit",
+                                    "slug": market["slug"],
+                                    "side": signal_side,
+                                    "token_id": token_id,
+                                    "closed_shares": sold_shares,
+                                    "remaining_shares": remaining_shares,
+                                    "realized_cost_usd": realized_cost,
+                                    "actual_exit_value_usd": _act_val,
+                                    "actual_exit_value_source": _act_src or "unavailable",
+                                    "actual_realized_pnl_usd": (_act_val - realized_cost) if _act_val is not None else None,
+                                    "observed_exit_value_usd": _obs_val,
+                                    "observed_exit_value_source": "observed_mark_price",
+                                    "observed_realized_pnl_usd": _obs_val - realized_cost,
+                                    "exit_execution_style": normalize_execution_style(close_resp.get("execution_style"), default="taker"),
+                                    "status": "closed" if remaining_shares <= LOT_EPS_SHARES else "partial",
+                                    "reason": "entry-slippage-guard",
+                                    "mfe_pnl_usd": 0.0,
+                                    "mae_pnl_usd": 0.0,
+                                })
+                                log(
+                                    f"entry slippage guard close | side={signal_side} recovered=${realized_exit_value:.4f} "
+                                    f"realized_pnl=${realized_pnl:.4f} remaining_shares={remaining_shares:.6f}"
+                                )
+                                if remaining_shares > LOT_EPS_SHARES:
+                                    opened_ts = time.time()
+                                    position_id = f"pos_{int(opened_ts)}_{token_id[-6:]}"
+                                    open_positions.append(OpenPos(
+                                        slug=market["slug"],
+                                        side=signal_side,
+                                        token_id=token_id,
+                                        shares=remaining_shares,
+                                        cost_usd=remaining_cost,
+                                        opened_ts=opened_ts,
+                                        position_id=position_id,
+                                        entry_reason=f"{signal_origin or 'signal'}-slippage-guard",
+                                        source="live-order",
+                                        force_close_only=True,
+                                        max_favorable_value_usd=remaining_cost,
+                                        max_adverse_value_usd=remaining_cost,
+                                        max_favorable_pnl_usd=0.0,
+                                        max_adverse_pnl_usd=0.0,
+                                    ))
+                                    log(
+                                        f"entry slippage guard residual | side={signal_side} "
+                                        f"remaining_shares={remaining_shares:.6f} remaining_cost=${remaining_cost:.4f}"
+                                    )
+                            else:
+                                opened_ts = time.time()
+                                position_id = f"pos_{int(opened_ts)}_{token_id[-6:]}"
+                                open_positions.append(OpenPos(
+                                    slug=market["slug"],
+                                    side=signal_side,
+                                    token_id=token_id,
+                                    shares=shares,
+                                    cost_usd=actual_entry_cost_usd,
+                                    opened_ts=opened_ts,
+                                    position_id=position_id,
+                                    entry_reason=f"{signal_origin or 'signal'}-slippage-guard",
+                                    source="live-order",
+                                    pending_confirmation=True,
+                                    force_close_only=True,
+                                    max_favorable_value_usd=actual_entry_cost_usd,
+                                    max_adverse_value_usd=actual_entry_cost_usd,
+                                    max_favorable_pnl_usd=0.0,
+                                    max_adverse_pnl_usd=0.0,
+                                ))
+                                log(f"entry slippage guard close failed: {close_resp}")
+                            log(f"order placed: {resp}")
+                            notify_discord(
+                                SETTINGS.discord_webhook_url,
+                                f"⚠️ Entry slippage guard {signal_side} quoted {expected_price:.3f} actual {actual_avg_price:.3f}"
+                            )
+                            save_runtime_state(
+                                risk,
+                                last_market_slug=last_market_slug,
+                                same_market_reentry_block_slug=same_market_reentry_block_slug,
+                                yes_price_window=yes_price_window,
+                                up_price_window=up_price_window,
+                                down_price_window=down_price_window,
+                                last_trade_ts=last_trade_ts,
+                                prev_up=prev_up,
+                                prev_down=prev_down,
+                                error_cooldown_until=error_cooldown_until,
+                                open_positions=open_positions,
+                                pending_orders=pending_orders,
+                                flags=flags,
+                                last_cycle_label=state.get("last_cycle_label", ""),
+                                panic_market_slug=panic_market_slug,
+                            )
+                            continue
                         opened_ts = time.time()
                         position_id = f"pos_{int(opened_ts)}_{token_id[-6:]}"
                         open_positions.append(OpenPos(

@@ -10,6 +10,7 @@ from core.decision_engine import explain_choose_side
 from core.journal import replay_open_positions
 from core.learning import StrategyScoreboard
 from core.market_resolver import _extract_token_pair
+from core.risk import can_place_order
 from core.runner import (
     RuntimeFlags,
     assess_entry_liquidity,
@@ -597,13 +598,32 @@ def main():
         ("reenter_gate", can_reenter_same_market(has_current_market_pos=False, closed_any=True, secs_left=50, current_market_slug="m1", blocked_market_slug="") is True),
         ("reenter_gate_respects_min_secs_left", can_reenter_same_market(has_current_market_pos=False, closed_any=True, secs_left=40, current_market_slug="m1", blocked_market_slug="") is False),
         ("reenter_block", can_reenter_same_market(has_current_market_pos=True, closed_any=True, secs_left=80, current_market_slug="m1", blocked_market_slug="") is False),
-        ("reenter_block_after_stalled_trade", can_reenter_same_market(has_current_market_pos=False, closed_any=True, secs_left=80, current_market_slug="m1", blocked_market_slug="m1") is False),
-        ("profitable_stop_loss_allows_same_market_reentry", should_block_same_market_reentry("stop-loss", remaining_shares=0.02, realized_pnl_usd=0.05) is False),
-        ("losing_residual_force_close_blocks_same_market_reentry", should_block_same_market_reentry("residual-force-close", remaining_shares=0.25, realized_pnl_usd=-0.01) is True),
+        ("reenter_same_market_slug_no_longer_blocks", can_reenter_same_market(has_current_market_pos=False, closed_any=True, secs_left=80, current_market_slug="m1", blocked_market_slug="m1") is True),
+        ("profitable_stop_loss_does_not_block_same_market_reentry", should_block_same_market_reentry("stop-loss", remaining_shares=0.02, realized_pnl_usd=0.05) is False),
+        ("losing_residual_force_close_does_not_set_extra_market_block", should_block_same_market_reentry("residual-force-close", remaining_shares=0.25, realized_pnl_usd=-0.01) is False),
         ("scale_out_alone_does_not_block_same_market_reentry", should_block_same_market_reentry("stop-loss-scale-out", remaining_shares=0.25) is False),
-        ("deadline_exit_blocks_same_market_reentry_without_pnl_context", should_block_same_market_reentry("deadline-exit-flat", remaining_shares=0.0) is True and should_block_same_market_reentry("deadline-exit-loss", remaining_shares=0.0) is True),
-        ("break_even_exit_blocks_same_market_reentry", should_block_same_market_reentry("take-profit-partial", remaining_shares=0.0, realized_pnl_usd=0.0) is True),
+        ("deadline_exit_does_not_set_extra_market_block", should_block_same_market_reentry("deadline-exit-flat", remaining_shares=0.0) is False and should_block_same_market_reentry("deadline-exit-loss", remaining_shares=0.0) is False),
+        ("break_even_exit_does_not_set_extra_market_block", should_block_same_market_reentry("take-profit-partial", remaining_shares=0.0, realized_pnl_usd=0.0) is False),
         ("non_terminal_exit_does_not_block_same_market_reentry", should_block_same_market_reentry("take-profit-partial", remaining_shares=0.5) is False),
+        (
+            "max_orders_per_market_is_hard_cap",
+            can_place_order(
+                equity=10.0,
+                open_exposure=0.0,
+                min_equity=1.0,
+                order_usd=1.0,
+                max_exposure_usd=10.0,
+                max_orders_per_5min=3,
+                max_consec_loss=10,
+                daily_max_loss=10.0,
+                consec_losses=0,
+                daily_pnl=0.0,
+                orders_this_window=3,
+                current_ofi=0.99,
+                ofi_bypass_threshold=0.1,
+            )[0]
+            is False
+        ),
         ("journal_partial_close_shares", abs(lots["tok1"]["shares"] - 6.0) < 1e-9),
         ("journal_partial_close_cost", abs(lots["tok1"]["cost_usd"] - 0.6) < 1e-9),
         ("journal_partial_close_notes", len(notes) == 0),

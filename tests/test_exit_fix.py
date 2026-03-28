@@ -16,8 +16,10 @@ from core.exchange import (
 from core.runner import (
     ExitDecision as RunnerExitDecision,
     OpenPos,
+    entry_slippage_breach,
     entry_velocity_gate_rejects,
     effective_stop_loss_partial_fraction,
+    extract_entry_implied_avg_price,
     observed_exit_value_from_mark,
     extract_entry_cost_usd,
     is_loss_exit_reason,
@@ -72,6 +74,23 @@ def main():
             "response": {"takingAmount": "6.46", "makingAmount": "1.938", "status": "matched"},
         },
         3.0039,
+    )
+    implied_entry_avg_price = extract_entry_implied_avg_price(
+        {
+            "actual_entry_cost_usd": 1.0,
+            "response": {"takingAmount": "1.25", "makingAmount": "1.0"},
+        },
+        1.0,
+    )
+    slippage_breach, slippage_premium = entry_slippage_breach(
+        expected_entry_price=0.475,
+        actual_avg_price=0.8,
+        dry_run=False,
+    )
+    slippage_ok, slippage_ok_premium = entry_slippage_breach(
+        expected_entry_price=0.475,
+        actual_avg_price=0.52,
+        dry_run=False,
     )
     depth_book = {
         "best_bid": 0.475,
@@ -149,6 +168,9 @@ def main():
         ("entry_response_cost_from_making_amount", abs((entry_cost or 0.0) - 1.938) < 1e-9),
         ("entry_response_cost_source", entry_cost_source == "entry_response_makingAmount"),
         ("runner_prefers_actual_entry_cost", abs(runner_entry_cost - 1.938) < 1e-9),
+        ("entry_implied_avg_price_uses_cost_divided_by_shares", abs((implied_entry_avg_price or 0.0) - 0.8) < 1e-9),
+        ("entry_slippage_breach_detects_extreme_live_fill", slippage_breach is True and abs(slippage_premium - ((0.8 / 0.475) - 1.0)) < 1e-9),
+        ("entry_slippage_breach_allows_normal_fill", slippage_ok is False and slippage_ok_premium < 0.18),
         ("principal_extraction_rejects_tiny_partial_fill", principal_extraction_complete(0.0286, 1.0) is False),
         ("principal_extraction_accepts_near_full_recovery", principal_extraction_complete(0.97, 1.0) is True),
         ("principal_extraction_sell_fraction_uses_total_position_value", abs(principal_extraction_sell_fraction(1.6, 1.0) - 0.625) < 1e-9),

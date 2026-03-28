@@ -48,15 +48,7 @@ def can_place_order(
         return False, "exposure limit exceeded"
 
     if orders_this_window >= max_orders_per_5min:
-        # 高 OFI 豁免：當 OFI 強度超過閾值，且本 window 只下過 1 單，允許多下 1 單
-        ofi_bypass_slots = 1  # 每個 window 最多豁免 1 次
-        if (
-            current_ofi >= ofi_bypass_threshold
-            and orders_this_window < max_orders_per_5min + ofi_bypass_slots
-        ):
-            pass  # 豁免通過，繼續其他風控檢查
-        else:
-            return False, "order frequency limit exceeded"
+        return False, "order frequency limit exceeded"
 
     if consec_losses >= max_consec_loss:
         return False, "consecutive loss circuit breaker"

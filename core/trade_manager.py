@@ -157,12 +157,7 @@ def should_block_same_market_reentry(
     remaining_shares: float = 0.0,
     realized_pnl_usd: Optional[float] = None,
 ) -> bool:
-    reason = str(exit_reason or "").strip().lower()
-    if realized_pnl_usd is not None:
-        return float(realized_pnl_usd) <= 0.0
-    if remaining_shares > 1e-6:
-        return False
-    return reason == "stalled-trade" or reason.startswith("deadline-exit-")
+    return False
 
 
 def can_reenter_same_market(
@@ -174,6 +169,4 @@ def can_reenter_same_market(
     blocked_market_slug: str = "",
 ) -> bool:
     min_secs_left = float(getattr(SETTINGS, "same_market_reentry_min_secs_left", 60))
-    if blocked_market_slug and current_market_slug and blocked_market_slug == current_market_slug:
-        return False
     return bool(closed_any and (not has_current_market_pos) and secs_left is not None and secs_left >= min_secs_left)
