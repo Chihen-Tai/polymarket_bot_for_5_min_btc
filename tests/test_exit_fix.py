@@ -219,6 +219,27 @@ def main():
     live_acct_ex.invalidate_live_account_cache()
     acct_third = live_acct_ex.get_account()
 
+    object_book_ex = make_paper_exchange()
+    object_book_ex.dry_run = False
+
+    class ObjectLevel:
+        def __init__(self, price: str, size: str):
+            self.price = price
+            self.size = size
+
+    class ObjectBook:
+        def __init__(self):
+            self.bids = [ObjectLevel("0.48", "12.5"), ObjectLevel("0.47", "9.0")]
+            self.asks = [ObjectLevel("0.49", "8.0"), ObjectLevel("0.50", "10.0")]
+
+    class ObjectBookClient:
+        def get_order_book(self, token_id):
+            return ObjectBook()
+
+    object_book_ex.client = ObjectBookClient()
+    object_book = object_book_ex.get_full_orderbook("tok-object-book")
+    object_book_liquidity = object_book_ex.has_exit_liquidity("tok-object-book", 10.0)
+
     entry = ex.place_order("UP", 1.0, token_id_override="tok1", simulated_price=0.5)
     partial = ex.close_position("tok1", 1.0, simulated_price=0.6)
     cost_after_partial = ex._position_cost.get("tok1", 0.0)
@@ -312,6 +333,8 @@ def main():
         ("live_close_exit_value_prefers_cash_delta", abs((live_close_value or 0.0) - 0.5877) < 1e-9 and live_close_source == "cash_balance_delta"),
         ("parse_balance_allowance_available_shares_handles_live_error", abs((parsed_balance_shares or 0.0) - 1.198827) < 1e-9),
         ("live_account_cache_reuses_recent_snapshot", cash_calls["count"] == 2 and value_calls["count"] == 2 and acct_first.cash == acct_second.cash == acct_third.cash == 7.0 and acct_first.equity == acct_second.equity == acct_third.equity == 10.0),
+        ("get_full_orderbook_accepts_object_style_orderbook", object_book.get("best_bid") == 0.48 and object_book.get("best_ask") == 0.49 and object_book.get("bids_volume") == 21.5 and object_book.get("asks_volume") == 18.0),
+        ("has_exit_liquidity_accepts_object_style_levels", object_book_liquidity is True),
         ("paper_entry_is_taker_simulated", entry.get("execution_style") == "taker-simulated"),
         ("paper_partial_close_value", abs(float(partial["actual_exit_value_usd"]) - 0.6) < 1e-9),
         ("paper_partial_close_remaining_shares", abs(float(partial["remaining_shares"]) - 1.0) < 1e-9),

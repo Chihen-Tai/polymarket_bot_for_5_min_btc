@@ -122,6 +122,9 @@ def _normalize_book_levels(raw_levels: Any, *, reverse: bool) -> list[tuple[floa
         if isinstance(lv, dict):
             price = _to_float(lv.get("price"), 0.0)
             size = _to_float(lv.get("size", lv.get("amount", 0.0)), 0.0)
+        elif hasattr(lv, "price") or hasattr(lv, "size") or hasattr(lv, "amount"):
+            price = _to_float(getattr(lv, "price", 0.0), 0.0)
+            size = _to_float(getattr(lv, "size", getattr(lv, "amount", 0.0)), 0.0)
         elif isinstance(lv, (list, tuple)) and len(lv) >= 2:
             price = _to_float(lv[0], 0.0)
             size = _to_float(lv[1], 0.0)
@@ -131,6 +134,47 @@ def _normalize_book_levels(raw_levels: Any, *, reverse: bool) -> list[tuple[floa
             levels.append((price, size))
     levels.sort(key=lambda item: item[0], reverse=reverse)
     return levels
+
+
+def _normalize_orderbook_summary(raw_book: Any) -> dict:
+    if isinstance(raw_book, dict):
+        return raw_book
+    if raw_book is None:
+        return {}
+
+    for dumper in ("model_dump", "dict"):
+        fn = getattr(raw_book, dumper, None)
+        if callable(fn):
+            try:
+                dumped = fn()
+            except Exception:
+                dumped = None
+            if isinstance(dumped, dict):
+                return dumped
+
+    fields = (
+        "market",
+        "asset_id",
+        "timestamp",
+        "bids",
+        "asks",
+        "min_order_size",
+        "neg_risk",
+        "tick_size",
+        "last_trade_price",
+        "hash",
+    )
+    normalized = {field: getattr(raw_book, field) for field in fields if hasattr(raw_book, field)}
+    if normalized:
+        return normalized
+
+    try:
+        raw_dict = vars(raw_book)
+    except Exception:
+        raw_dict = None
+    if isinstance(raw_dict, dict):
+        return {str(key): value for key, value in raw_dict.items() if not str(key).startswith("_")}
+    return {}
 
 
 def estimate_book_exit_value(book: dict | None, shares: float) -> tuple[float | None, float]:
@@ -692,40 +736,17 @@ class PolymarketExchange:
                 "ask_levels": [(0.51, 1000.0)],
             }
         try:
-            book = self.client.get_order_book(token_id)
-            if not isinstance(book, dict):
+            raw_book = self.client.get_order_book(token_id)
+            book = _normalize_orderbook_summary(raw_book)
+            if not isinstance(book, dict) or not book:
                 return {}
-            
-            bids_vol, asks_vol = 0.0, 0.0
-            best_bid, best_ask = 0.0, 1.0
-            best_bid_size, best_ask_size = 0.0, 0.0
-            bid_levels: list[tuple[float, float]] = []
-            ask_levels: list[tuple[float, float]] = []
 
-            bids = book.get("bids", [])
-            for lv in (bids if isinstance(bids, list) else []):
-                price = _to_float(lv.get("price") if isinstance(lv, dict) else lv[0], 0.0)
-                sz = _to_float(lv.get("size", lv.get("amount", 0)) if isinstance(lv, dict) else lv[1], 0.0)
-                if price > 0.0 and sz > 0.0:
-                    bid_levels.append((price, sz))
-                bids_vol += sz
-                if price > best_bid:
-                    best_bid = price
-                    best_bid_size = sz
-
-            asks = book.get("asks", [])
-            for lv in (asks if isinstance(asks, list) else []):
-                price = _to_float(lv.get("price") if isinstance(lv, dict) else lv[0], 1.0)
-                sz = _to_float(lv.get("size", lv.get("amount", 0)) if isinstance(lv, dict) else lv[1], 0.0)
-                if price > 0.0 and sz > 0.0:
-                    ask_levels.append((price, sz))
-                asks_vol += sz
-                if price < best_ask:
-                    best_ask = price
-                    best_ask_size = sz
-
-            bid_levels.sort(key=lambda item: item[0], reverse=True)
-            ask_levels.sort(key=lambda item: item[0])
+            bid_levels = _normalize_book_levels(book.get("bids"), reverse=True)
+            ask_levels = _normalize_book_levels(book.get("asks"), reverse=False)
+            bids_vol = sum(size for _price, size in bid_levels)
+            asks_vol = sum(size for _price, size in ask_levels)
+            best_bid, best_bid_size = bid_levels[0] if bid_levels else (0.0, 0.0)
+            best_ask, best_ask_size = ask_levels[0] if ask_levels else (0.0, 0.0)
 
             return {
                 "bids_volume": bids_vol,
@@ -744,18 +765,13 @@ class PolymarketExchange:
         if not self.client:
             return True
         try:
-            book = self.client.get_order_book(token_id)
-            bids = book.get("bids") if isinstance(book, dict) else None
-            if not isinstance(bids, list):
+            raw_book = self.client.get_order_book(token_id)
+            book = _normalize_orderbook_summary(raw_book)
+            bid_levels = _normalize_book_levels(book.get("bids"), reverse=True)
+            if not bid_levels:
                 return True
             total = 0.0
-            for lv in bids:
-                if isinstance(lv, dict):
-                    sz = _to_float(lv.get("size", lv.get("amount", 0)), 0.0)
-                elif isinstance(lv, (list, tuple)) and len(lv) >= 2:
-                    sz = _to_float(lv[1], 0.0)
-                else:
-                    sz = 0.0
+            for _price, sz in bid_levels:
                 total += max(0.0, sz)
                 if total >= shares * 0.8:
                     return True
