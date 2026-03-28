@@ -100,8 +100,22 @@ conda activate polymarket-bot
 
 ## 執行
 
+只啟動 bot：
+
 ```bash
 python main.py
+```
+
+只啟動 market data collector：
+
+```bash
+bash scripts/start_market_data_collector.sh
+```
+
+同時啟動 collector + bot：
+
+```bash
+bash scripts/start_bot_with_market_data.sh
 ```
 
 程式啟動後會：
@@ -109,6 +123,22 @@ python main.py
 - 把 console 輸出同步寫到 `data/log-<mode>-<timestamp>.txt`
 - 持續輪詢 / 監控最新市場
 - 在結束時自動產生報表
+
+`start_bot_with_market_data.sh` 會自動：
+
+- `conda activate polymarket-bot`
+- 先啟動 `market_data_collector`
+- 再啟動 bot
+- bot 結束時一併關掉 collector
+
+常用參數：
+
+```bash
+bash scripts/start_market_data_collector.sh --mode dryrun --poll-sec 0.5
+bash scripts/start_market_data_collector.sh --background
+bash scripts/start_bot_with_market_data.sh --collector-poll-sec 0.5
+bash scripts/start_bot_with_market_data.sh --skip-collector
+```
 
 ## 執行後產物
 
@@ -119,6 +149,15 @@ python main.py
 - `latest_run_report.txt`
 
 `latest_run_report.txt` 是最快速查看最近一次結果的檔案。
+
+如果有啟動 market data collector，額外輸出會在 `market_data/`：
+
+- `market_data/YYYY-MM-DD/<event-folder>/event.json`
+- `market_data/YYYY-MM-DD/<event-folder>/window.jsonl`
+- `market_data/logs/collector-*.log`
+- `market_data/logs/stack-collector-*.log`
+
+collector 只會讀 journal、抓市場快照並寫入 `market_data/`，不會改 bot 的交易邏輯或下單流程。
 
 ## Live Notes
 
@@ -160,10 +199,10 @@ python scripts/verify_close_accounting.py --limit 50 --format json --output data
 
 ## 測試
 
-目前 repo 內有兩組核心 smoke tests：
+目前 repo 內有幾組核心 smoke tests：
 
 ```bash
-conda run -n polymarket-bot python -m pytest -q tests/test_trade_manager.py tests/test_exit_fix.py
+conda run -n polymarket-bot python -m pytest -q tests/test_trade_manager.py tests/test_exit_fix.py tests/test_market_data_collector.py tests/test_runtime_paths.py
 ```
 
 ## 專案結構
@@ -176,6 +215,9 @@ conda run -n polymarket-bot python -m pytest -q tests/test_trade_manager.py test
 - `core/config.py`: 所有 `.env` 設定載入
 - `scripts/trade_pair_ledger.py`: 交易配對報表
 - `scripts/verify_close_accounting.py`: 平倉對帳檢查
+- `scripts/market_data_collector.py`: 收集買賣前後 30 秒市場資料
+- `scripts/start_market_data_collector.sh`: 啟動 collector 的 shell wrapper
+- `scripts/start_bot_with_market_data.sh`: 一鍵啟動 collector + bot
 - `config_presets/dryrun_aggressive.env`: 目前主要的 dry-run preset
 
 ## 建議工作流程
@@ -208,9 +250,22 @@ conda activate polymarket-bot
 python main.py
 ```
 
+Collector only:
+
+```bash
+bash scripts/start_market_data_collector.sh
+```
+
+Collector + bot:
+
+```bash
+bash scripts/start_bot_with_market_data.sh
+```
+
 Important notes:
 
 - Keep shared defaults in the tracked `.env`, and put secrets in `.env.local` / `.env.secrets`
 - Default settings are currently optimization-oriented
 - Logs and reports are written under `data/`
+- Market snapshots around fills are written under `market_data/`
 - The fastest post-run check is `data/latest_run_report.txt`
