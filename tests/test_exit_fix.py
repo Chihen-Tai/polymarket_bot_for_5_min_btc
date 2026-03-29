@@ -70,9 +70,9 @@ def make_paper_exchange() -> PolymarketExchange:
 def main():
     # Keep these checks independent from any prior test file mutating SETTINGS.
     SETTINGS.stop_loss_partial_pct = 0.10
-    SETTINGS.soft_stop_confirm_sec = 6.0
-    SETTINGS.soft_stop_confirm_buffer_pct = 0.03
-    SETTINGS.soft_stop_adverse_velocity = 0.0003
+    SETTINGS.soft_stop_confirm_sec = 2.5
+    SETTINGS.soft_stop_confirm_buffer_pct = 0.015
+    SETTINGS.soft_stop_adverse_velocity = 0.00018
     SETTINGS.stop_loss_partial_fraction = 0.50
     SETTINGS.live_stop_loss_partial_fraction = 0.80
     SETTINGS.binance_adverse_exit_enabled = True
@@ -82,17 +82,17 @@ def main():
     SETTINGS.binance_adverse_exit_min_hold_sec = 4.0
     SETTINGS.binance_adverse_exit_require_current_confirm = True
     SETTINGS.binance_profit_protect_enabled = True
-    SETTINGS.binance_profit_protect_min_profit_pct = 0.06
-    SETTINGS.binance_profit_protect_max_profit_pct = 0.18
-    SETTINGS.binance_profit_protect_stall_sec = 8.0
-    SETTINGS.binance_profit_protect_confirm_sec = 2.0
-    SETTINGS.binance_profit_protect_velocity = 0.00025
-    SETTINGS.binance_profit_protect_min_hold_sec = 8.0
-    SETTINGS.binance_profit_protect_require_current_confirm = True
-    SETTINGS.take_profit_soft_pct = 0.35
-    SETTINGS.take_profit_partial_fraction = 0.25
-    SETTINGS.take_profit_hard_pct = 0.55
-    SETTINGS.take_profit_runner_fraction = 0.20
+    SETTINGS.binance_profit_protect_min_profit_pct = 0.08
+    SETTINGS.binance_profit_protect_max_profit_pct = 0.17
+    SETTINGS.binance_profit_protect_stall_sec = 6.0
+    SETTINGS.binance_profit_protect_confirm_sec = 1.0
+    SETTINGS.binance_profit_protect_velocity = 0.00012
+    SETTINGS.binance_profit_protect_min_hold_sec = 10.0
+    SETTINGS.binance_profit_protect_require_current_confirm = False
+    SETTINGS.take_profit_soft_pct = 0.18
+    SETTINGS.take_profit_partial_fraction = 0.40
+    SETTINGS.take_profit_hard_pct = 0.30
+    SETTINGS.take_profit_runner_fraction = 0.10
 
     ex = make_paper_exchange()
 
@@ -362,18 +362,18 @@ def main():
         ),
         ("non_deadline_exit_has_no_emergency_retry", emergency_exit_retry_kwargs(reason="take-profit-principal", secs_left=18.0, dry_run=False) == {}),
         ("panic_dump_always_forces_taker", should_force_taker_exit(reason="", dry_run=True, has_panic_dumped=True) is True),
-        ("soft_stop_scaleout_waits_for_confirmation_when_shallow_and_flat", should_delay_soft_stop_scaleout(reason="stop-loss-scale-out", side="UP", pnl_pct=-0.10, breach_age_sec=2.0, secs_left=120.0, ws_velocity=0.0) is True),
-        ("soft_stop_scaleout_does_not_wait_when_move_is_still_adverse", should_delay_soft_stop_scaleout(reason="stop-loss-scale-out", side="UP", pnl_pct=-0.10, breach_age_sec=2.0, secs_left=120.0, ws_velocity=-0.0010) is False),
-        ("soft_stop_scaleout_does_not_wait_after_confirmation_window", should_delay_soft_stop_scaleout(reason="stop-loss-scale-out", side="UP", pnl_pct=-0.10, breach_age_sec=8.0, secs_left=120.0, ws_velocity=0.0) is False),
-        ("soft_stop_scaleout_does_not_wait_when_loss_is_too_deep", should_delay_soft_stop_scaleout(reason="stop-loss-scale-out", side="UP", pnl_pct=-0.20, breach_age_sec=2.0, secs_left=120.0, ws_velocity=0.0) is False),
+        ("soft_stop_scaleout_waits_for_confirmation_when_shallow_and_flat", should_delay_soft_stop_scaleout(reason="stop-loss-scale-out", side="UP", pnl_pct=-0.08, breach_age_sec=1.0, secs_left=120.0, ws_velocity=0.0) is True),
+        ("soft_stop_scaleout_does_not_wait_when_move_is_still_adverse", should_delay_soft_stop_scaleout(reason="stop-loss-scale-out", side="UP", pnl_pct=-0.08, breach_age_sec=1.0, secs_left=120.0, ws_velocity=-0.0010) is False),
+        ("soft_stop_scaleout_does_not_wait_after_confirmation_window", should_delay_soft_stop_scaleout(reason="stop-loss-scale-out", side="UP", pnl_pct=-0.08, breach_age_sec=3.0, secs_left=120.0, ws_velocity=0.0) is False),
+        ("soft_stop_scaleout_does_not_wait_when_loss_is_too_deep", should_delay_soft_stop_scaleout(reason="stop-loss-scale-out", side="UP", pnl_pct=-0.12, breach_age_sec=1.0, secs_left=120.0, ws_velocity=0.0) is False),
         ("binance_adverse_exit_waits_for_confirmation_window", should_trigger_binance_adverse_exit(has_extracted_principal=False, side="UP", pnl_pct=-0.03, profit_pnl_pct=None, hold_sec=10.0, breach_age_sec=2.0, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is False),
         ("binance_adverse_exit_triggers_after_confirmed_dual_adverse_velocity", should_trigger_binance_adverse_exit(has_extracted_principal=False, side="UP", pnl_pct=-0.03, profit_pnl_pct=None, hold_sec=10.0, breach_age_sec=3.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is True),
         ("binance_adverse_exit_skips_safe_executable_profit", should_trigger_binance_adverse_exit(has_extracted_principal=False, side="UP", pnl_pct=0.02, profit_pnl_pct=0.12, hold_sec=10.0, breach_age_sec=3.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is False),
         ("binance_adverse_exit_requires_current_confirmation_when_enabled", should_trigger_binance_adverse_exit(has_extracted_principal=False, side="DOWN", pnl_pct=-0.02, profit_pnl_pct=None, hold_sec=10.0, breach_age_sec=3.1, secs_left=120.0, ws_velocity=0.0010, current_ws_velocity=0.0) is False),
-        ("binance_profit_protect_exit_waits_for_stall_window", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.10, take_profit_soft_pct=0.35, hold_sec=12.0, peak_age_sec=6.0, breach_age_sec=2.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is False),
-        ("binance_profit_protect_exit_triggers_for_stalled_small_profit", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.10, take_profit_soft_pct=0.35, hold_sec=12.0, peak_age_sec=9.0, breach_age_sec=2.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is True),
-        ("binance_profit_protect_exit_skips_big_profit_reserved_for_take_profit", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.24, take_profit_soft_pct=0.25, hold_sec=12.0, peak_age_sec=9.0, breach_age_sec=2.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is False),
-        ("binance_profit_protect_exit_requires_current_confirmation_when_enabled", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="DOWN", profit_pnl_pct=0.10, take_profit_soft_pct=0.35, hold_sec=12.0, peak_age_sec=9.0, breach_age_sec=2.1, secs_left=120.0, ws_velocity=0.0010, current_ws_velocity=0.0) is False),
+        ("binance_profit_protect_exit_waits_for_stall_window", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.10, take_profit_soft_pct=0.18, hold_sec=12.0, peak_age_sec=5.0, breach_age_sec=1.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is False),
+        ("binance_profit_protect_exit_triggers_for_stalled_small_profit", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.10, take_profit_soft_pct=0.18, hold_sec=12.0, peak_age_sec=7.0, breach_age_sec=1.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is True),
+        ("binance_profit_protect_exit_skips_big_profit_reserved_for_take_profit", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.19, take_profit_soft_pct=0.18, hold_sec=12.0, peak_age_sec=7.0, breach_age_sec=1.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is False),
+        ("binance_profit_protect_exit_can_fire_without_current_confirmation", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="DOWN", profit_pnl_pct=0.10, take_profit_soft_pct=0.18, hold_sec=12.0, peak_age_sec=7.0, breach_age_sec=1.1, secs_left=120.0, ws_velocity=0.0010, current_ws_velocity=0.0) is True),
         ("binance_profit_protect_prefers_taker_live", should_force_taker_profit_protection(reason="binance-profit-protect-exit", dry_run=False) is True),
         ("dry_run_stop_loss_partial_fraction_unchanged", abs(effective_stop_loss_partial_fraction(dry_run=True) - 0.50) < 1e-9),
         ("live_stop_loss_partial_fraction_is_heavy", abs(effective_stop_loss_partial_fraction(dry_run=False) - 0.80) < 1e-9),
@@ -412,10 +412,10 @@ def main():
         ("close_remaining_shares_preserves_non_dust_hint", abs(resolved_close_remaining_live_hint - 0.498613) < 1e-9),
         ("effective_closed_shares_uses_zero_remaining_hint_as_full_close", abs(effective_closed_from_zero_remaining_hint - 1.587300) < 1e-9),
         ("effective_closed_shares_preserves_partial_when_residual_remains", abs(effective_closed_with_live_residual_hint - 1.3793088) < 1e-9),
-        ("take_profit_soft_pct_uses_thirty_five_percent_default", abs(float(getattr(SETTINGS, "take_profit_soft_pct", 0.0)) - 0.35) < 1e-9),
-        ("take_profit_partial_fraction_uses_twenty_five_percent_default", abs(float(getattr(SETTINGS, "take_profit_partial_fraction", 0.0)) - 0.25) < 1e-9),
-        ("take_profit_hard_pct_uses_fifty_five_percent_default", abs(float(getattr(SETTINGS, "take_profit_hard_pct", 0.0)) - 0.55) < 1e-9),
-        ("take_profit_runner_fraction_uses_twenty_percent_default", abs(float(getattr(SETTINGS, "take_profit_runner_fraction", 0.0)) - 0.20) < 1e-9),
+        ("take_profit_soft_pct_uses_eighteen_percent_default", abs(float(getattr(SETTINGS, "take_profit_soft_pct", 0.0)) - 0.18) < 1e-9),
+        ("take_profit_partial_fraction_uses_forty_percent_default", abs(float(getattr(SETTINGS, "take_profit_partial_fraction", 0.0)) - 0.40) < 1e-9),
+        ("take_profit_hard_pct_uses_thirty_percent_default", abs(float(getattr(SETTINGS, "take_profit_hard_pct", 0.0)) - 0.30) < 1e-9),
+        ("take_profit_runner_fraction_uses_ten_percent_default", abs(float(getattr(SETTINGS, "take_profit_runner_fraction", 0.0)) - 0.10) < 1e-9),
         ("paper_entry_is_taker_simulated", entry.get("execution_style") == "taker-simulated"),
         ("paper_partial_close_value", abs(float(partial["actual_exit_value_usd"]) - 0.6) < 1e-9),
         ("paper_partial_close_remaining_shares", abs(float(partial["remaining_shares"]) - 1.0) < 1e-9),

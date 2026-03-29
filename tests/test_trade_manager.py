@@ -61,6 +61,10 @@ def main():
     SETTINGS.entry_window_max_sec = 999999.0
     SETTINGS.exit_deadline_sec = 20
     SETTINGS.exit_deadline_flat_pnl_pct = 0.0
+    SETTINGS.take_profit_soft_pct = 0.18
+    SETTINGS.take_profit_partial_fraction = 0.40
+    SETTINGS.take_profit_hard_pct = 0.30
+    SETTINGS.take_profit_runner_fraction = 0.10
     SETTINGS.edge_threshold = 0.02
     SETTINGS.entry_neutral_band_half_width = 0.03
     SETTINGS.entry_neutral_edge_penalty = 0.02
@@ -706,7 +710,7 @@ def main():
         ("post_scaleout_loss_promotes_to_full_exit", decide_exit(pnl_pct=-0.12, hold_sec=30, secs_left=120, has_scaled_out_loss=True).reason == "post-scaleout-stop-loss"),
         ("deadline_exit_flat_without_principal", decide_exit(pnl_pct=0.0, hold_sec=50, secs_left=10).reason == "deadline-exit-flat"),
         ("deadline_exit_allows_moonbag_hold", decide_exit(pnl_pct=0.0, hold_sec=50, secs_left=10, has_extracted_principal=True).reason != "deadline-exit-flat"),
-        ("deadline_exit_weak_win_without_principal", decide_exit(pnl_pct=0.22, hold_sec=50, secs_left=10).reason == "deadline-exit-weak-win"),
+        ("deadline_exit_weak_win_without_principal", decide_exit(pnl_pct=0.12, hold_sec=50, secs_left=10).reason == "deadline-exit-weak-win"),
         ("deadline_exit_weak_win_skips_risk_free_moonbag", decide_exit(pnl_pct=0.22, hold_sec=50, secs_left=10, has_extracted_principal=True).reason != "deadline-exit-weak-win"),
         ("deadline_exit_loss_skips_risk_free_moonbag", decide_exit(pnl_pct=-0.40, hold_sec=50, secs_left=10, has_extracted_principal=True).should_close is False),
         ("max_hold_loss_skips_risk_free_moonbag", decide_exit(pnl_pct=-0.05, hold_sec=500, has_extracted_principal=True).should_close is False),
@@ -747,7 +751,7 @@ def main():
         ("smart_stop_loss_at_threshold", decide_exit(pnl_pct=-0.08, hold_sec=5, recovery_chance_low=True).reason == "smart-stop-loss"),
         ("hard_stop_loss", decide_exit(pnl_pct=-0.55, hold_sec=5).reason == "hard-stop-loss"),
         ("take_profit_uses_profit_reference_even_if_hard_stop_is_negative", decide_exit(pnl_pct=-0.05, profit_pnl_pct=0.60, hold_sec=5).reason == "take-profit-principal"),
-        ("partial_take_profit_uses_profit_reference_even_if_hard_stop_is_negative", decide_exit(pnl_pct=-0.05, profit_pnl_pct=0.35, hold_sec=5).reason == "take-profit-partial"),
+        ("partial_take_profit_uses_profit_reference_even_if_hard_stop_is_negative", decide_exit(pnl_pct=-0.05, profit_pnl_pct=0.20, hold_sec=5).reason == "take-profit-partial"),
         ("take_profit_does_not_trigger_without_executable_profit_signal", decide_exit(pnl_pct=0.60, profit_pnl_pct=None, hold_sec=5).should_close is False),
             (
                 "force_full_exit_on_take_profit",
