@@ -280,7 +280,7 @@ def explain_choose_side(
                 max(0.0, ofi_threshold - 0.5),
                 0.5,
             )
-            ofi_probability = _probability_from_confidence(ofi_confidence, floor=0.54, ceiling=0.74)
+            ofi_probability = _probability_from_confidence(ofi_confidence, floor=0.55, ceiling=0.85)
 
             # Polymarket OB cross-confirmation: also check that Poly bid pressure agrees
             poly_up_imbalance = _check_imbalance(poly_ob_up) if poly_ob_up else 0.5
@@ -326,7 +326,7 @@ def explain_choose_side(
                 )
                 flash_threshold = float(SETTINGS.ws_flash_snipe_threshold)
                 flash_confidence = _confidence_from_signal(abs(vel), flash_threshold, flash_threshold * 2.0)
-                flash_probability = _probability_from_confidence(flash_confidence, floor=0.54, ceiling=0.72)
+                flash_probability = _probability_from_confidence(flash_confidence, floor=0.54, ceiling=0.88)
                 if vel > SETTINGS.ws_flash_snipe_threshold and snipe_valid_up:
                     r = _build_candidate(
                         base_result,
