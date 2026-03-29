@@ -65,7 +65,7 @@ def main() -> None:
     for row in rows:
         stamp = row.closed_ts or row.opened_ts
         print(
-            f"{row.status:<10} {stamp:<19} {row.market[:26]:<26} {row.side:<4} {row.entry_cost_usd:>8.4f} "
+            f"{row.status:<10} {stamp:<19} {row.market[:26]:<26} {row.side:<4} {row.matched_cost_usd:>8.4f} "
             f"{fmt_money(row.exit_recovered_actual_usd):>8} {fmt_money(row.exit_recovered_observed_usd):>9} "
             f"{fmt_money(row.actual_pnl_usd):>8} {fmt_money(row.observed_pnl_usd):>8} {row.actual_source_tier:<6} {row.close_reason[:18]:<18} "
             f"{row.remaining_shares:>8.4f} {fmt_money(row.mae_pnl_usd):>8} {fmt_money(row.mfe_pnl_usd):>8}"

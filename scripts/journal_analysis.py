@@ -398,6 +398,7 @@ class TradePairRow:
     closed_ts: str
     entry_cost_usd: float
     entry_shares: float
+    matched_cost_usd: float
     matched_exit_shares: float
     exit_recovered_actual_usd: float | None
     exit_recovered_observed_usd: float | None
@@ -926,6 +927,7 @@ def _finalize_pair_row(entry_ev: dict, token_id: str, key: str, lot: dict) -> Tr
         closed_ts=settlement_closed_ts or str(lot.get("closed_ts") or ""),
         entry_cost_usd=entry_cost,
         entry_shares=entry_shares,
+        matched_cost_usd=matched_cost,
         matched_exit_shares=matched_exit_shares,
         exit_recovered_actual_usd=exit_actual,
         exit_recovered_observed_usd=exit_observed,

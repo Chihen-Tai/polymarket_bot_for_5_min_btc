@@ -188,7 +188,9 @@ class OpenPos:
     has_taken_partial: bool = False
     has_extracted_principal: bool = False
     has_panic_dumped: bool = False
+    profit_plateau_entry_ts: float = 0.0
     force_close_only: bool = False
+    is_moonbag: bool = False
     entry_shares: float = 0.0
     runner_peak_value_usd: float = 0.0
     runner_peak_ts: float = 0.0
@@ -2550,7 +2552,19 @@ def main():
                             if profit_reference_value is not None
                             else None
                         )
-                        profit_peak_age_sec = favorable_peak_age_sec(p)
+                        plateau_ref_pct = profit_pnl_pct if profit_pnl_pct is not None else pnl_pct
+                        plateau_min = float(getattr(SETTINGS, "binance_profit_protect_min_profit_pct", 0.06) or 0.06)
+                        plateau_max = min(
+                            float(getattr(SETTINGS, "binance_profit_protect_max_profit_pct", 0.18) or 0.18),
+                            max(0.0, float(getattr(SETTINGS, "take_profit_soft_pct", 0.18) or 0.18) - 0.01)
+                        )
+                        if plateau_ref_pct is not None and plateau_min <= plateau_ref_pct <= plateau_max:
+                            if getattr(p, "profit_plateau_entry_ts", 0.0) <= 0.0:
+                                p.profit_plateau_entry_ts = time.time()
+                        elif plateau_ref_pct is None or not (plateau_min - 0.02 <= plateau_ref_pct <= plateau_max + 0.02):
+                            p.profit_plateau_entry_ts = 0.0
+                        
+                        profit_peak_age_sec = max(0.0, time.time() - getattr(p, "profit_plateau_entry_ts", 0.0)) if getattr(p, "profit_plateau_entry_ts", 0.0) > 0.0 else 0.0
                         stop_loss_partial_pct = abs(float(getattr(SETTINGS, "stop_loss_partial_pct", 0.05) or 0.05))
                         stop_loss_pct = abs(float(getattr(SETTINGS, "stop_loss_pct", 0.15) or 0.15))
                         if hard_stop_pnl_pct <= -stop_loss_partial_pct and hard_stop_pnl_pct > -stop_loss_pct:
@@ -2576,6 +2590,9 @@ def main():
 
                         if getattr(p, "force_close_only", False):
                             exit_decision = ExitDecision(True, "residual-force-close", hard_stop_pnl_pct, hold_sec)
+                        elif getattr(p, "is_moonbag", False):
+                            keep_positions.append(p)
+                            continue
                         else:
                             exit_decision = decide_exit(
                                 pnl_pct=hard_stop_pnl_pct,
@@ -2805,17 +2822,6 @@ def main():
                             log(f"stop-loss warning | side={p.side} observed_return={pnl_pct:.2%} hold={hold_sec:.0f}s")
 
                         if exit_decision.should_close:
-                            force_full_loss_exit = should_force_full_loss_exit(
-                                reason=exit_decision.reason,
-                                dry_run=SETTINGS.dry_run,
-                            )
-                            if force_full_loss_exit and exit_decision.reason == "stop-loss-scale-out":
-                                log(
-                                    f"LIVE LOSS EXIT OVERRIDE: {p.side} {p.token_id[-6:]} "
-                                    "stop-loss-scale-out -> stop-loss-full"
-                                )
-                                exit_decision.reason = "stop-loss-full"
-
                             if exit_decision.reason == "scale-out":
                                 sell_fraction = min(0.99, p.cost_usd / max(observed_value, 1e-9))
                                 sell_shares = p.shares * sell_fraction
@@ -3234,9 +3240,17 @@ def main():
                                     secs_left=secs_left,
                                     dry_run=SETTINGS.dry_run,
                                 )
+                                moonbag_pct = max(0.0, min(0.99, float(getattr(SETTINGS, "leave_moonbag_pct", 0.0) or 0.0)))
+                                sell_shares = p.shares
+                                if moonbag_pct > 0.0 and exit_decision.reason not in {"manual-emergency-close", "residual-force-close"}:
+                                    moonbag_target = p.shares * moonbag_pct
+                                    sell_target = p.shares - moonbag_target
+                                    if sell_target > 0.0001:
+                                        sell_shares = sell_target
+
                                 close_resp = ex.close_position(
                                     p.token_id,
-                                    p.shares,
+                                    sell_shares,
                                     simulated_price=float(mark) if mark is not None else None,
                                     force_taker=(
                                         should_force_taker_exit(
@@ -3453,7 +3467,12 @@ def main():
                                                 timestamp=time.time()
                                             )
                                         if remaining_shares > LOT_EPS_SHARES and remaining_cost > LOT_EPS_COST_USD:
-                                            residual_force_close = should_force_full_loss_exit(
+                                            # If we successfully created a moonbag, skip force close and mark it
+                                            is_moonbag_triggered = False
+                                            if moonbag_pct > 0.0 and exit_decision.reason not in {"manual-emergency-close", "residual-force-close"}:
+                                                is_moonbag_triggered = True
+
+                                            residual_force_close = False if is_moonbag_triggered else should_force_full_loss_exit(
                                                 reason=exit_decision.reason,
                                                 dry_run=SETTINGS.dry_run,
                                             )
@@ -3483,6 +3502,7 @@ def main():
                                                     has_taken_partial=getattr(p, "has_taken_partial", False),
                                                     has_extracted_principal=getattr(p, "has_extracted_principal", False),
                                                     has_panic_dumped=should_force_taker_exit(
+
                                                         reason=exit_decision.reason,
                                                         dry_run=SETTINGS.dry_run,
                                                         has_panic_dumped=getattr(p, "has_panic_dumped", False),
@@ -3519,10 +3539,14 @@ def main():
                                                     has_extracted_principal=getattr(p, "has_extracted_principal", False),
                                                     has_panic_dumped=getattr(p, "has_panic_dumped", False),
                                                     force_close_only=getattr(p, "force_close_only", False),
+                                                    is_moonbag=is_moonbag_triggered,
                                                     runner_peak_value_usd=float(getattr(p, "runner_peak_value_usd", 0.0) or 0.0),
                                                     runner_peak_ts=float(getattr(p, "runner_peak_ts", 0.0) or 0.0),
                                                     dust_retry_count=dust_retry,
                                                 ))
+                                            
+                                            if is_moonbag_triggered:
+                                                log(f"🎑 MOONBAG SECURED! {p.token_id[-6:]} remaining {remaining_shares:.2f} shares to run risk-free.")
                                         else:
                                             log(
                                                 f"drop residual after close | token={p.token_id} remaining_shares={remaining_shares:.6f} "

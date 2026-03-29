@@ -940,15 +940,20 @@ class PolymarketExchange:
                         usdc_src = "maker-no-fill"
                         
                 else:
-                    # Taker Fallback (Attempts 6-8)
-                    order = self.client.create_market_order(
-                        MarketOrderArgs(
+                    # Taker Fallback (Attempts 6-8) with 8% Slippage Padding from simulated mark price
+                    worst_price = 0.01
+                    if simulated_price is not None and simulated_price > 0.01:
+                        worst_price = round(max(0.01, simulated_price * 0.92), 3)
+                        
+                    order = self.client.create_order(
+                        OrderArgs(
                             token_id=token_id,
-                            amount=float(chunk),
+                            price=float(worst_price),
+                            size=float(chunk),
                             side=SELL,
-                            order_type=OrderType.FAK,
                         )
                     )
+                    from py_clob_client.clob_types import OrderType
                     last_resp = self.client.post_order(order, OrderType.FAK)
                     usdc_this, usdc_src = self._extract_close_usdc_received(last_resp)
                     filled_shares, _ = self._extract_close_shares_sold(last_resp)

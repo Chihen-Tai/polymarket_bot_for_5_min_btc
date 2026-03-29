@@ -129,6 +129,8 @@ def decide_exit(
             not has_extracted_principal
             and pnl_pct <= getattr(SETTINGS, "exit_deadline_flat_pnl_pct", 0.0)
         ):
+            if profit_pnl_pct is not None and profit_pnl_pct < 0:
+                return ExitDecision(False, "", pnl_pct, hold_sec)
             # If the trade never became meaningfully profitable, don't let a near-expiry
             # binary position drift into a full settlement loss just because the mark stayed flat.
             return ExitDecision(True, "deadline-exit-flat", pnl_pct, hold_sec)
@@ -140,6 +142,8 @@ def decide_exit(
                 getattr(SETTINGS, "take_profit_soft_pct", 0.30),
             )
         ):
+            if profit_pnl_pct is not None and profit_pnl_pct < 0:
+                return ExitDecision(False, "", pnl_pct, hold_sec)
             # Near expiry, a small green mark is still fragile on a binary contract.
             # If we have not actually recovered principal yet, take the weak win and leave.
             return ExitDecision(True, "deadline-exit-weak-win", pnl_pct, hold_sec)
