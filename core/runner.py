@@ -2611,7 +2611,12 @@ def main():
                                 recovery_chance_low = True
 
                         if getattr(p, "force_close_only", False):
-                            exit_decision = ExitDecision(True, "residual-force-close", hard_stop_pnl_pct, hold_sec)
+                            # If the position has recovered to profit while waiting to be closed,
+                            # use a take-profit close reason rather than forcing a loss-tagged residual exit.
+                            if hard_stop_pnl_pct > 0.05:
+                                exit_decision = ExitDecision(True, "take-profit-full", hard_stop_pnl_pct, hold_sec)
+                            else:
+                                exit_decision = ExitDecision(True, "residual-force-close", hard_stop_pnl_pct, hold_sec)
                         elif getattr(p, "is_moonbag", False):
                             keep_positions.append(p)
                             continue

@@ -812,6 +812,7 @@ class PolymarketExchange:
         force_taker: bool = False,
         max_attempts: int | None = None,
         retry_delay_sec: float | None = None,
+        is_hard_stop: bool = False,
     ) -> dict:
         if self.dry_run:
             if simulated_price is not None and simulated_price >= 0:
