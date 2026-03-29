@@ -127,6 +127,8 @@ class Settings:
     ws_flash_snipe_threshold: float = _f("WS_FLASH_SNIPE_THRESHOLD", 0.003)
     liquidation_fade_min_usd: float = _f("LIQUIDATION_FADE_MIN_USD", 500000.0)
     liquidation_fade_window_sec: float = _f("LIQUIDATION_FADE_WINDOW_SEC", 20.0)
+    early_underdog_max_price: float = _f("EARLY_UNDERDOG_MAX_PRICE", 0.35)
+    early_underdog_min_time: float = _f("EARLY_UNDERDOG_MIN_TIME", 220.0)
     hedge_max_wait_sec: int = _i("HEDGE_MAX_WAIT_SEC", 90)
     stop_loss_pct: float = _f("STOP_LOSS_PCT", 0.18)
     smart_stop_loss_enabled: bool = _b("SMART_STOP_LOSS_ENABLED", True)
