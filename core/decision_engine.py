@@ -353,9 +353,9 @@ def explain_choose_side(
         imbalance_up = _check_imbalance(poly_ob_up)
         imbalance_down = _check_imbalance(poly_ob_down)
         
-        # If bids dominate asks heavily
-        if imbalance_up > 0.85 and valid_up:
-            imbalance_confidence = _confidence_from_signal(imbalance_up - 0.5, 0.35, 0.5)
+        # If bids dominate asks heavily (lowered threshold 0.85→0.78 to increase trade frequency)
+        if imbalance_up > 0.78 and valid_up:
+            imbalance_confidence = _confidence_from_signal(imbalance_up - 0.5, 0.28, 0.5)
             imbalance_probability = _probability_from_confidence(imbalance_confidence, floor=0.53, ceiling=0.72)
             r = _build_candidate(
                 base_result,
@@ -367,8 +367,8 @@ def explain_choose_side(
                 extras={"orderbook_imbalance": imbalance_up},
             )
             candidates["poly_ob_imbalance_up"] = r
-        elif imbalance_down > 0.85 and valid_down:
-            imbalance_confidence = _confidence_from_signal(imbalance_down - 0.5, 0.35, 0.5)
+        elif imbalance_down > 0.78 and valid_down:
+            imbalance_confidence = _confidence_from_signal(imbalance_down - 0.5, 0.28, 0.5)
             imbalance_probability = _probability_from_confidence(imbalance_confidence, floor=0.53, ceiling=0.72)
             r = _build_candidate(
                 base_result,
