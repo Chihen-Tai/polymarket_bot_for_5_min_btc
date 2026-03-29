@@ -875,7 +875,7 @@ class PolymarketExchange:
             attempts += 1
             # For aggressive taker exits, keep sweeping the full residual size.
             # Shrinking chunks creates dust-like leftovers that are hard to clear.
-            if force_taker:
+            if force_taker or is_hard_stop:
                 chunk = max(remaining, 0.01)
             else:
                 # progressively smaller chunks on retries
@@ -940,10 +940,16 @@ class PolymarketExchange:
                         usdc_src = "maker-no-fill"
                         
                 else:
-                    # Taker Fallback (Attempts 6-8) with 8% Slippage Padding from simulated mark price
+                    # Taker Fallback (Attempts 6-8) with Adaptive Slippage Padding from simulated mark price
                     worst_price = 0.01
                     if simulated_price is not None and simulated_price > 0.01:
-                        worst_price = round(max(0.01, simulated_price * 0.92), 3)
+                        # Adaptive slippage: starts at 8%, widens up to 30% across attempts
+                        base_slip = 0.08
+                        fallback_idx = max(0, attempts if force_taker else attempts - 5)
+                        bonus_slip = (fallback_idx - 1) * 0.08 if fallback_idx >= 1 else 0.0
+                        total_slip = min(0.30, base_slip + bonus_slip)
+                        
+                        worst_price = round(max(0.01, simulated_price * (1.0 - total_slip)), 3)
                         
                     order = self.client.create_order(
                         OrderArgs(

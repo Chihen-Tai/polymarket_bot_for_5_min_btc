@@ -3774,6 +3774,27 @@ def main():
                 except Exception as e:
                     log(f"scoreboard lookup error: {e}")
                 strategy_win_rate = stabilize_entry_win_rate(strategy_win_rate, strategy_decisive_trade_count)
+
+                # Hard-block gate: if we have enough history and the raw win rate is terrible, block regardless of model
+                _min_decisive = int(getattr(SETTINGS, "scoreboard_entry_gate_min_decisive_trades", 5))
+                _min_wr = float(getattr(SETTINGS, "scoreboard_min_win_rate", 0.40))
+                _raw_scoreboard_wr = SCOREBOARD.get_strategy_score(signal_origin) if signal_origin else 0.5
+                if strategy_decisive_trade_count >= _min_decisive and _raw_scoreboard_wr < _min_wr:
+                    maybe_record_cycle_label(
+                        state,
+                        "signal-blocked",
+                        slug=last_market_slug,
+                        side=signal_side,
+                        reason="low-auxWR-hard-block",
+                    )
+                    log(
+                        f"skip entry: auxWR hard block | strategy={signal_origin} "
+                        f"raw_auxWR={_raw_scoreboard_wr:.1%} min_required={_min_wr:.1%} "
+                        f"decisive={strategy_decisive_trade_count}"
+                    )
+                    smart_sleep(SETTINGS.poll_seconds)
+                    continue
+
                 if effective_probability is None:
                     effective_probability = strategy_win_rate
                 else:
@@ -3801,6 +3822,7 @@ def main():
                     )
                     smart_sleep(SETTINGS.poll_seconds)
                     continue
+
 
             if signal_side and signal_origin and entry_price and float(entry_price) > 0 and entry_edge is not None:
                 log(

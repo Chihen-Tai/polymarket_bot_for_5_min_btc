@@ -264,41 +264,51 @@ def explain_choose_side(
     #     except Exception:
     #         pass
 
-    # Strategy 6: WebSocket Order Flow Imbalance (OFI)
+    # Strategy 6: WebSocket Order Flow Imbalance (OFI) — requires Polymarket OB cross-confirmation
     if ws_trades:
         buy_vol, sell_vol = compute_buy_sell_pressure(ws_trades)
         total_vol = buy_vol + sell_vol
         if total_vol > 0:
             ofi_ratio = buy_vol / total_vol
-            ofi_threshold = getattr(SETTINGS, "ofi_bypass_threshold", 0.70)
+            ofi_threshold = getattr(SETTINGS, "ofi_bypass_threshold", 0.73)
             ofi_confidence = _confidence_from_signal(
                 abs(ofi_ratio - 0.5),
                 max(0.0, ofi_threshold - 0.5),
                 0.5,
             )
             ofi_probability = _probability_from_confidence(ofi_confidence, floor=0.54, ceiling=0.74)
+
+            # Polymarket OB cross-confirmation: also check that Poly bid pressure agrees
+            poly_up_imbalance = _check_imbalance(poly_ob_up) if poly_ob_up else 0.5
+            poly_down_imbalance = _check_imbalance(poly_ob_down) if poly_ob_down else 0.5
+
             if ofi_ratio > ofi_threshold and valid_up:
-                r = _build_candidate(
-                    base_result,
-                    side="UP",
-                    strategy_key="ws_order_flow_up",
-                    entry_price=float(up),
-                    model_probability=ofi_probability,
-                    signal_confidence=ofi_confidence,
-                    extras={"ofi_ratio": ofi_ratio},
-                )
-                candidates["ws_order_flow_up"] = r
+                # Binance says UP: Polymarket UP token must also have bid pressure > 0.55
+                if poly_up_imbalance >= 0.55:
+                    r = _build_candidate(
+                        base_result,
+                        side="UP",
+                        strategy_key="ws_order_flow_up",
+                        entry_price=float(up),
+                        model_probability=ofi_probability,
+                        signal_confidence=ofi_confidence,
+                        extras={"ofi_ratio": ofi_ratio, "poly_up_imbalance": poly_up_imbalance},
+                    )
+                    candidates["ws_order_flow_up"] = r
             elif ofi_ratio < (1.0 - ofi_threshold) and valid_down:
-                r = _build_candidate(
-                    base_result,
-                    side="DOWN",
-                    strategy_key="ws_order_flow_down",
-                    entry_price=float(down),
-                    model_probability=ofi_probability,
-                    signal_confidence=ofi_confidence,
-                    extras={"ofi_ratio": ofi_ratio},
-                )
-                candidates["ws_order_flow_down"] = r
+                # Binance says DOWN: Polymarket DOWN token must also have bid pressure > 0.55
+                if poly_down_imbalance >= 0.55:
+                    r = _build_candidate(
+                        base_result,
+                        side="DOWN",
+                        strategy_key="ws_order_flow_down",
+                        entry_price=float(down),
+                        model_probability=ofi_probability,
+                        signal_confidence=ofi_confidence,
+                        extras={"ofi_ratio": ofi_ratio, "poly_down_imbalance": poly_down_imbalance},
+                    )
+                    candidates["ws_order_flow_down"] = r
+
 
     # Strategy 7: WS Flash Snipe (WebSocket 閃電狙擊 0.3%)
     if getattr(SETTINGS, "ws_flash_snipe_threshold", 0.0) > 0 and ws_bba and ws_bba.get("b", 0.0) > 0:
