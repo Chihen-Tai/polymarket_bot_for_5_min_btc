@@ -129,6 +129,7 @@ class Settings:
     liquidation_fade_window_sec: float = _f("LIQUIDATION_FADE_WINDOW_SEC", 20.0)
     early_underdog_max_price: float = _f("EARLY_UNDERDOG_MAX_PRICE", 0.35)
     early_underdog_min_time: float = _f("EARLY_UNDERDOG_MIN_TIME", 220.0)
+    early_underdog_exit_lock_time: float = _f("EARLY_UNDERDOG_EXIT_LOCK_TIME", 150.0)
     hedge_max_wait_sec: int = _i("HEDGE_MAX_WAIT_SEC", 90)
     stop_loss_pct: float = _f("STOP_LOSS_PCT", 0.18)
     smart_stop_loss_enabled: bool = _b("SMART_STOP_LOSS_ENABLED", True)

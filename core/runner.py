@@ -2620,7 +2620,6 @@ def main():
                         elif getattr(p, "is_moonbag", False):
                             keep_positions.append(p)
                             continue
-                        else:
                             exit_decision = decide_exit(
                                 pnl_pct=hard_stop_pnl_pct,
                                 profit_pnl_pct=profit_pnl_pct,
@@ -2636,6 +2635,11 @@ def main():
                                 runner_peak_age_sec=runner_peak_age_sec,
                                 runner_peak_value_usd=float(getattr(p, "runner_peak_value_usd", 0.0) or 0.0),
                             )
+                            
+                            if "early_underdog" in getattr(p, "entry_reason", ""):
+                                min_sell_time = float(getattr(SETTINGS, "early_underdog_exit_lock_time", 150.0))
+                                if secs_left is not None and secs_left > min_sell_time:
+                                    exit_decision = ExitDecision(False, "early-underdog-lock", hard_stop_pnl_pct, hold_sec)
 
                         maybe_log_position_watch(
                             p,
