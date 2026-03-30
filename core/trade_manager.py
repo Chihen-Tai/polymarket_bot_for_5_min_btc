@@ -41,7 +41,7 @@ def decide_exit(
     # GHOST TOWN LOCK: 在最後 30 秒，訂單簿通常已經抽單成空城，這裡市價停損只會觸發 FAK 無限報錯。
     # 遵照指示：「如果是虧的才放」，所以倒數 30 秒內的虧損單，一律假裝沒看到，直接抱到結算！
     if secs_left is not None and secs_left <= getattr(SETTINGS, "exit_ghost_town_sec", 30):
-        if pnl_pct < 0:
+        if pnl_pct <= 0:
             return ExitDecision(False, "ghost-town-let-ride", pnl_pct, hold_sec)
 
     # 1. Tiered Take Profit (Risk-Free Moonbag Strategy)

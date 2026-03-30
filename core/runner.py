@@ -2648,9 +2648,9 @@ def main():
                                     if hard_stop_pnl_pct < max_stop_loss and exit_decision.should_close and "stop" in exit_decision.reason:
                                         exit_decision = ExitDecision(False, "early-underdog-let-ride", hard_stop_pnl_pct, hold_sec)
                                     
-                                    # 樂透專屬停利：蓋掉預設的 30% 停利，強制要求暴賺 (如 1.5倍) 才准提早賣飛
+                                    # 樂透專屬停利：蓋掉預設的 30% 停利，強制要求暴賺 (如 1.5倍) 才准提早賣飛 (但「大逃殺」死線例外)
                                     target_tp_pct = float(getattr(SETTINGS, "early_underdog_take_profit_pct", 1.50))
-                                    if exit_decision.should_close and "take-profit" in exit_decision.reason:
+                                    if exit_decision.should_close and "take-profit" in exit_decision.reason and "deadline" not in exit_decision.reason:
                                         if profit_pnl_pct is not None and profit_pnl_pct < target_tp_pct:
                                             exit_decision = ExitDecision(False, "early-underdog-hold-winner", hard_stop_pnl_pct, hold_sec)
 
