@@ -2620,6 +2620,7 @@ def main():
                         elif getattr(p, "is_moonbag", False):
                             keep_positions.append(p)
                             continue
+                        else:
                             exit_decision = decide_exit(
                                 pnl_pct=hard_stop_pnl_pct,
                                 profit_pnl_pct=profit_pnl_pct,
@@ -3718,6 +3719,8 @@ def main():
                         prev_up=prev_up,
                         prev_down=prev_down,
                         error_cooldown_until=error_cooldown_until,
+                        same_market_reentry_block_slug=same_market_reentry_block_slug,
+                        is_manual_override=is_manual_override,
                         open_positions=open_positions,
                         pending_orders=pending_orders,
                         flags=flags,
