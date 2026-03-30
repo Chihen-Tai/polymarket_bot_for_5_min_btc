@@ -1328,6 +1328,7 @@ def score_entry_candidate(
         strategy_decisive_trade_count >= min_decisive
         and float(raw_strategy_win_rate or 0.5) < min_wr
         and "ws_flash_snipe" not in strategy_name
+        and "early_underdog" not in strategy_name
     )
     strategy_win_rate = stabilize_entry_win_rate(strategy_win_rate, strategy_decisive_trade_count)
     effective_probability = strategy_win_rate if signal_probability is None else apply_scoreboard_aux_probability(signal_probability, strategy_win_rate)
@@ -2646,6 +2647,12 @@ def main():
                                     # 如果虧損過大 (小於 -35%)，而且目前決定要止損 (stop)，強制取消止損讓它躺平 (let ride)
                                     if hard_stop_pnl_pct < max_stop_loss and exit_decision.should_close and "stop" in exit_decision.reason:
                                         exit_decision = ExitDecision(False, "early-underdog-let-ride", hard_stop_pnl_pct, hold_sec)
+                                    
+                                    # 樂透專屬停利：蓋掉預設的 30% 停利，強制要求暴賺 (如 1.5倍) 才准提早賣飛
+                                    target_tp_pct = float(getattr(SETTINGS, "early_underdog_take_profit_pct", 1.50))
+                                    if exit_decision.should_close and "take-profit" in exit_decision.reason:
+                                        if profit_pnl_pct is not None and profit_pnl_pct < target_tp_pct:
+                                            exit_decision = ExitDecision(False, "early-underdog-hold-winner", hard_stop_pnl_pct, hold_sec)
 
                         maybe_log_position_watch(
                             p,
