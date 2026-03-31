@@ -2669,6 +2669,36 @@ def main():
                                             check_pct = profit_pnl_pct if profit_pnl_pct is not None else pnl_pct
                                             if check_pct < target_tp_pct:
                                                 exit_decision = ExitDecision(False, "lottery-hold-winner", hard_stop_pnl_pct, hold_sec)
+
+                                        # ── 樂透高原停利（Lottery Plateau Stop）──
+                                        # 在 +75% ~ +150% 的中間地帶，如果價格已停止創高且 Binance 沒有繼續推升，
+                                        # 視為「動能耗盡」，直接停利拿走；如果 Binance 仍強勢往上，讓它繼續跑。
+                                        if not exit_decision.should_close:
+                                            check_pct = profit_pnl_pct if profit_pnl_pct is not None else pnl_pct
+                                            plateau_min_pct = float(SETTINGS.lottery_plateau_min_pct)
+                                            if plateau_min_pct <= check_pct < target_tp_pct:
+                                                # 計算距上次創高（max_favorable_ts）的秒數
+                                                last_peak_ts = float(getattr(p, "max_favorable_ts", 0.0) or 0.0)
+                                                peak_stall_sec = max(0.0, time.time() - last_peak_ts) if last_peak_ts > 0.0 else None
+                                                plateau_stall_sec = float(SETTINGS.lottery_plateau_stall_sec)
+                                                if peak_stall_sec is not None and peak_stall_sec >= plateau_stall_sec:
+                                                    # 已穩定（stall），再確認 Binance 速度
+                                                    try:
+                                                        _lp_vel = BINANCE_WS.get_price_velocity(3.0, lag_sec=0.0)
+                                                        _lp_vel_thresh = float(SETTINGS.lottery_plateau_velocity_threshold)
+                                                        _still_climbing = (
+                                                            (p.side == "UP" and _lp_vel >= _lp_vel_thresh)
+                                                            or (p.side == "DOWN" and _lp_vel <= -_lp_vel_thresh)
+                                                        )
+                                                        if not _still_climbing:
+                                                            log(
+                                                                f"💰 LOTTERY PLATEAU STOP | slug={p.slug} "
+                                                                f"pnl={check_pct:.1%} stall={peak_stall_sec:.0f}s "
+                                                                f"vel={_lp_vel:.4%} → 動能耗盡，停利"
+                                                            )
+                                                            exit_decision = ExitDecision(True, "lottery-plateau-stop", check_pct, hold_sec)
+                                                    except Exception:
+                                                        pass
                                 # else: lottery 尚未啟動 → 完全視為一般單，exit_decision 不做任何蓋掉
 
                         maybe_log_position_watch(

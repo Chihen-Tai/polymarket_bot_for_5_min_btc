@@ -135,6 +135,10 @@ class Settings:
     # 樂透爆發模式：在此時間窗口內出現此漲幅才觸發樂透鎖定，否則視為一般單
     lottery_burst_window_sec: float = _f("LOTTERY_BURST_WINDOW_SEC", 60.0)
     lottery_burst_min_pct: float = _f("LOTTERY_BURST_MIN_PCT", 0.50)
+    # 樂透高原停利：在 +plateau_min_pct ~ +hard_pct 區間，若停止創高超過 stall_sec 且 Binance 速度弱，停利
+    lottery_plateau_min_pct: float = _f("LOTTERY_PLATEAU_MIN_PCT", 0.75)
+    lottery_plateau_stall_sec: float = _f("LOTTERY_PLATEAU_STALL_SEC", 15.0)
+    lottery_plateau_velocity_threshold: float = _f("LOTTERY_PLATEAU_VELOCITY_THRESHOLD", 0.0003)
     hedge_max_wait_sec: int = _i("HEDGE_MAX_WAIT_SEC", 90)
     stop_loss_pct: float = _f("STOP_LOSS_PCT", 0.18)
     smart_stop_loss_enabled: bool = _b("SMART_STOP_LOSS_ENABLED", True)
