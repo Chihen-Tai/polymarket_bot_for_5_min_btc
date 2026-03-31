@@ -4091,11 +4091,14 @@ def main():
                 smart_sleep(SETTINGS.poll_seconds)
                 continue
 
-            if open_positions:
+
+            _max_open = int(getattr(SETTINGS, "max_open_positions", 2))
+            if len(open_positions) >= _max_open:
                 maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="existing-position-still-open")
-                log("skip entry: existing position still open")
+                log(f"skip entry: max open positions reached ({len(open_positions)}/{_max_open})")
                 smart_sleep(SETTINGS.poll_seconds)
                 continue
+
 
             if flags.close_fail_streak >= 2:
                 flags.panic_exit_mode = True
