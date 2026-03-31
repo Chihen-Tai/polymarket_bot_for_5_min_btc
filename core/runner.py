@@ -200,6 +200,8 @@ class OpenPos:
     soft_stop_breach_ts: float = 0.0
     binance_adverse_breach_ts: float = 0.0
     binance_profit_protect_breach_ts: float = 0.0
+    lottery_activated: bool = False   # True = 已確認「爆發模式」，才啟動樂透特殊邏輯
+    lottery_activated_ts: float = 0.0 # 爆發模式啟動的時間戳
 
     @property
     def avg_cost_per_share(self) -> float:
@@ -2639,20 +2641,35 @@ def main():
                             )
                             
                             if "early_underdog" in getattr(p, "entry_reason", ""):
-                                min_sell_time = float(getattr(SETTINGS, "early_underdog_exit_lock_time", 150.0))
-                                if secs_left is not None and secs_left > min_sell_time:
-                                    exit_decision = ExitDecision(False, "early-underdog-lock", hard_stop_pnl_pct, hold_sec)
-                                else:
-                                    max_stop_loss = -abs(float(getattr(SETTINGS, "early_underdog_let_ride_loss_pct", 0.35)))
-                                    # 如果虧損過大 (小於 -35%)，而且目前決定要止損 (stop)，強制取消止損讓它躺平 (let ride)
-                                    if hard_stop_pnl_pct < max_stop_loss and exit_decision.should_close and "stop" in exit_decision.reason:
-                                        exit_decision = ExitDecision(False, "early-underdog-let-ride", hard_stop_pnl_pct, hold_sec)
-                                    
-                                    # 樂透專屬停利：蓋掉預設的 30% 停利，強制要求暴賺 (如 1.5倍) 才准提早賣飛 (但「大逃殺」死線例外)
-                                    target_tp_pct = float(getattr(SETTINGS, "early_underdog_take_profit_pct", 1.50))
-                                    if exit_decision.should_close and "take-profit" in exit_decision.reason and "deadline" not in exit_decision.reason:
-                                        if profit_pnl_pct is not None and profit_pnl_pct < target_tp_pct:
-                                            exit_decision = ExitDecision(False, "early-underdog-hold-winner", hard_stop_pnl_pct, hold_sec)
+                                # === 樂透爆發模式偵測 ===
+                                # 只有在「短時間內出現誇張斜率」時才啟動樂透特殊模式。
+                                # 條件：hold_sec <= lottery_burst_window_sec 且 pnl_pct >= lottery_burst_min_pct
+                                # 一旦達到條件，設 lottery_activated=True（不可逆），之後才允許特殊鎖定邏輯。
+                                burst_window = float(SETTINGS.lottery_burst_window_sec)
+                                burst_min_pct = float(SETTINGS.lottery_burst_min_pct)
+                                if not p.lottery_activated:
+                                    if hold_sec <= burst_window and pnl_pct >= burst_min_pct:
+                                        p.lottery_activated = True
+                                        p.lottery_activated_ts = time.time()
+                                        log(f"🎰 LOTTERY ACTIVATED | slug={p.slug} hold={hold_sec:.0f}s pnl={pnl_pct:.1%} → 樂透模式啟動")
+
+                                if p.lottery_activated:
+                                    # ── 樂透模式：鎖定到剩 exit_lock_time 秒，且需 150% 才停利 ──
+                                    min_sell_time = float(getattr(SETTINGS, "early_underdog_exit_lock_time", 150.0))
+                                    if secs_left is not None and secs_left > min_sell_time:
+                                        exit_decision = ExitDecision(False, "lottery-lock", hard_stop_pnl_pct, hold_sec)
+                                    else:
+                                        max_stop_loss = -abs(float(getattr(SETTINGS, "early_underdog_let_ride_loss_pct", 0.35)))
+                                        # 深套就躺平，不做常規止損
+                                        if hard_stop_pnl_pct < max_stop_loss and exit_decision.should_close and "stop" in exit_decision.reason:
+                                            exit_decision = ExitDecision(False, "lottery-let-ride", hard_stop_pnl_pct, hold_sec)
+                                        # 需要 150% 才停利（deadline 例外）
+                                        target_tp_pct = float(getattr(SETTINGS, "early_underdog_take_profit_pct", 1.50))
+                                        if exit_decision.should_close and "take-profit" in exit_decision.reason and "deadline" not in exit_decision.reason:
+                                            check_pct = profit_pnl_pct if profit_pnl_pct is not None else pnl_pct
+                                            if check_pct < target_tp_pct:
+                                                exit_decision = ExitDecision(False, "lottery-hold-winner", hard_stop_pnl_pct, hold_sec)
+                                # else: lottery 尚未啟動 → 完全視為一般單，exit_decision 不做任何蓋掉
 
                         maybe_log_position_watch(
                             p,

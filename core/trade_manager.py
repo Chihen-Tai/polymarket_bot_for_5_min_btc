@@ -38,6 +38,25 @@ def decide_exit(
 ) -> ExitDecision:
     take_profit_pnl_pct = None if profit_pnl_pct is None else float(profit_pnl_pct)
 
+    # Mark-price fallback take-profit:
+    # 當 bid 可成交報酬 (profit_pnl_pct) 因流動性折扣達不到停利門檻，
+    # 但帳面 mark 報酬 (pnl_pct) 已明顯超過門檻（加上 bid-discount buffer），
+    # 就以 mark 報酬為依據觸發停利，確保賺 30%+ 的單不會錯過停利。
+    # take_profit_soft_pct 是設定的停利門檻，bid_discount_buffer 是允許 bid 打折的緩衝。
+    _soft_tp = float(SETTINGS.take_profit_soft_pct)
+    _bid_discount_buffer = float(SETTINGS.take_profit_bid_discount_buffer)
+    _mark_tp_threshold = _soft_tp + _bid_discount_buffer  # 例如 30% + 8% = mark 要達到 38% 才觸發 fallback
+    if (
+        not has_taken_partial
+        and not has_extracted_principal
+        and pnl_pct >= _mark_tp_threshold  # mark 已明顯大幅超過停利門檻
+        and (take_profit_pnl_pct is None or take_profit_pnl_pct < _soft_tp)  # bid 有折扣，達不到停利門檻
+    ):
+        # 用 mark 報酬觸發停利，但 reason 標記為 mark-fallback 方便事後分析
+        if getattr(SETTINGS, "force_full_exit_on_take_profit", False):
+            return ExitDecision(True, "take-profit-full", pnl_pct, hold_sec)
+        return ExitDecision(True, "take-profit-partial", pnl_pct, hold_sec)
+
     # GHOST TOWN LOCK: 在最後 30 秒，訂單簿通常已經抽單成空城，這裡市價停損只會觸發 FAK 無限報錯。
     # 遵照指示：「如果是虧的才放」，所以倒數 30 秒內的虧損單，一律假裝沒看到，直接抱到結算！
     if secs_left is not None and secs_left <= getattr(SETTINGS, "exit_ghost_town_sec", 30):

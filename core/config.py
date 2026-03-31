@@ -132,6 +132,9 @@ class Settings:
     early_underdog_exit_lock_time: float = _f("EARLY_UNDERDOG_EXIT_LOCK_TIME", 150.0)
     early_underdog_let_ride_loss_pct: float = _f("EARLY_UNDERDOG_LET_RIDE_LOSS_PCT", 0.35)
     early_underdog_take_profit_pct: float = _f("EARLY_UNDERDOG_TAKE_PROFIT_PCT", 1.50)
+    # 樂透爆發模式：在此時間窗口內出現此漲幅才觸發樂透鎖定，否則視為一般單
+    lottery_burst_window_sec: float = _f("LOTTERY_BURST_WINDOW_SEC", 60.0)
+    lottery_burst_min_pct: float = _f("LOTTERY_BURST_MIN_PCT", 0.50)
     hedge_max_wait_sec: int = _i("HEDGE_MAX_WAIT_SEC", 90)
     stop_loss_pct: float = _f("STOP_LOSS_PCT", 0.18)
     smart_stop_loss_enabled: bool = _b("SMART_STOP_LOSS_ENABLED", True)
@@ -141,6 +144,8 @@ class Settings:
     max_hold_seconds: int = _i("MAX_HOLD_SECONDS", 180)
     take_profit_scaleout_pct: float = _f("TAKE_PROFIT_SCALEOUT_PCT", 0.03)
     take_profit_soft_pct: float = _f("TAKE_PROFIT_SOFT_PCT", 0.18)   # Stage 1: start locking profit at +18%
+    # bid 可成交報酬因流動性打折時，mark 報酬需超過 soft_pct + 此緩衝才觸發 fallback 停利
+    take_profit_bid_discount_buffer: float = _f("TAKE_PROFIT_BID_DISCOUNT_BUFFER", 0.08)
     take_profit_partial_fraction: float = _f("TAKE_PROFIT_PARTIAL_FRACTION", 0.40)
     take_profit_hard_pct: float = _f("TAKE_PROFIT_HARD_PCT", 0.30)   # Stage 2: extract principal at +30%
     take_profit_runner_fraction: float = _f("TAKE_PROFIT_RUNNER_FRACTION", 0.10)
