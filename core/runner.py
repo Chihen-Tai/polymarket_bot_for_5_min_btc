@@ -3,7 +3,7 @@ from __future__ import annotations
 import signal
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from random import uniform
 
@@ -220,6 +220,32 @@ class PendingOrder:
     fallback_attempted: bool = False
     disappeared_since_ts: float = 0.0
     cancel_requested: bool = False
+
+
+def same_direction_entry_cooldown_age_sec(
+    open_positions: list[OpenPos],
+    *,
+    signal_side: str | None,
+    market_slug: str | None,
+    now_ts: float | None = None,
+) -> float | None:
+    normalized_slug = str(market_slug or "").strip()
+    if signal_side not in {"UP", "DOWN"} or not normalized_slug:
+        return None
+
+    same_signal_positions = [
+        p
+        for p in open_positions
+        if p.side == signal_side
+        and not p.force_close_only
+        and str(getattr(p, "slug", "") or "").strip() == normalized_slug
+    ]
+    if not same_signal_positions:
+        return None
+
+    ref_now = time.time() if now_ts is None else float(now_ts)
+    youngest_entry = max(float(getattr(p, "opened_ts", 0.0) or 0.0) for p in same_signal_positions)
+    return max(0.0, ref_now - youngest_entry)
 
 
 @dataclass
@@ -1690,16 +1716,10 @@ def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos
                 f"sync_drop token={p.token_id} slug={p.slug} reason={', '.join(row_notes) or 'stale-or-worthless'}"
             )
             continue
-        synced.append(OpenPos(
-            slug=p.slug,
-            side=p.side,
-            token_id=p.token_id,
+        synced.append(replace(
+            p,
             shares=float(ap.size),
             cost_usd=float(ap.initial_value) if ap.initial_value > 0 else p.cost_usd,
-            opened_ts=p.opened_ts,
-            position_id=p.position_id,
-            entry_reason=p.entry_reason,
-            source=p.source,
             last_synced_size=float(ap.size),
             last_synced_initial_value=float(ap.initial_value),
             last_synced_current_value=float(ap.current_value),
@@ -1707,18 +1727,7 @@ def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos
             last_synced_at=time.time(),
             live_miss_count=0,
             pending_confirmation=False,
-            max_favorable_value_usd=p.max_favorable_value_usd,
-            max_adverse_value_usd=p.max_adverse_value_usd,
-            max_favorable_pnl_usd=p.max_favorable_pnl_usd,
-            max_adverse_pnl_usd=p.max_adverse_pnl_usd,
             max_favorable_ts=float(getattr(p, "max_favorable_ts", p.opened_ts) or p.opened_ts or 0.0),
-            has_scaled_out=getattr(p, "has_scaled_out", False),
-            has_scaled_out_loss=getattr(p, "has_scaled_out_loss", False),
-            has_taken_partial=getattr(p, "has_taken_partial", False),
-            has_extracted_principal=getattr(p, "has_extracted_principal", False),
-            force_close_only=getattr(p, "force_close_only", False),
-            runner_peak_value_usd=float(getattr(p, "runner_peak_value_usd", 0.0) or 0.0),
-            runner_peak_ts=float(getattr(p, "runner_peak_ts", 0.0) or 0.0),
         ))
     return synced, notes
 
@@ -3390,38 +3399,22 @@ def main():
                                                 f"{exit_decision.reason} close reconciled live position | token={p.token_id} "
                                                 f"local_shares={p.shares:.6f} live_shares={resized_shares:.6f} err={err_text or 'n/a'}"
                                             )
-                                            keep_positions.append(OpenPos(
-                                                slug=p.slug,
-                                                side=p.side,
-                                                token_id=p.token_id,
+                                            keep_positions.append(replace(
+                                                p,
                                                 shares=resized_shares,
                                                 cost_usd=resized_cost,
-                                                opened_ts=p.opened_ts,
-                                                position_id=p.position_id,
-                                                entry_reason=p.entry_reason,
-                                                source=p.source,
                                                 last_synced_size=float(live_after_fail.size),
                                                 last_synced_initial_value=float(live_after_fail.initial_value),
                                                 last_synced_current_value=float(live_after_fail.current_value),
                                                 last_synced_cash_pnl=float(live_after_fail.cash_pnl),
                                                 last_synced_at=time.time(),
-                                                max_favorable_value_usd=p.max_favorable_value_usd,
-                                                max_adverse_value_usd=p.max_adverse_value_usd,
-                                                max_favorable_pnl_usd=p.max_favorable_pnl_usd,
-                                                max_adverse_pnl_usd=p.max_adverse_pnl_usd,
                                                 max_favorable_ts=float(getattr(p, "max_favorable_ts", p.opened_ts) or p.opened_ts or 0.0),
-                                                has_scaled_out=getattr(p, "has_scaled_out", False),
-                                                has_scaled_out_loss=getattr(p, "has_scaled_out_loss", False),
-                                                has_taken_partial=getattr(p, "has_taken_partial", False),
-                                                has_extracted_principal=getattr(p, "has_extracted_principal", False),
                                                 has_panic_dumped=should_force_taker_exit(
                                                     reason=exit_decision.reason,
                                                     dry_run=SETTINGS.dry_run,
                                                     has_panic_dumped=getattr(p, "has_panic_dumped", False),
                                                 ),
                                                 force_close_only=residual_force_close,
-                                                runner_peak_value_usd=float(getattr(p, "runner_peak_value_usd", 0.0) or 0.0),
-                                                runner_peak_ts=float(getattr(p, "runner_peak_ts", 0.0) or 0.0),
                                             ))
                                         else:
                                             log(f"{exit_decision.reason} close failed: zero shares closed | resp={close_resp}")
@@ -3573,34 +3566,17 @@ def main():
                                                     f"residual liquidation mode | token={p.token_id} remaining_shares={remaining_shares:.6f} "
                                                     f"remaining_cost={remaining_cost:.6f}"
                                                 )
-                                                keep_positions.append(OpenPos(
-                                                    slug=p.slug,
-                                                    side=p.side,
-                                                    token_id=p.token_id,
+                                                keep_positions.append(replace(
+                                                    p,
                                                     shares=remaining_shares,
                                                     cost_usd=remaining_cost,
-                                                    opened_ts=p.opened_ts,
-                                                    position_id=p.position_id,
-                                                    entry_reason=p.entry_reason,
-                                                    source=p.source,
-                                                    max_favorable_value_usd=p.max_favorable_value_usd,
-                                                    max_adverse_value_usd=p.max_adverse_value_usd,
-                                                    max_favorable_pnl_usd=p.max_favorable_pnl_usd,
-                                                    max_adverse_pnl_usd=p.max_adverse_pnl_usd,
                                                     max_favorable_ts=float(getattr(p, "max_favorable_ts", p.opened_ts) or p.opened_ts or 0.0),
-                                                    has_scaled_out=getattr(p, "has_scaled_out", False),
-                                                    has_scaled_out_loss=getattr(p, "has_scaled_out_loss", False),
-                                                    has_taken_partial=getattr(p, "has_taken_partial", False),
-                                                    has_extracted_principal=getattr(p, "has_extracted_principal", False),
                                                     has_panic_dumped=should_force_taker_exit(
-
                                                         reason=exit_decision.reason,
                                                         dry_run=SETTINGS.dry_run,
                                                         has_panic_dumped=getattr(p, "has_panic_dumped", False),
                                                     ),
                                                     force_close_only=True,
-                                                    runner_peak_value_usd=float(getattr(p, "runner_peak_value_usd", 0.0) or 0.0),
-                                                    runner_peak_ts=float(getattr(p, "runner_peak_ts", 0.0) or 0.0),
                                                     dust_retry_count=dust_retry,
                                                 ))
                                             elif dust_retry > 3:  # DUST_MAX_RETRIES = 3
@@ -3609,30 +3585,12 @@ def main():
                                                     f"after {dust_retry} retries — forcing drop to avoid zombie position"
                                                 )
                                             else:
-                                                keep_positions.append(OpenPos(
-                                                    slug=p.slug,
-                                                    side=p.side,
-                                                    token_id=p.token_id,
+                                                keep_positions.append(replace(
+                                                    p,
                                                     shares=remaining_shares,
                                                     cost_usd=remaining_cost,
-                                                    opened_ts=p.opened_ts,
-                                                    position_id=p.position_id,
-                                                    entry_reason=p.entry_reason,
-                                                    source=p.source,
-                                                    max_favorable_value_usd=p.max_favorable_value_usd,
-                                                    max_adverse_value_usd=p.max_adverse_value_usd,
-                                                    max_favorable_pnl_usd=p.max_favorable_pnl_usd,
-                                                    max_adverse_pnl_usd=p.max_adverse_pnl_usd,
                                                     max_favorable_ts=float(getattr(p, "max_favorable_ts", p.opened_ts) or p.opened_ts or 0.0),
-                                                    has_scaled_out=getattr(p, "has_scaled_out", False),
-                                                    has_scaled_out_loss=getattr(p, "has_scaled_out_loss", False),
-                                                    has_taken_partial=getattr(p, "has_taken_partial", False),
-                                                    has_extracted_principal=getattr(p, "has_extracted_principal", False),
-                                                    has_panic_dumped=getattr(p, "has_panic_dumped", False),
-                                                    force_close_only=getattr(p, "force_close_only", False),
                                                     is_moonbag=is_moonbag_triggered,
-                                                    runner_peak_value_usd=float(getattr(p, "runner_peak_value_usd", 0.0) or 0.0),
-                                                    runner_peak_ts=float(getattr(p, "runner_peak_ts", 0.0) or 0.0),
                                                     dust_retry_count=dust_retry,
                                                 ))
                                             
@@ -4150,16 +4108,19 @@ def main():
             # 目的：避免同一訊號短時間重複觸發，造成方向錯誤時雙倍虧損。
             _dir_cooldown_sec = float(SETTINGS.same_direction_entry_cooldown_sec)
             if _dir_cooldown_sec > 0:
-                _now = time.time()
-                _same_dir_pos = [p for p in open_positions if p.side == signal_side and not p.force_close_only]
-                if _same_dir_pos:
-                    _youngest_entry = max(p.opened_ts for p in _same_dir_pos)
-                    _age = _now - _youngest_entry
-                    if _age < _dir_cooldown_sec:
-                        maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="same-direction-cooldown")
-                        log(f"skip entry: same-direction cooldown | side={signal_side} youngest_pos_age={_age:.0f}s < {_dir_cooldown_sec:.0f}s")
-                        smart_sleep(SETTINGS.poll_seconds)
-                        continue
+                _age = same_direction_entry_cooldown_age_sec(
+                    open_positions,
+                    signal_side=signal_side,
+                    market_slug=last_market_slug,
+                )
+                if _age is not None and _age < _dir_cooldown_sec:
+                    maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason="same-direction-cooldown")
+                    log(
+                        f"skip entry: same-direction cooldown | slug={last_market_slug} side={signal_side} "
+                        f"youngest_pos_age={_age:.0f}s < {_dir_cooldown_sec:.0f}s"
+                    )
+                    smart_sleep(SETTINGS.poll_seconds)
+                    continue
 
 
             if flags.close_fail_streak >= 2:

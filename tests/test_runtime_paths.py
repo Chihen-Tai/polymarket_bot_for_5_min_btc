@@ -12,6 +12,7 @@ from core.runner import (
     next_cycle_interval_seconds,
     open_position_poll_interval_seconds,
     pending_order_poll_interval_seconds,
+    same_direction_entry_cooldown_age_sec,
     sync_open_positions,
 )
 from core.runtime_paths import mode_label, run_journal_path, runtime_state_path, trade_journal_path
@@ -163,6 +164,68 @@ def main():
             ),
         ],
     )
+    class MatchingExchange:
+        def __init__(self):
+            self.calls = 0
+
+        def get_positions(self):
+            self.calls += 1
+            return [DummyLivePos("lottery-token")]
+
+    matching = MatchingExchange()
+    synced_lottery_positions, _ = sync_open_positions(
+        matching,
+        [
+            OpenPos(
+                slug="btc-updown-5m-current",
+                side="UP",
+                token_id="lottery-token",
+                shares=1.0,
+                cost_usd=1.0,
+                opened_ts=time.time() - 12.0,
+                lottery_activated=True,
+                lottery_activated_ts=123.0,
+            ),
+        ],
+    )
+    same_market_cooldown_age = same_direction_entry_cooldown_age_sec(
+        [
+            OpenPos(
+                slug="btc-updown-5m-current",
+                side="UP",
+                token_id="same-market-token",
+                shares=1.0,
+                cost_usd=1.0,
+                opened_ts=100.0,
+            ),
+            OpenPos(
+                slug="other-market",
+                side="UP",
+                token_id="other-market-token",
+                shares=1.0,
+                cost_usd=1.0,
+                opened_ts=190.0,
+            ),
+        ],
+        signal_side="UP",
+        market_slug="btc-updown-5m-current",
+        now_ts=200.0,
+    )
+    cross_market_cooldown_age = same_direction_entry_cooldown_age_sec(
+        [
+            OpenPos(
+                slug="other-market",
+                side="UP",
+                token_id="other-market-token",
+                shares=1.0,
+                cost_usd=1.0,
+                opened_ts=190.0,
+            ),
+        ],
+        signal_side="UP",
+        market_slug="btc-updown-5m-current",
+        now_ts=200.0,
+    )
     cases.extend([
         ("sync_open_positions_short_circuits_when_empty", synced_positions == [] and synced_notes == [] and dummy.calls == 0),
         ("pending_confirmation_holds_until_grace_expires", len(held_positions) == 1 and any("sync_hold token=pending-token" in note for note in held_notes)),
@@ -172,6 +235,14 @@ def main():
             and protected_positions[0].force_close_only is True
             and any("sync_protect token=residual-token" in note for note in protected_notes)
         ),
+        (
+            "sync_open_positions_preserves_lottery_activation_state",
+            len(synced_lottery_positions) == 1
+            and synced_lottery_positions[0].lottery_activated is True
+            and abs(synced_lottery_positions[0].lottery_activated_ts - 123.0) < 1e-9
+        ),
+        ("same_direction_cooldown_scopes_to_current_market", same_market_cooldown_age is not None and abs(same_market_cooldown_age - 100.0) < 1e-9),
+        ("same_direction_cooldown_ignores_other_markets", cross_market_cooldown_age is None),
         ("pending_orders_poll_every_second", abs(pending_order_poll_interval_seconds() - 1.0) < 1e-9),
         ("open_positions_poll_every_second", abs(open_position_poll_interval_seconds() - 1.0) < 1e-9),
         ("next_cycle_interval_uses_fast_pending_poll", abs(next_cycle_interval_seconds(has_pending_orders=True, has_open_positions=False) - 1.0) < 1e-9),

@@ -39,20 +39,24 @@ def decide_exit(
     take_profit_pnl_pct = None if profit_pnl_pct is None else float(profit_pnl_pct)
 
     # Mark-price fallback take-profit:
-    # 當 bid 可成交報酬 (profit_pnl_pct) 因流動性折扣達不到停利門檻，
+    # 當 bid 可成交報酬 (profit_pnl_pct) 因流動性折扣略低於停利門檻，
     # 但帳面 mark 報酬 (pnl_pct) 已明顯超過門檻（加上 bid-discount buffer），
-    # 就以 mark 報酬為依據觸發停利，確保賺 30%+ 的單不會錯過停利。
-    # take_profit_soft_pct 是設定的停利門檻，bid_discount_buffer 是允許 bid 打折的緩衝。
+    # 就以 mark 報酬為依據觸發停利，避免薄書把已大幅獲利的單拖到錯過出場。
+    # 這個 fallback 仍要求存在可執行的正報酬，而且 bid 只能低於 soft tp 一小段緩衝，
+    # 不能在完全沒有 executable profit signal 時就直接停利。
     _soft_tp = float(SETTINGS.take_profit_soft_pct)
     _bid_discount_buffer = float(SETTINGS.take_profit_bid_discount_buffer)
     _mark_tp_threshold = _soft_tp + _bid_discount_buffer  # 例如 30% + 8% = mark 要達到 38% 才觸發 fallback
+    _min_exec_fallback_pct = max(0.0, _soft_tp - _bid_discount_buffer)
+    _fallback_eps = 1e-9
     if (
         not has_taken_partial
         and not has_extracted_principal
         and pnl_pct >= _mark_tp_threshold  # mark 已明顯大幅超過停利門檻
-        and (take_profit_pnl_pct is None or take_profit_pnl_pct < _soft_tp)  # bid 有折扣，達不到停利門檻
+        and take_profit_pnl_pct is not None
+        and (_min_exec_fallback_pct + _fallback_eps) <= take_profit_pnl_pct < _soft_tp
     ):
-        # 用 mark 報酬觸發停利，但 reason 標記為 mark-fallback 方便事後分析
+        # 用 mark 報酬觸發停利，但只接受「接近 soft tp、只是被 bid 折價壓住」的情況。
         if getattr(SETTINGS, "force_full_exit_on_take_profit", False):
             return ExitDecision(True, "take-profit-full", pnl_pct, hold_sec)
         return ExitDecision(True, "take-profit-partial", pnl_pct, hold_sec)
@@ -213,6 +217,7 @@ def should_block_same_market_reentry(
         "hard-stop-loss",
         "max-hold-loss",
         "max-hold-loss-extended",
+        "lottery-plateau-stop",
         "moonbag-drawdown-stop",
         "post-scaleout-stop-loss",
         "profit-reversal-stop",

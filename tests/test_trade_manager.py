@@ -62,6 +62,7 @@ def main():
     SETTINGS.exit_deadline_sec = 20
     SETTINGS.exit_deadline_flat_pnl_pct = 0.0
     SETTINGS.take_profit_soft_pct = 0.18
+    SETTINGS.take_profit_bid_discount_buffer = 0.08
     SETTINGS.take_profit_partial_fraction = 0.40
     SETTINGS.take_profit_hard_pct = 0.30
     SETTINGS.take_profit_runner_fraction = 0.10
@@ -778,6 +779,8 @@ def main():
         ("take_profit_uses_profit_reference_even_if_hard_stop_is_negative", decide_exit(pnl_pct=-0.05, profit_pnl_pct=0.60, hold_sec=5).reason == "take-profit-principal"),
         ("partial_take_profit_uses_profit_reference_even_if_hard_stop_is_negative", decide_exit(pnl_pct=-0.05, profit_pnl_pct=0.20, hold_sec=5).reason == "take-profit-partial"),
         ("take_profit_does_not_trigger_without_executable_profit_signal", decide_exit(pnl_pct=0.60, profit_pnl_pct=None, hold_sec=5).should_close is False),
+        ("mark_fallback_requires_executable_profit_floor", decide_exit(pnl_pct=0.30, profit_pnl_pct=0.10, hold_sec=5).should_close is False),
+        ("mark_fallback_allows_small_bid_discount", decide_exit(pnl_pct=0.28, profit_pnl_pct=0.11, hold_sec=5).reason == "take-profit-partial"),
             (
                 "force_full_exit_on_take_profit",
                 (setattr(SETTINGS, "force_full_exit_on_take_profit", True) or True)
@@ -802,6 +805,7 @@ def main():
         ("fully_closed_scale_out_now_blocks_same_market_reentry", should_block_same_market_reentry("stop-loss-scale-out", remaining_shares=0.0, realized_pnl_usd=-0.22) is True),
         ("deadline_exit_now_sets_market_block", should_block_same_market_reentry("deadline-exit-flat", remaining_shares=0.0) is True and should_block_same_market_reentry("deadline-exit-loss", remaining_shares=0.0) is True),
         ("binance_profit_protect_exit_blocks_same_market_reentry", should_block_same_market_reentry("binance-profit-protect-exit", remaining_shares=0.0, realized_pnl_usd=0.10) is True),
+        ("lottery_plateau_stop_blocks_same_market_reentry", should_block_same_market_reentry("lottery-plateau-stop", remaining_shares=0.0, realized_pnl_usd=0.10) is True),
         ("terminal_take_profit_now_sets_market_block", should_block_same_market_reentry("take-profit-partial", remaining_shares=0.0, realized_pnl_usd=0.0) is True),
         ("non_terminal_exit_does_not_block_same_market_reentry", should_block_same_market_reentry("take-profit-partial", remaining_shares=0.5) is False),
         ("principal_exit_blocks_same_market_reentry", should_block_same_market_reentry("take-profit-principal", remaining_shares=0.0, realized_pnl_usd=0.12) is True),
