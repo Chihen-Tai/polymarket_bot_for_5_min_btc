@@ -4,6 +4,7 @@ import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import core.runner as runner_mod
 from core.runner import (
     OpenPos,
     PendingOrder,
@@ -12,7 +13,10 @@ from core.runner import (
     next_cycle_interval_seconds,
     open_position_poll_interval_seconds,
     pending_order_poll_interval_seconds,
+    perform_startup_sanity_check,
+    reversed_signal_origin,
     same_direction_entry_cooldown_age_sec,
+    should_reset_clean_start_loss_streak,
     sync_open_positions,
 )
 from core.runtime_paths import mode_label, run_journal_path, runtime_state_path, trade_journal_path
@@ -226,6 +230,90 @@ def main():
         market_slug="btc-updown-5m-current",
         now_ts=200.0,
     )
+
+    reversed_loss_origin = reversed_signal_origin(
+        "model-ws_order_flow_down",
+        "UP",
+        reason="loss-reversal",
+    )
+
+    original_reset_sec = runner_mod.SETTINGS.clean_start_loss_streak_reset_sec
+    runner_mod.SETTINGS.clean_start_loss_streak_reset_sec = 300.0
+    try:
+        stale_loss_reset, stale_loss_age = should_reset_clean_start_loss_streak(
+            open_positions=[],
+            pending_orders=[],
+            last_trade_ts=100.0,
+            risk_consec_losses=3,
+            live_consec_losses=3,
+            last_loss_side="DOWN",
+            now_ts=450.0,
+        )
+        recent_loss_reset, recent_loss_age = should_reset_clean_start_loss_streak(
+            open_positions=[],
+            pending_orders=[],
+            last_trade_ts=200.0,
+            risk_consec_losses=3,
+            live_consec_losses=3,
+            last_loss_side="DOWN",
+            now_ts=450.0,
+        )
+        active_position_reset, _ = should_reset_clean_start_loss_streak(
+            open_positions=[
+                OpenPos(
+                    slug="btc-updown-5m-current",
+                    side="UP",
+                    token_id="active-token",
+                    shares=1.0,
+                    cost_usd=1.0,
+                    opened_ts=1.0,
+                ),
+            ],
+            pending_orders=[],
+            last_trade_ts=100.0,
+            risk_consec_losses=3,
+            live_consec_losses=3,
+            last_loss_side="DOWN",
+            now_ts=450.0,
+        )
+    finally:
+        runner_mod.SETTINGS.clean_start_loss_streak_reset_sec = original_reset_sec
+
+    startup_logged_messages: list[str] = []
+    startup_events: list[dict] = []
+
+    class StartupExchange:
+        def get_positions(self):
+            return []
+
+        def reconcile_dry_run_positions(self, _positions):
+            return False
+
+    original_read_events = runner_mod.read_events
+    original_replay_open_positions = runner_mod.replay_open_positions
+    original_append_event = runner_mod.append_event
+    original_log = runner_mod.log
+    original_dry_run = runner_mod.SETTINGS.dry_run
+    try:
+        runner_mod.read_events = lambda limit=1000: []
+        runner_mod.replay_open_positions = lambda _events: (
+            {},
+            [{"note": "exit without matching open entry in local journal", "token_id": "tok-startup"}],
+        )
+        runner_mod.append_event = lambda payload: startup_events.append(payload)
+        runner_mod.log = lambda message: startup_logged_messages.append(message)
+        runner_mod.SETTINGS.dry_run = False
+        startup_positions, startup_notes, startup_recovery_restart, startup_runtime_state_changed = perform_startup_sanity_check(
+            StartupExchange(),
+            {"open_positions": []},
+        )
+    finally:
+        runner_mod.read_events = original_read_events
+        runner_mod.replay_open_positions = original_replay_open_positions
+        runner_mod.append_event = original_append_event
+        runner_mod.log = original_log
+        runner_mod.SETTINGS.dry_run = original_dry_run
+
     cases.extend([
         ("sync_open_positions_short_circuits_when_empty", synced_positions == [] and synced_notes == [] and dummy.calls == 0),
         ("pending_confirmation_holds_until_grace_expires", len(held_positions) == 1 and any("sync_hold token=pending-token" in note for note in held_notes)),
@@ -243,6 +331,20 @@ def main():
         ),
         ("same_direction_cooldown_scopes_to_current_market", same_market_cooldown_age is not None and abs(same_market_cooldown_age - 100.0) < 1e-9),
         ("same_direction_cooldown_ignores_other_markets", cross_market_cooldown_age is None),
+        ("loss_reversal_origin_flips_strategy_side", reversed_loss_origin == "model-ws_order_flow_up+loss-reversal"),
+        ("clean_start_resets_stale_loss_streak", stale_loss_reset is True and abs(stale_loss_age - 350.0) < 1e-9),
+        ("clean_start_keeps_recent_loss_streak", recent_loss_reset is False and abs(recent_loss_age - 250.0) < 1e-9),
+        ("clean_start_keeps_loss_streak_when_positions_are_active", active_position_reset is False),
+        (
+            "startup_journal_reconcile_note_logged_once",
+            startup_positions == []
+            and startup_notes == ["journal reconcile note | exit without matching open entry in local journal | token=tok-startup"]
+            and startup_recovery_restart is True
+            and startup_runtime_state_changed is False
+            and startup_logged_messages == ["startup sanity | journal reconcile note | exit without matching open entry in local journal | token=tok-startup"]
+            and len(startup_events) == 1
+            and startup_events[0].get("kind") == "startup_sanity"
+        ),
         ("pending_orders_poll_every_second", abs(pending_order_poll_interval_seconds() - 1.0) < 1e-9),
         ("open_positions_poll_every_second", abs(open_position_poll_interval_seconds() - 1.0) < 1e-9),
         ("next_cycle_interval_uses_fast_pending_poll", abs(next_cycle_interval_seconds(has_pending_orders=True, has_open_positions=False) - 1.0) < 1e-9),

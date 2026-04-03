@@ -48,6 +48,7 @@ class Settings:
     max_exposure_usd: float = _f("MAX_EXPOSURE_USD", 1.0)
     max_orders_per_5min: int = _i("MAX_ORDERS_PER_5MIN", 3)
     max_consec_loss: int = _i("MAX_CONSEC_LOSS", 3)
+    clean_start_loss_streak_reset_sec: float = _f("CLEAN_START_LOSS_STREAK_RESET_SEC", 300.0)
     daily_max_loss: float = _f("DAILY_MAX_LOSS", 3.0)
     ofi_bypass_threshold: float = _f("OFI_BYPASS_THRESHOLD", 0.65)
 
