@@ -410,6 +410,41 @@ class RuntimeFlags:
     last_api_latency_ms: float = 0.0
 
 
+def maybe_apply_stale_loss_streak_reset(
+    risk: RiskState,
+    flags: RuntimeFlags,
+    *,
+    open_positions: list[OpenPos],
+    pending_orders: list[PendingOrder],
+    last_trade_ts: float | None,
+    note_prefix: str = "reset stale loss streak on clean start",
+    now_ts: float | None = None,
+) -> str:
+    should_reset, loss_streak_age_sec = should_reset_clean_start_loss_streak(
+        open_positions=open_positions,
+        pending_orders=pending_orders,
+        last_trade_ts=last_trade_ts,
+        risk_consec_losses=risk.consec_losses,
+        live_consec_losses=flags.live_consec_losses,
+        last_loss_side=flags.last_loss_side,
+        now_ts=now_ts,
+    )
+    if not should_reset:
+        return ""
+
+    note = (
+        f"{note_prefix} | "
+        f"last_trade_age={loss_streak_age_sec:.0f}s "
+        f"risk_consec_losses={risk.consec_losses} "
+        f"live_consec_losses={flags.live_consec_losses} "
+        f"last_loss_side={flags.last_loss_side or 'n/a'}"
+    )
+    risk.consec_losses = 0
+    flags.live_consec_losses = 0
+    flags.last_loss_side = ""
+    return note
+
+
 def normalize_execution_style(style: str | None, *, default: str = "unknown") -> str:
     raw = str(style or "").strip().lower()
     if not raw:
@@ -2356,29 +2391,18 @@ def main():
         startup_notes.append(daily_pnl_note)
         recovery_restart = True
 
-    startup_reset_note = ""
-    should_reset_loss_streak, loss_streak_age_sec = should_reset_clean_start_loss_streak(
+    startup_reset_note = maybe_apply_stale_loss_streak_reset(
+        risk,
+        flags,
         open_positions=open_positions,
         pending_orders=pending_orders,
         last_trade_ts=last_trade_ts,
-        risk_consec_losses=risk.consec_losses,
-        live_consec_losses=flags.live_consec_losses,
-        last_loss_side=flags.last_loss_side,
+        note_prefix="reset stale loss streak on clean start",
     )
-    if should_reset_loss_streak:
-        startup_reset_note = (
-            "reset stale loss streak on clean start | "
-            f"last_trade_age={loss_streak_age_sec:.0f}s "
-            f"risk_consec_losses={risk.consec_losses} "
-            f"live_consec_losses={flags.live_consec_losses} "
-            f"last_loss_side={flags.last_loss_side or 'n/a'}"
-        )
+    if startup_reset_note:
         startup_notes.append(startup_reset_note)
         recovery_restart = True
         runtime_state_changed = True
-        risk.consec_losses = 0
-        flags.live_consec_losses = 0
-        flags.last_loss_side = ""
 
     run_journal = RunJournal(notes=startup_notes, recovery_restart=recovery_restart)
     set_journal_context(run_id=run_journal.run_id)
@@ -2484,6 +2508,16 @@ def main():
                 smart_sleep(SETTINGS.poll_seconds)
                 continue
             flags = refresh_runtime_flags(flags, open_positions, panic_market_slug)
+            runtime_reset_note = maybe_apply_stale_loss_streak_reset(
+                risk,
+                flags,
+                open_positions=open_positions,
+                pending_orders=pending_orders,
+                last_trade_ts=last_trade_ts,
+                note_prefix="reset stale loss streak after runtime sync",
+            )
+            if runtime_reset_note:
+                log(runtime_reset_note)
 
             # --- PENDING ORDERS / KILL-SWITCH ---
             if pending_orders:

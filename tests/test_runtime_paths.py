@@ -10,6 +10,7 @@ from core.runner import (
     PendingOrder,
     clear_expired_market_state,
     idle_sleep_seconds,
+    maybe_apply_stale_loss_streak_reset,
     next_cycle_interval_seconds,
     open_position_poll_interval_seconds,
     pending_order_poll_interval_seconds,
@@ -298,6 +299,49 @@ def main():
     finally:
         runner_mod.SETTINGS.clean_start_loss_streak_reset_sec = original_reset_sec
 
+    runtime_sync_reset_positions: list[OpenPos] = []
+    runtime_sync_reset_notes: list[str] = []
+    runtime_sync_reset_note = ""
+    runtime_sync_reset_risk = RiskState(consec_losses=2)
+    runtime_sync_reset_flags = runner_mod.RuntimeFlags(
+        live_consec_losses=2,
+        last_loss_side="UP",
+        close_fail_streak=0,
+        panic_exit_mode=False,
+    )
+
+    class SyncResetExchange:
+        def get_positions(self):
+            return [DummyLivePos("other-token")]
+
+    original_time_fn = runner_mod.time.time
+    try:
+        runner_mod.time.time = lambda: 450.0
+        runtime_sync_reset_positions, runtime_sync_reset_notes = sync_open_positions(
+            SyncResetExchange(),
+            [
+                OpenPos(
+                    slug="btc-updown-5m-current",
+                    side="UP",
+                    token_id="startup-stale-token",
+                    shares=1.0,
+                    cost_usd=1.0,
+                    opened_ts=100.0,
+                ),
+            ],
+        )
+        runtime_sync_reset_note = maybe_apply_stale_loss_streak_reset(
+            runtime_sync_reset_risk,
+            runtime_sync_reset_flags,
+            open_positions=runtime_sync_reset_positions,
+            pending_orders=[],
+            last_trade_ts=100.0,
+            note_prefix="reset stale loss streak after runtime sync",
+            now_ts=450.0,
+        )
+    finally:
+        runner_mod.time.time = original_time_fn
+
     now_dt = runner_mod.datetime(2026, 4, 3, 10, 48, 0)
     prior_day_ts = runner_mod.datetime(2026, 4, 2, 12, 0, 0).timestamp()
     same_day_ts = runner_mod.datetime(2026, 4, 3, 8, 30, 0).timestamp()
@@ -424,6 +468,15 @@ def main():
         ("clean_start_resets_stale_loss_streak", stale_loss_reset is True and abs(stale_loss_age - 350.0) < 1e-9),
         ("clean_start_keeps_recent_loss_streak", recent_loss_reset is False and abs(recent_loss_age - 250.0) < 1e-9),
         ("clean_start_keeps_loss_streak_when_positions_are_active", active_position_reset is False),
+        (
+            "runtime_sync_drop_can_clear_stale_loss_breaker",
+            runtime_sync_reset_positions == []
+            and any("sync_drop token=startup-stale-token" in note for note in runtime_sync_reset_notes)
+            and runtime_sync_reset_note.startswith("reset stale loss streak after runtime sync |")
+            and runtime_sync_reset_risk.consec_losses == 0
+            and runtime_sync_reset_flags.live_consec_losses == 0
+            and runtime_sync_reset_flags.last_loss_side == ""
+        ),
         (
             "daily_pnl_reset_uses_stored_date",
             stored_date_reset is True
