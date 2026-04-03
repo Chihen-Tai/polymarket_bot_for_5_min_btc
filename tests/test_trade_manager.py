@@ -46,6 +46,17 @@ from scripts.journal_analysis import (
 )
 
 
+def evaluate_with_settings(temp_settings, predicate):
+    originals = {key: getattr(SETTINGS, key) for key in temp_settings}
+    try:
+        for key, value in temp_settings.items():
+            setattr(SETTINGS, key, value)
+        return bool(predicate())
+    finally:
+        for key, value in originals.items():
+            setattr(SETTINGS, key, value)
+
+
 def main():
     # Keep these tests independent from the repository .env so strategy-tuning
     # changes do not silently invalidate the expected baseline behaviors here.
@@ -822,6 +833,60 @@ def main():
         ("deadline_exit_weak_win_without_principal", decide_exit(pnl_pct=0.12, hold_sec=50, secs_left=10).reason == "deadline-exit-weak-win"),
         ("deadline_exit_weak_win_skips_risk_free_moonbag", decide_exit(pnl_pct=0.22, hold_sec=50, secs_left=10, has_extracted_principal=True).reason != "deadline-exit-weak-win"),
         ("deadline_exit_loss_skips_risk_free_moonbag", decide_exit(pnl_pct=-0.40, hold_sec=50, secs_left=10, has_extracted_principal=True).should_close is False),
+        (
+            "profit_between_45_and_30s_forces_full_exit",
+            evaluate_with_settings(
+                {"exit_ghost_town_sec": 30, "exit_deadline_profit_sec": 45},
+                lambda: decide_exit(pnl_pct=0.12, hold_sec=50, secs_left=30.4).reason == "deadline-take-profit-full",
+            ),
+        ),
+        (
+            "profit_before_last_30s_still_uses_profit_deadline",
+            evaluate_with_settings(
+                {"exit_ghost_town_sec": 30, "exit_deadline_profit_sec": 45},
+                lambda: decide_exit(pnl_pct=0.12, hold_sec=50, secs_left=40).reason == "deadline-take-profit-full",
+            ),
+        ),
+        (
+            "last_30s_loss_still_lets_ride",
+            evaluate_with_settings(
+                {"exit_ghost_town_sec": 30},
+                lambda: (
+                    decide_exit(pnl_pct=-0.12, hold_sec=50, secs_left=29.9).reason == "ghost-town-let-ride"
+                    and decide_exit(pnl_pct=-0.12, hold_sec=50, secs_left=29.9).should_close is False
+                ),
+            ),
+        ),
+        (
+            "thirtieth_second_profit_now_lets_ride",
+            evaluate_with_settings(
+                {"exit_ghost_town_sec": 30, "exit_deadline_profit_sec": 45},
+                lambda: (
+                    decide_exit(pnl_pct=0.12, hold_sec=50, secs_left=30.0).reason == "ghost-town-let-ride"
+                    and decide_exit(pnl_pct=0.12, hold_sec=50, secs_left=30.0).should_close is False
+                ),
+            ),
+        ),
+        (
+            "inside_last_30s_profit_now_lets_ride",
+            evaluate_with_settings(
+                {"exit_ghost_town_sec": 30, "exit_deadline_profit_sec": 45},
+                lambda: (
+                    decide_exit(pnl_pct=0.12, hold_sec=50, secs_left=29.9).reason == "ghost-town-let-ride"
+                    and decide_exit(pnl_pct=0.12, hold_sec=50, secs_left=29.9).should_close is False
+                ),
+            ),
+        ),
+        (
+            "last_30s_flat_now_lets_ride",
+            evaluate_with_settings(
+                {"exit_ghost_town_sec": 30},
+                lambda: (
+                    decide_exit(pnl_pct=0.0, hold_sec=50, secs_left=10).reason == "ghost-town-let-ride"
+                    and decide_exit(pnl_pct=0.0, hold_sec=50, secs_left=10).should_close is False
+                ),
+            ),
+        ),
         ("max_hold_loss_skips_risk_free_moonbag", decide_exit(pnl_pct=-0.05, hold_sec=500, has_extracted_principal=True).should_close is False),
         (
             "moonbag_drawdown_triggers_fast_protection",

@@ -219,6 +219,41 @@ def estimate_book_exit_value(book: dict | None, shares: float) -> tuple[float | 
     return target_shares * best_bid, 1.0
 
 
+def estimate_book_exit_floor_price(book: dict | None, shares: float) -> float | None:
+    target_shares = max(0.0, float(shares or 0.0))
+    if target_shares <= 0.0:
+        return 0.0
+    if not isinstance(book, dict):
+        return None
+
+    bid_levels = _normalize_book_levels(book.get("bid_levels"), reverse=True)
+    if bid_levels:
+        remaining = target_shares
+        floor_price = None
+        filled_shares = 0.0
+        for price, size in bid_levels:
+            take = min(remaining, size)
+            if take <= 0.0:
+                continue
+            floor_price = price
+            filled_shares += take
+            remaining -= take
+            if remaining <= 1e-9:
+                break
+        fill_ratio = min(1.0, filled_shares / target_shares)
+        if floor_price is not None and fill_ratio >= 0.999:
+            return float(floor_price)
+        return None
+
+    best_bid = _to_float(book.get("best_bid"), 0.0)
+    if best_bid <= 0.0:
+        return None
+    best_bid_size = _to_float(book.get("best_bid_size"), 0.0)
+    if best_bid_size > 0.0 and best_bid_size + 1e-9 < target_shares:
+        return None
+    return float(best_bid)
+
+
 class PolymarketExchange:
     """
     dry-run: 本地模擬
@@ -950,7 +985,14 @@ class PolymarketExchange:
                 else:
                     # Taker Fallback (Attempts 6-8) with Adaptive Slippage Padding from simulated mark price
                     worst_price = 0.01
-                    if simulated_price is not None and simulated_price > 0.01:
+                    book = self.get_full_orderbook(token_id)
+                    book_floor_price = estimate_book_exit_floor_price(book, chunk)
+                    if book_floor_price is not None and book_floor_price > 0.01:
+                        # When we have enough live bid depth for the requested chunk,
+                        # cross only as deep as the actual executable floor instead of
+                        # using a loose mark-based slippage ladder.
+                        worst_price = round(float(book_floor_price), 3)
+                    elif simulated_price is not None and simulated_price > 0.01:
                         # Adaptive slippage: starts at 8%, widens up to 30% across attempts
                         base_slip = 0.08
                         fallback_idx = max(0, attempts if force_taker else attempts - 5)

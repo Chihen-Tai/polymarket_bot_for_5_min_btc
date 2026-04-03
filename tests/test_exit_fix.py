@@ -7,6 +7,7 @@ from core.config import SETTINGS
 from core.exchange import (
     PolymarketExchange,
     _limit_order_type,
+    estimate_book_exit_floor_price,
     estimate_book_exit_value,
     minimum_order_usd,
     order_below_minimum_shares,
@@ -46,6 +47,7 @@ from core.runner import (
     should_force_taker_exit,
     resolve_close_remaining_shares,
     resolve_effective_closed_shares,
+    preserve_partial_close_residual,
 )
 
 
@@ -151,7 +153,9 @@ def main():
         "bid_levels": [(0.475, 1.0), (0.12, 1.0)],
     }
     depth_value, depth_fill_ratio = estimate_book_exit_value(depth_book, 2.0)
+    depth_floor_price = estimate_book_exit_floor_price(depth_book, 2.0)
     thin_value, thin_fill_ratio = estimate_book_exit_value({"bid_levels": [(0.2, 1.0)]}, 2.0)
+    thin_floor_price = estimate_book_exit_floor_price({"bid_levels": [(0.2, 1.0)]}, 2.0)
     depth_pos = OpenPos(slug="m", side="UP", token_id="tok2", shares=2.0, cost_usd=1.0, opened_ts=0.0)
     realistic_value = realistic_exit_value(depth_pos, 0.52, 0.48, depth_book, None)
     executable_profit_value = executable_take_profit_value(depth_pos, depth_book, None)
@@ -303,6 +307,18 @@ def main():
         sold_shares=1.3793088,
         remaining_shares=0.3448272,
     )
+    preserved_partial_residual = preserve_partial_close_residual(
+        starting_shares=1.960783,
+        requested_close_shares=1.274509,
+        sold_shares=1.274509,
+        remaining_shares=0.0,
+    )
+    preserved_full_close_residual = preserve_partial_close_residual(
+        starting_shares=1.960783,
+        requested_close_shares=1.960783,
+        sold_shares=1.960783,
+        remaining_shares=0.0,
+    )
 
     entry = ex.place_order("UP", 1.0, token_id_override="tok1", simulated_price=0.5)
     partial = ex.close_position("tok1", 1.0, simulated_price=0.6)
@@ -399,7 +415,9 @@ def main():
         ("plan_live_order_respects_five_share_minimum", plan_live_order(1.0, 0.535, 5.0, 1.0) == (5.0, 2.675)),
         ("plan_live_order_keeps_one_dollar_when_already_valid", plan_live_order(1.0, 0.2, 0.0, 1.0) == (5.0, 1.0)),
         ("estimate_book_exit_value_sweeps_bid_depth", abs((depth_value or 0.0) - 0.595) < 1e-9 and abs(depth_fill_ratio - 1.0) < 1e-9),
+        ("estimate_book_exit_floor_price_uses_lowest_bid_needed_for_full_fill", abs((depth_floor_price or 0.0) - 0.12) < 1e-9),
         ("estimate_book_exit_value_is_conservative_when_depth_is_thin", abs((thin_value or 0.0) - 0.2) < 1e-9 and abs(thin_fill_ratio - 0.5) < 1e-9),
+        ("estimate_book_exit_floor_price_requires_full_depth", thin_floor_price is None),
         ("realistic_exit_value_uses_depth_aware_bids", abs((realistic_value or 0.0) - 0.595) < 1e-9),
         ("executable_take_profit_value_uses_orderbook_only", abs((executable_profit_value or 0.0) - 0.595) < 1e-9 and executable_profit_without_book is None),
         ("conservative_exit_decision_value_caps_unbacked_profit_to_cost", abs(conservative_profitless_value - 1.0) < 1e-9),
@@ -426,6 +444,8 @@ def main():
         ("close_remaining_shares_preserves_non_dust_hint", abs(resolved_close_remaining_live_hint - 0.498613) < 1e-9),
         ("effective_closed_shares_uses_zero_remaining_hint_as_full_close", abs(effective_closed_from_zero_remaining_hint - 1.587300) < 1e-9),
         ("effective_closed_shares_preserves_partial_when_residual_remains", abs(effective_closed_with_live_residual_hint - 1.3793088) < 1e-9),
+        ("preserve_partial_close_residual_recovers_expected_runner", abs(preserved_partial_residual - (1.960783 - 1.274509)) < 1e-9),
+        ("preserve_partial_close_residual_keeps_true_full_close_at_zero", abs(preserved_full_close_residual - 0.0) < 1e-9),
         ("take_profit_soft_pct_uses_eighteen_percent_default", abs(float(getattr(SETTINGS, "take_profit_soft_pct", 0.0)) - 0.18) < 1e-9),
         ("take_profit_partial_fraction_uses_forty_percent_default", abs(float(getattr(SETTINGS, "take_profit_partial_fraction", 0.0)) - 0.40) < 1e-9),
         ("take_profit_hard_pct_uses_thirty_percent_default", abs(float(getattr(SETTINGS, "take_profit_hard_pct", 0.0)) - 0.30) < 1e-9),

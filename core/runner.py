@@ -1266,6 +1266,27 @@ def resolve_effective_closed_shares(
     return min(starting, max(explicit_sold, hinted_sold))
 
 
+def preserve_partial_close_residual(
+    *,
+    starting_shares: float,
+    requested_close_shares: float,
+    sold_shares: float,
+    remaining_shares: float,
+) -> float:
+    starting = max(0.0, float(starting_shares or 0.0))
+    requested = min(starting, max(0.0, float(requested_close_shares or 0.0)))
+    sold = min(starting, max(0.0, float(sold_shares or 0.0)))
+    remaining = min(starting, max(0.0, float(remaining_shares or 0.0)))
+    if requested + LOT_EPS_SHARES >= starting:
+        return remaining
+    if remaining > LOT_EPS_SHARES:
+        return remaining
+    expected_remaining = max(0.0, starting - sold)
+    if expected_remaining > LOT_EPS_SHARES and sold <= requested + LOT_EPS_SHARES:
+        return expected_remaining
+    return remaining
+
+
 def paper_settlement_from_last_mark(last_mark: float | None) -> tuple[float, str]:
     if last_mark is None:
         return 0.0, "binary-unknown-conservative"
@@ -2862,8 +2883,23 @@ def main():
                                 recovery_chance_low = True
 
                         if getattr(p, "force_close_only", False):
-                            if secs_left is not None and secs_left <= getattr(SETTINGS, "exit_ghost_town_sec", 30.0) and hard_stop_pnl_pct <= 0:
+                            ghost_town_sec = float(getattr(SETTINGS, "exit_ghost_town_sec", 30.0) or 0.0)
+                            profit_deadline_sec = float(getattr(SETTINGS, "exit_deadline_profit_sec", 45.0) or 0.0)
+                            inside_ghost_town_window = (
+                                secs_left is not None
+                                and ghost_town_sec > 0.0
+                                and secs_left <= ghost_town_sec
+                            )
+                            profit_deadline_window = (
+                                secs_left is not None
+                                and profit_deadline_sec > 0.0
+                                and secs_left <= profit_deadline_sec
+                                and (ghost_town_sec <= 0.0 or secs_left > ghost_town_sec)
+                            )
+                            if inside_ghost_town_window:
                                 exit_decision = ExitDecision(False, "ghost-town-let-ride", hard_stop_pnl_pct, hold_sec)
+                            elif profit_deadline_window and hard_stop_pnl_pct > 0:
+                                exit_decision = ExitDecision(True, "take-profit-full", hard_stop_pnl_pct, hold_sec)
                             elif hard_stop_pnl_pct > 0.05:
                                 exit_decision = ExitDecision(True, "take-profit-full", hard_stop_pnl_pct, hold_sec)
                             else:
@@ -3177,7 +3213,13 @@ def main():
                                                 requested_shares=starting_shares,
                                                 sold_shares=sold_shares,
                                                 remaining_hint=remaining_hint,
-                                                close_request_shares=close_resp.get("requested_shares"),
+                                                close_request_shares=sell_shares,
+                                            )
+                                            resolved_remaining_shares = preserve_partial_close_residual(
+                                                starting_shares=starting_shares,
+                                                requested_close_shares=sell_shares,
+                                                sold_shares=sold_shares,
+                                                remaining_shares=resolved_remaining_shares,
                                             )
                                             sold_shares = resolve_effective_closed_shares(
                                                 starting_shares=starting_shares,
@@ -3260,7 +3302,13 @@ def main():
                                                 requested_shares=starting_shares,
                                                 sold_shares=sold_shares,
                                                 remaining_hint=remaining_hint,
-                                                close_request_shares=close_resp.get("requested_shares"),
+                                                close_request_shares=sell_shares,
+                                            )
+                                            resolved_remaining_shares = preserve_partial_close_residual(
+                                                starting_shares=starting_shares,
+                                                requested_close_shares=sell_shares,
+                                                sold_shares=sold_shares,
+                                                remaining_shares=resolved_remaining_shares,
                                             )
                                             sold_shares = resolve_effective_closed_shares(
                                                 starting_shares=starting_shares,
@@ -3385,7 +3433,13 @@ def main():
                                                 requested_shares=starting_shares,
                                                 sold_shares=sold_shares,
                                                 remaining_hint=remaining_hint,
-                                                close_request_shares=close_resp.get("requested_shares"),
+                                                close_request_shares=sell_shares,
+                                            )
+                                            resolved_remaining_shares = preserve_partial_close_residual(
+                                                starting_shares=starting_shares,
+                                                requested_close_shares=sell_shares,
+                                                sold_shares=sold_shares,
+                                                remaining_shares=resolved_remaining_shares,
                                             )
                                             sold_shares = resolve_effective_closed_shares(
                                                 starting_shares=starting_shares,
@@ -3501,7 +3555,13 @@ def main():
                                                 requested_shares=starting_shares,
                                                 sold_shares=sold_shares,
                                                 remaining_hint=remaining_hint,
-                                                close_request_shares=close_resp.get("requested_shares"),
+                                                close_request_shares=sell_shares,
+                                            )
+                                            resolved_remaining_shares = preserve_partial_close_residual(
+                                                starting_shares=starting_shares,
+                                                requested_close_shares=sell_shares,
+                                                sold_shares=sold_shares,
+                                                remaining_shares=resolved_remaining_shares,
                                             )
                                             sold_shares = resolve_effective_closed_shares(
                                                 starting_shares=starting_shares,
@@ -3669,7 +3729,13 @@ def main():
                                             requested_shares=starting_shares,
                                             sold_shares=sold_shares,
                                             remaining_hint=remaining_hint,
-                                            close_request_shares=close_resp.get("requested_shares"),
+                                            close_request_shares=sell_shares,
+                                        )
+                                        remaining_shares = preserve_partial_close_residual(
+                                            starting_shares=starting_shares,
+                                            requested_close_shares=sell_shares,
+                                            sold_shares=sold_shares,
+                                            remaining_shares=remaining_shares,
                                         )
                                         sold_shares = resolve_effective_closed_shares(
                                             starting_shares=starting_shares,
@@ -4575,7 +4641,7 @@ def main():
                                     requested_shares=shares,
                                     sold_shares=sold_shares,
                                     remaining_hint=close_resp.get("remaining_shares"),
-                                    close_request_shares=close_resp.get("requested_shares"),
+                                    close_request_shares=shares,
                                 )
                                 remaining_cost = max(
                                     0.0,

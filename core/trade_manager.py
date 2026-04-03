@@ -37,6 +37,19 @@ def decide_exit(
     runner_peak_value_usd: float = 0.0,
 ) -> ExitDecision:
     take_profit_pnl_pct = None if profit_pnl_pct is None else float(profit_pnl_pct)
+    ghost_town_sec = float(getattr(SETTINGS, "exit_ghost_town_sec", 30) or 0.0)
+    profit_deadline_sec = float(getattr(SETTINGS, "exit_deadline_profit_sec", 45) or 0.0)
+    inside_ghost_town_window = (
+        secs_left is not None
+        and ghost_town_sec > 0.0
+        and secs_left <= ghost_town_sec
+    )
+
+    # LAST 30 SECONDS LOCK:
+    # 一旦進到最後 30 秒內（<=30），不管賺錢、虧錢、平盤都 let ride。
+    # 45~30 秒之間若有獲利，再交給後面的 deadline take-profit 規則處理。
+    if inside_ghost_town_window:
+        return ExitDecision(False, "ghost-town-let-ride", pnl_pct, hold_sec)
 
     # Mark-price fallback take-profit:
     # 當 bid 可成交報酬 (profit_pnl_pct) 因流動性折扣略低於停利門檻，
@@ -60,12 +73,6 @@ def decide_exit(
         if getattr(SETTINGS, "force_full_exit_on_take_profit", False):
             return ExitDecision(True, "take-profit-full", pnl_pct, hold_sec)
         return ExitDecision(True, "take-profit-partial", pnl_pct, hold_sec)
-
-    # GHOST TOWN LOCK: 在最後 30 秒，訂單簿通常已經抽單成空城，這裡市價停損只會觸發 FAK 無限報錯。
-    # 遵照指示：「如果是虧的才放」，所以倒數 30 秒內的虧損單，一律假裝沒看到，直接抱到結算！
-    if secs_left is not None and secs_left <= getattr(SETTINGS, "exit_ghost_town_sec", 30):
-        if pnl_pct <= 0:
-            return ExitDecision(False, "ghost-town-let-ride", pnl_pct, hold_sec)
 
     # 1. Tiered Take Profit (Risk-Free Moonbag Strategy)
     if (
@@ -151,7 +158,7 @@ def decide_exit(
             if getattr(SETTINGS, "force_full_exit_on_stop_loss_scaleout", False):
                 return ExitDecision(True, "stop-loss-full", pnl_pct, hold_sec)
             return ExitDecision(True, "stop-loss-scale-out", pnl_pct, hold_sec)
-    if secs_left is not None and secs_left <= getattr(SETTINGS, "exit_deadline_profit_sec", 45):
+    if secs_left is not None and profit_deadline_sec > 0.0 and secs_left <= profit_deadline_sec:
         if pnl_pct > 0:
             return ExitDecision(True, "deadline-take-profit-full", pnl_pct, hold_sec)
 
