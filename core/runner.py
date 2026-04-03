@@ -248,6 +248,34 @@ def same_direction_entry_cooldown_age_sec(
     return max(0.0, ref_now - youngest_entry)
 
 
+def should_reset_clean_start_loss_streak(
+    *,
+    open_positions: list[OpenPos],
+    pending_orders: list[PendingOrder],
+    last_trade_ts: float | None,
+    risk_consec_losses: int,
+    live_consec_losses: int,
+    last_loss_side: str = "",
+    now_ts: float | None = None,
+) -> tuple[bool, float]:
+    if open_positions or pending_orders:
+        return False, 0.0
+
+    if max(int(risk_consec_losses or 0), int(live_consec_losses or 0)) <= 0 and not str(last_loss_side or "").strip():
+        return False, 0.0
+
+    if last_trade_ts is None or float(last_trade_ts) <= 0.0:
+        return False, 0.0
+
+    ref_now = time.time() if now_ts is None else float(now_ts)
+    age_sec = max(0.0, ref_now - float(last_trade_ts))
+    reset_after_sec = max(
+        0.0,
+        float(getattr(SETTINGS, "clean_start_loss_streak_reset_sec", 300.0) or 300.0),
+    )
+    return age_sec >= reset_after_sec, age_sec
+
+
 @dataclass
 class RuntimeFlags:
     live_consec_losses: int
@@ -1147,7 +1175,7 @@ def paper_settlement_from_last_mark(last_mark: float | None) -> tuple[float, str
     return 0.5, "binary-neutral"
 
 
-def strategy_name_for_side(strategy_name: str, side: str | None) -> str:
+def strategy_name_for_side(strategy_name: str | None, side: str | None) -> str:
     base = str(strategy_name or "").split("+")[0]
     target = str(side or "").upper()
     if target not in {"UP", "DOWN"}:
@@ -1158,6 +1186,14 @@ def strategy_name_for_side(strategy_name: str, side: str | None) -> str:
     if lower.endswith("_down"):
         return f"{base[:-5]}_{target.lower()}"
     return base
+
+
+def reversed_signal_origin(strategy_name: str | None, side: str | None, *, reason: str = "") -> str:
+    base = strategy_name_for_side(strategy_name, side)
+    suffix = str(reason or "").strip()
+    if base and suffix:
+        return f"{base}+{suffix}"
+    return base or suffix
 
 
 def timed_call(fn, *args, **kwargs):
@@ -1741,7 +1777,6 @@ def rebuild_positions_from_journal() -> tuple[list[OpenPos], list[str]]:
     now_ts = time.time()
     for note in notes:
         msg = f"journal reconcile note | {note.get('note')} | token={note.get('token_id')}"
-        log(msg)
         notes_out.append(msg)
     for token_id, lot in lots.items():
         opened_ts = float(lot.get("opened_ts", 0.0) or 0.0)
@@ -2056,11 +2091,6 @@ def main():
     risk = RiskState()
     state = load_state()
     open_positions, startup_notes, recovery_restart, runtime_state_changed = perform_startup_sanity_check(ex, state)
-    run_journal = RunJournal(notes=startup_notes, recovery_restart=recovery_restart)
-    set_journal_context(run_id=run_journal.run_id)
-    install_signal_handlers(run_journal)
-
-    log(f"bot started | dry_run={SETTINGS.dry_run}")
 
     risk.daily_pnl = float(state.get("risk_daily_pnl", 0.0))
     risk.orders_this_window = int(state.get("risk_orders_this_window", 0))
@@ -2079,6 +2109,38 @@ def main():
     pending_orders = [PendingOrder(**dict(p)) for p in state.get("pending_orders", []) if isinstance(p, dict)]
     flags = load_runtime_flags(state, open_positions)
     panic_market_slug = str(state.get("panic_market_slug") or "")
+
+    startup_reset_note = ""
+    should_reset_loss_streak, loss_streak_age_sec = should_reset_clean_start_loss_streak(
+        open_positions=open_positions,
+        pending_orders=pending_orders,
+        last_trade_ts=last_trade_ts,
+        risk_consec_losses=risk.consec_losses,
+        live_consec_losses=flags.live_consec_losses,
+        last_loss_side=flags.last_loss_side,
+    )
+    if should_reset_loss_streak:
+        startup_reset_note = (
+            "reset stale loss streak on clean start | "
+            f"last_trade_age={loss_streak_age_sec:.0f}s "
+            f"risk_consec_losses={risk.consec_losses} "
+            f"live_consec_losses={flags.live_consec_losses} "
+            f"last_loss_side={flags.last_loss_side or 'n/a'}"
+        )
+        startup_notes.append(startup_reset_note)
+        recovery_restart = True
+        runtime_state_changed = True
+        risk.consec_losses = 0
+        flags.live_consec_losses = 0
+        flags.last_loss_side = ""
+
+    run_journal = RunJournal(notes=startup_notes, recovery_restart=recovery_restart)
+    set_journal_context(run_id=run_journal.run_id)
+    install_signal_handlers(run_journal)
+
+    if startup_reset_note:
+        log(f"startup sanity | {startup_reset_note}")
+    log(f"bot started | dry_run={SETTINGS.dry_run}")
 
     if runtime_state_changed:
         save_runtime_state(
@@ -3659,7 +3721,11 @@ def main():
                                 _rev_wr = 0.5  # fallback: neutral
                             if _rev_wr > 0.55:
                                 signal_side = entry_decision.side
-                                signal_origin = f"{signal_origin}+{entry_decision.reason}" if signal_origin else entry_decision.reason
+                                signal_origin = reversed_signal_origin(
+                                    signal_origin,
+                                    signal_side,
+                                    reason=entry_decision.reason,
+                                )
                                 signal_probability = None
                                 strategy_win_rate = 0.5
                                 strategy_trade_count = 0
