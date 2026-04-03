@@ -171,6 +171,22 @@ def main():
             ),
         ],
     )
+    partial_protected_positions, partial_protected_notes = sync_open_positions(
+        mismatch,
+        [
+            OpenPos(
+                slug="btc-updown-5m-current",
+                side="UP",
+                token_id="partial-token",
+                shares=0.45,
+                cost_usd=0.18,
+                opened_ts=time.time() - 180.0,
+                has_taken_partial=True,
+                live_miss_count=12,
+                live_sync_protect_until_ts=time.time() + 75.0,
+            ),
+        ],
+    )
     class MatchingExchange:
         def __init__(self):
             self.calls = 0
@@ -386,6 +402,15 @@ def main():
             len(protected_positions) == 1
             and protected_positions[0].force_close_only is True
             and any("sync_protect token=residual-token" in note for note in protected_notes)
+        ),
+        (
+            "partial_profit_residual_honors_explicit_sync_protection",
+            len(partial_protected_positions) == 1
+            and partial_protected_positions[0].force_close_only is False
+            and any(
+                "sync_hold token=partial-token" in note and "protect_sec_left=" in note
+                for note in partial_protected_notes
+            )
         ),
         (
             "sync_open_positions_preserves_lottery_activation_state",

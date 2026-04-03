@@ -649,6 +649,109 @@ def estimate_pair_fees(
     return entry_fee, actual_total_fees, observed_total_fees, exit_fee_rate
 
 
+def _actual_source_rank(tier: str | None) -> int:
+    return {
+        "none": 0,
+        "low": 1,
+        "medium": 2,
+        "high": 3,
+    }.get(str(tier or "").strip().lower(), 0)
+
+
+def _recompute_pair_row_accounting(row: TradePairRow) -> None:
+    row.actual_pnl_usd = (
+        (row.exit_recovered_actual_usd - row.entry_cost_usd)
+        if row.exit_recovered_actual_usd is not None
+        else None
+    )
+    row.observed_pnl_usd = (
+        (row.exit_recovered_observed_usd - row.entry_cost_usd)
+        if row.exit_recovered_observed_usd is not None
+        else None
+    )
+    _, actual_total_fees, observed_total_fees, _ = estimate_pair_fees(
+        matched_cost_usd=row.entry_cost_usd,
+        actual_exit_value_usd=row.exit_recovered_actual_usd,
+        observed_exit_value_usd=row.exit_recovered_observed_usd,
+        entry_execution_style=row.entry_execution_style,
+        exit_execution_style=row.exit_execution_style,
+        close_reason=row.close_reason,
+    )
+    row.estimated_total_fees_actual_usd = actual_total_fees
+    row.estimated_total_fees_observed_usd = observed_total_fees
+    row.fee_adjusted_actual_pnl_usd = (
+        (row.actual_pnl_usd - actual_total_fees)
+        if row.actual_pnl_usd is not None and actual_total_fees is not None
+        else None
+    )
+    row.fee_adjusted_observed_pnl_usd = (
+        (row.observed_pnl_usd - observed_total_fees)
+        if row.observed_pnl_usd is not None and observed_total_fees is not None
+        else None
+    )
+
+
+def _collapse_overflow_residual_rows(rows: list[TradePairRow]) -> list[TradePairRow]:
+    if not rows:
+        return rows
+
+    base_indices: dict[str, list[int]] = {}
+    for idx, row in enumerate(rows):
+        if row.status == "residual":
+            continue
+        key = str(row.position_id or "").strip()
+        if key:
+            base_indices.setdefault(key, []).append(idx)
+
+    dropped_indices: set[int] = set()
+    for idx, row in enumerate(rows):
+        if row.status != "residual" or "orphan-residual" not in row.flags:
+            continue
+        pos_id = str(row.position_id or "").strip()
+        if "#residual" not in pos_id:
+            continue
+        base_key = pos_id.split("#residual", 1)[0].strip()
+        candidates = []
+        for base_idx in base_indices.get(base_key, []):
+            base_row = rows[base_idx]
+            if base_row.market != row.market or base_row.side != row.side or base_row.token_id != row.token_id:
+                continue
+            if not base_row.opened_ts:
+                continue
+            base_dt = _parse_iso_dt(base_row.closed_ts)
+            row_dt = _parse_iso_dt(row.closed_ts)
+            time_diff = abs((base_dt - row_dt).total_seconds()) if base_dt is not None and row_dt is not None else 0.0
+            if base_dt is not None and row_dt is not None and time_diff > 120:
+                continue
+            reason_match = str(base_row.close_reason or "").strip().lower() == str(row.close_reason or "").strip().lower()
+            candidates.append((0 if reason_match else 1, time_diff, base_idx))
+        if not candidates:
+            continue
+
+        _, _, base_idx = min(candidates, key=lambda item: (item[0], item[1], item[2]))
+        base_row = rows[base_idx]
+        if row.exit_recovered_actual_usd is not None:
+            base_row.exit_recovered_actual_usd = (base_row.exit_recovered_actual_usd or 0.0) + row.exit_recovered_actual_usd
+        if row.exit_recovered_observed_usd is not None:
+            base_row.exit_recovered_observed_usd = (base_row.exit_recovered_observed_usd or 0.0) + row.exit_recovered_observed_usd
+        if _actual_source_rank(row.actual_source_tier) > _actual_source_rank(base_row.actual_source_tier):
+            base_row.actual_source = row.actual_source
+            base_row.actual_source_tier = row.actual_source_tier
+        if normalize_execution_style(base_row.exit_execution_style) == "unknown":
+            base_row.exit_execution_style = row.exit_execution_style
+        base_row.legs.extend(row.legs)
+        base_row.flags = list(dict.fromkeys([
+            flag for flag in base_row.flags
+            if flag not in {"ui-reconciliation-needed"}
+        ] + ["collapsed-overflow-residual"]))
+        _recompute_pair_row_accounting(base_row)
+        dropped_indices.add(idx)
+
+    if not dropped_indices:
+        return rows
+    return [row for idx, row in enumerate(rows) if idx not in dropped_indices]
+
+
 def build_trade_pairs(events: list[dict]) -> list[TradePairRow]:
     open_entries: dict[str, deque[dict]] = {}
     rows: list[TradePairRow] = []
@@ -836,6 +939,7 @@ def build_trade_pairs(events: list[dict]) -> list[TradePairRow]:
         for lot in lots:
             rows.append(_finalize_pair_row(lot["event"], str(lot["event"].get("token_id") or ""), key, lot))
 
+    rows = _collapse_overflow_residual_rows(rows)
     rows = reconcile_rows_with_account_activity(rows)
     rows.sort(key=lambda row: (row.opened_ts or row.closed_ts or "", row.market, row.side, row.position_id))
     return rows

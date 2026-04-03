@@ -29,6 +29,7 @@ from core.runner import (
     observed_exit_value_from_mark,
     extract_entry_cost_usd,
     is_loss_exit_reason,
+    loss_exit_tail_fraction,
     realized_exit_pnl,
     principal_extraction_sell_fraction,
     principal_extraction_complete,
@@ -71,6 +72,7 @@ def make_paper_exchange() -> PolymarketExchange:
 
 def main():
     # Keep these checks independent from any prior test file mutating SETTINGS.
+    SETTINGS.leave_loss_tail_pct = 0.10
     SETTINGS.stop_loss_partial_pct = 0.10
     SETTINGS.soft_stop_confirm_sec = 2.5
     SETTINGS.soft_stop_confirm_buffer_pct = 0.015
@@ -367,6 +369,10 @@ def main():
         ("ws_order_flow_down_allows_flat_or_down_velocity", entry_velocity_gate_rejects("DOWN", "model-ws_order_flow_down", 0.0) is False and entry_velocity_gate_rejects("DOWN", "model-ws_order_flow_down", -0.0001) is False),
         ("loss_exit_reason_detects_stop_loss", is_loss_exit_reason("stop-loss") is True),
         ("loss_exit_reason_rejects_take_profit", is_loss_exit_reason("take-profit-principal") is False),
+        ("loss_exit_tail_uses_configured_ten_percent_for_stop_loss", abs(loss_exit_tail_fraction(reason="stop-loss-full", pnl_pct=-0.08) - 0.10) < 1e-9),
+        ("loss_exit_tail_uses_negative_pnl_for_stalled_loss", abs(loss_exit_tail_fraction(reason="stalled-trade", pnl_pct=-0.01) - 0.10) < 1e-9),
+        ("loss_exit_tail_skips_profit_exit", abs(loss_exit_tail_fraction(reason="take-profit-principal", pnl_pct=0.12) - 0.0) < 1e-9),
+        ("loss_exit_tail_skips_residual_force_close_cleanup", abs(loss_exit_tail_fraction(reason="residual-force-close", pnl_pct=-0.12) - 0.0) < 1e-9),
         ("live_force_full_loss_exit_skips_stop_loss_scaleout", should_force_full_loss_exit(reason="stop-loss-scale-out", dry_run=False) is False),
         ("live_force_full_loss_exit_on_deadline_loss", should_force_full_loss_exit(reason="deadline-exit-loss", dry_run=False) is True),
         ("dry_run_does_not_force_full_loss_exit", should_force_full_loss_exit(reason="stop-loss-scale-out", dry_run=True) is False),

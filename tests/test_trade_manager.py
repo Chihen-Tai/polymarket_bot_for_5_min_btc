@@ -305,6 +305,55 @@ def main():
         SETTINGS.funder_address = original_funder_address
         journal_analysis_mod._fetch_account_trade_activity = original_fetch_activity
     reconciled_orphan_summary = summarize_trade_pairs(reconciled_orphan_rows)
+    collapsed_principal_rows = build_trade_pairs([
+        {
+            "kind": "entry",
+            "ts": "2026-03-19T10:20:00",
+            "event_id": "entry_principal",
+            "position_id": "pos_principal",
+            "slug": "m_principal",
+            "side": "UP",
+            "token_id": "tok_principal",
+            "shares": 2.0,
+            "cost_usd": 1.0,
+            "execution_style": "taker",
+        },
+        {
+            "kind": "exit",
+            "ts": "2026-03-19T10:21:00",
+            "event_id": "exit_partial_principal",
+            "position_id": "pos_principal",
+            "slug": "m_principal",
+            "side": "UP",
+            "token_id": "tok_principal",
+            "closed_shares": 1.0,
+            "remaining_shares": 1.0,
+            "realized_cost_usd": 0.5,
+            "actual_exit_value_usd": 0.6,
+            "actual_exit_value_source": "close_response_takingAmount",
+            "observed_exit_value_usd": 0.6,
+            "reason": "take-profit-partial",
+            "exit_execution_style": "taker",
+        },
+        {
+            "kind": "exit",
+            "ts": "2026-03-19T10:22:00",
+            "event_id": "exit_principal_overflow",
+            "position_id": "pos_principal",
+            "slug": "m_principal",
+            "side": "UP",
+            "token_id": "tok_principal",
+            "closed_shares": 2.0,
+            "remaining_shares": 0.0,
+            "realized_cost_usd": 0.5,
+            "actual_exit_value_usd": 0.6,
+            "actual_exit_value_source": "close_response_takingAmount",
+            "observed_exit_value_usd": 0.6,
+            "reason": "take-profit-principal",
+            "exit_execution_style": "taker",
+        },
+    ])
+    collapsed_principal_summary = summarize_trade_pairs(collapsed_principal_rows)
     original_fetch_market_settlement = journal_analysis_mod._fetch_market_settlement
     journal_analysis_mod._fetch_market_settlement = lambda slug, side: (0.0, "market-expired-binary-loss")
     try:
@@ -1028,6 +1077,15 @@ def main():
             "account_activity_reconciled_residual_counts_as_actual",
             abs((reconciled_orphan_summary["actual_available_ratio"] or 0.0) - 1.0) < 1e-9
             and abs((reconciled_orphan_summary["actual_pnl"]["sum"] or 0.0) - 0.2) < 1e-9
+        ),
+        (
+            "principal_overflow_residuals_collapse_back_into_the_main_trade",
+            len(collapsed_principal_rows) == 1
+            and collapsed_principal_rows[0].status == "closed"
+            and abs(collapsed_principal_rows[0].matched_exit_shares - 2.0) < 1e-9
+            and abs((collapsed_principal_rows[0].actual_pnl_usd or 0.0) - 0.2) < 1e-9
+            and "collapsed-overflow-residual" in collapsed_principal_rows[0].flags
+            and abs((collapsed_principal_summary["actual_pnl"]["sum"] or 0.0) - 0.2) < 1e-9
         ),
         (
             "expired_unmatched_position_is_settled_in_report",

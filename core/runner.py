@@ -86,6 +86,36 @@ def idle_sleep_seconds(*, has_open_positions: bool, has_pending_orders: bool, se
     return float(getattr(SETTINGS, "poll_seconds", 3) or 3.0)
 
 
+def market_end_ts_from_slug(slug: str | None) -> float | None:
+    text = str(slug or "").strip()
+    if not text:
+        return None
+    try:
+        start_epoch = int(text.split("-")[-1])
+    except Exception:
+        return None
+    return float(start_epoch + 300)
+
+
+def extend_live_sync_protection(
+    pos: "OpenPos",
+    *,
+    now_ts: float | None = None,
+    fallback_sec: float = 120.0,
+    market_buffer_sec: float = 30.0,
+) -> float:
+    now = float(now_ts if now_ts is not None else time.time())
+    market_end_ts = market_end_ts_from_slug(getattr(pos, "slug", ""))
+    protect_until = now + max(0.0, float(fallback_sec or 0.0))
+    if market_end_ts is not None:
+        protect_until = max(protect_until, market_end_ts + max(0.0, float(market_buffer_sec or 0.0)))
+    pos.live_sync_protect_until_ts = max(
+        float(getattr(pos, "live_sync_protect_until_ts", 0.0) or 0.0),
+        protect_until,
+    )
+    return pos.live_sync_protect_until_ts
+
+
 
 STATE_VERSION = 2
 
@@ -165,7 +195,8 @@ def maybe_log_position_watch(
     signature = (
         f"{decision}|{int(pnl_pct * 1000)}|{int(hard_stop_pnl_pct * 1000)}|"
         f"{profit_bucket}|{rounded_secs_left}|{mark_bucket}|{observed_bucket}|"
-        f"{int(bool(getattr(pos, 'force_close_only', False)))}|{int(bool(getattr(pos, 'pending_confirmation', False)))}"
+        f"{int(bool(getattr(pos, 'force_close_only', False)))}|{int(bool(getattr(pos, 'pending_confirmation', False)))}|"
+        f"{int(bool(getattr(pos, 'is_loss_tail', False)))}"
     )
     now_ts = time.time()
     if signature == getattr(pos, "last_watch_log_sig", "") and (now_ts - float(getattr(pos, "last_watch_log_ts", 0.0) or 0.0)) < interval:
@@ -176,8 +207,12 @@ def maybe_log_position_watch(
     flags = []
     if getattr(pos, "pending_confirmation", False):
         flags.append("pending-confirmation")
+    if float(getattr(pos, "live_sync_protect_until_ts", 0.0) or 0.0) > now_ts:
+        flags.append("sync-protected")
     if getattr(pos, "force_close_only", False):
         flags.append("force-close-only")
+    if getattr(pos, "is_loss_tail", False):
+        flags.append("loss-tail")
     if getattr(pos, "has_scaled_out_loss", False):
         flags.append("scaled-out-loss")
     if getattr(pos, "has_taken_partial", False):
@@ -216,6 +251,7 @@ class OpenPos:
     last_synced_at: float = 0.0
     live_miss_count: int = 0
     pending_confirmation: bool = False
+    live_sync_protect_until_ts: float = 0.0
     max_favorable_value_usd: float = 0.0
     max_adverse_value_usd: float = 0.0
     max_favorable_pnl_usd: float = 0.0
@@ -229,6 +265,7 @@ class OpenPos:
     profit_plateau_entry_ts: float = 0.0
     force_close_only: bool = False
     is_moonbag: bool = False
+    is_loss_tail: bool = False
     entry_shares: float = 0.0
     runner_peak_value_usd: float = 0.0
     runner_peak_ts: float = 0.0
@@ -595,6 +632,18 @@ LOSS_EXIT_REASONS = {
 
 def is_loss_exit_reason(reason: str | None) -> bool:
     return str(reason or "").strip().lower() in LOSS_EXIT_REASONS
+
+
+def loss_exit_tail_fraction(*, reason: str | None, pnl_pct: float | None) -> float:
+    normalized = str(reason or "").strip().lower()
+    if normalized in {"manual-emergency-close", "residual-force-close"}:
+        return 0.0
+    pnl_value = None if pnl_pct is None else float(pnl_pct)
+    is_loss_exit = is_loss_exit_reason(normalized) or (pnl_value is not None and pnl_value < 0.0)
+    if not is_loss_exit:
+        return 0.0
+    configured = float(getattr(SETTINGS, "leave_loss_tail_pct", 0.10) or 0.0)
+    return max(0.0, min(0.99, configured))
 
 
 def effective_stop_loss_partial_fraction(*, dry_run: bool) -> float:
@@ -1867,13 +1916,15 @@ def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos
     notes: list[str] = []
     base_grace_sec = max(5.0, float(getattr(SETTINGS, "live_position_grace_sec", 90) or 90.0))
     base_miss_limit = max(1, int(getattr(SETTINGS, "live_position_miss_limit", 3) or 3))
+    now_ts = time.time()
     for p in open_positions:
         ap = actual.get(p.token_id)
         if ap is None or ap.size <= 0:
-            age_sec = max(0.0, time.time() - float(p.opened_ts or 0.0)) if p.opened_ts else 999999.0
+            age_sec = max(0.0, now_ts - float(p.opened_ts or 0.0)) if p.opened_ts else 999999.0
             miss_count = int(getattr(p, "live_miss_count", 0) or 0) + 1  # Only increment when API responded!
             grace_sec = base_grace_sec
             miss_limit = base_miss_limit
+            hold_note_suffix = ""
             protect_missing_partial = bool(
                 getattr(p, "has_scaled_out", False)
                 or getattr(p, "has_scaled_out_loss", False)
@@ -1881,12 +1932,18 @@ def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos
                 or getattr(p, "has_extracted_principal", False)
                 or getattr(p, "force_close_only", False)
             )
+            protect_until_ts = float(getattr(p, "live_sync_protect_until_ts", 0.0) or 0.0)
             if getattr(p, "pending_confirmation", False):
                 # Freshly filled live orders can take a little longer to show up in the
                 # positions API. Give them extra breathing room before treating them as missing.
                 grace_sec = max(grace_sec, 30.0)
                 miss_limit = max(miss_limit, base_miss_limit + 2)
                 in_grace = age_sec <= grace_sec
+            elif protect_until_ts > now_ts:
+                grace_sec = max(grace_sec, protect_until_ts - now_ts)
+                miss_limit = max(miss_limit, base_miss_limit + 8)
+                in_grace = True
+                hold_note_suffix = f" protect_sec_left={max(0.0, protect_until_ts - now_ts):.1f}"
             elif protect_missing_partial:
                 # After a partial exit, prefer a conservative local hold over forgetting
                 # the residual lot because the live positions API briefly missed it.
@@ -1902,7 +1959,7 @@ def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos
                     held.force_close_only = True
                 synced.append(held)
                 notes.append(
-                    f"sync_hold token={p.token_id} slug={p.slug} reason=missing-live-position age_sec={age_sec:.1f} miss_count={miss_count}"
+                    f"sync_hold token={p.token_id} slug={p.slug} reason=missing-live-position age_sec={age_sec:.1f} miss_count={miss_count}{hold_note_suffix}"
                 )
                 continue
             if getattr(p, "has_scaled_out_loss", False) or getattr(p, "force_close_only", False):
@@ -2904,7 +2961,7 @@ def main():
                                 exit_decision = ExitDecision(True, "take-profit-full", hard_stop_pnl_pct, hold_sec)
                             else:
                                 exit_decision = ExitDecision(True, "residual-force-close", hard_stop_pnl_pct, hold_sec)
-                        elif getattr(p, "is_moonbag", False):
+                        elif getattr(p, "is_moonbag", False) or getattr(p, "is_loss_tail", False):
                             keep_positions.append(p)
                             continue
                         else:
@@ -3232,6 +3289,8 @@ def main():
                                             p.shares = resolved_remaining_shares
                                             p.cost_usd = remaining_cost
                                             p.has_scaled_out = True
+                                            if resolved_remaining_shares > LOT_EPS_SHARES:
+                                                extend_live_sync_protection(p)
                                             
                                             _raw_act_val = close_resp.get("actual_exit_value_usd", 0.0)
                                             _raw_act_src = str(close_resp.get("actual_exit_value_source") or "unavailable")
@@ -3321,6 +3380,8 @@ def main():
                                             p.shares = resolved_remaining_shares
                                             p.cost_usd = remaining_cost
                                             p.has_scaled_out_loss = True
+                                            if resolved_remaining_shares > LOT_EPS_SHARES:
+                                                extend_live_sync_protection(p)
                                             if should_arm_residual_force_close_after_stop_loss_scaleout(
                                                 dry_run=SETTINGS.dry_run,
                                                 remaining_shares=resolved_remaining_shares,
@@ -3469,6 +3530,8 @@ def main():
                                                 target_principal_usd,
                                             )
                                             p.has_extracted_principal = principal_done
+                                            if resolved_remaining_shares > LOT_EPS_SHARES:
+                                                extend_live_sync_protection(p)
                                             if principal_done:
                                                 remaining_runner_value = current_value * max(0.0, 1.0 - actual_fraction)
                                                 p.runner_peak_value_usd = max(0.0, float(remaining_runner_value or 0.0))
@@ -3588,6 +3651,8 @@ def main():
                                             p.shares = resolved_remaining_shares
                                             p.cost_usd = remaining_cost
                                             p.has_taken_partial = True
+                                            if resolved_remaining_shares > LOT_EPS_SHARES:
+                                                extend_live_sync_protection(p)
                                             append_event({
                                                 "kind": "exit",
                                                 "slug": p.slug,
@@ -3643,11 +3708,14 @@ def main():
                                     secs_left=secs_left,
                                     dry_run=SETTINGS.dry_run,
                                 )
-                                moonbag_pct = max(0.0, min(0.99, float(getattr(SETTINGS, "leave_moonbag_pct", 0.0) or 0.0)))
+                                loss_tail_pct = loss_exit_tail_fraction(
+                                    reason=exit_decision.reason,
+                                    pnl_pct=pnl_pct,
+                                )
                                 sell_shares = p.shares
-                                if moonbag_pct > 0.0 and exit_decision.reason not in {"manual-emergency-close", "residual-force-close"}:
-                                    moonbag_target = p.shares * moonbag_pct
-                                    sell_target = p.shares - moonbag_target
+                                if loss_tail_pct > 0.0:
+                                    loss_tail_target = p.shares * loss_tail_pct
+                                    sell_target = p.shares - loss_tail_target
                                     if sell_target > 0.0001:
                                         sell_shares = sell_target
 
@@ -3861,12 +3929,8 @@ def main():
                                                 timestamp=time.time()
                                             )
                                         if remaining_shares > LOT_EPS_SHARES and remaining_cost > LOT_EPS_COST_USD:
-                                            # If we successfully created a moonbag, skip force close and mark it
-                                            is_moonbag_triggered = False
-                                            if moonbag_pct > 0.0 and exit_decision.reason not in {"manual-emergency-close", "residual-force-close"}:
-                                                is_moonbag_triggered = True
-
-                                            residual_force_close = False if is_moonbag_triggered else should_force_full_loss_exit(
+                                            is_loss_tail_triggered = loss_tail_pct > 0.0
+                                            residual_force_close = False if is_loss_tail_triggered else should_force_full_loss_exit(
                                                 reason=exit_decision.reason,
                                                 dry_run=SETTINGS.dry_run,
                                             )
@@ -3895,17 +3959,24 @@ def main():
                                                     f"after {dust_retry} retries — forcing drop to avoid zombie position"
                                                 )
                                             else:
+                                                if is_loss_tail_triggered:
+                                                    extend_live_sync_protection(p)
                                                 keep_positions.append(replace(
                                                     p,
                                                     shares=remaining_shares,
                                                     cost_usd=remaining_cost,
                                                     max_favorable_ts=float(getattr(p, "max_favorable_ts", p.opened_ts) or p.opened_ts or 0.0),
-                                                    is_moonbag=is_moonbag_triggered,
+                                                    is_moonbag=False,
+                                                    is_loss_tail=is_loss_tail_triggered,
+                                                    force_close_only=False,
                                                     dust_retry_count=dust_retry,
                                                 ))
-                                            
-                                            if is_moonbag_triggered:
-                                                log(f"🎑 MOONBAG SECURED! {p.token_id[-6:]} remaining {remaining_shares:.2f} shares to run risk-free.")
+
+                                            if is_loss_tail_triggered:
+                                                log(
+                                                    f"loss tail preserved | token={p.token_id} remaining_shares={remaining_shares:.6f} "
+                                                    f"remaining_cost={remaining_cost:.6f} reason={exit_decision.reason}"
+                                                )
                                         else:
                                             log(
                                                 f"drop residual after close | token={p.token_id} remaining_shares={remaining_shares:.6f} "

@@ -211,6 +211,7 @@ class Settings:
     live_take_profit_force_taker: bool = _b("LIVE_TAKE_PROFIT_FORCE_TAKER", False)
     live_take_profit_fee_rate: float = _f("LIVE_TAKE_PROFIT_FEE_RATE", 0.0)
     leave_moonbag_pct: float = _f("LEAVE_MOONBAG_PCT", 0.05)
+    leave_loss_tail_pct: float = _f("LEAVE_LOSS_TAIL_PCT", 0.10)
     force_full_exit_on_stop_loss_scaleout: bool = _b("FORCE_FULL_EXIT_ON_STOP_LOSS_SCALEOUT", True)
     live_force_full_loss_exit: bool = _b("LIVE_FORCE_FULL_LOSS_EXIT", True)
     live_loss_exit_force_taker: bool = _b("LIVE_LOSS_EXIT_FORCE_TAKER", False)
