@@ -60,6 +60,8 @@ def main():
     SETTINGS.entry_window_min_sec = 120
     SETTINGS.entry_window_max_sec = 999999.0
     SETTINGS.exit_deadline_sec = 20
+    SETTINGS.exit_deadline_profit_sec = 5
+    SETTINGS.exit_ghost_town_sec = 0
     SETTINGS.exit_deadline_flat_pnl_pct = 0.0
     SETTINGS.take_profit_soft_pct = 0.18
     SETTINGS.take_profit_bid_discount_buffer = 0.08
