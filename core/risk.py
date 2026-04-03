@@ -6,6 +6,7 @@ from datetime import datetime
 class RiskState:
     consec_losses: int = 0
     daily_pnl: float = 0.0
+    daily_pnl_date: str = ""
     orders_this_window: int = 0
     window_key: str = ""
 

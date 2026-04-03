@@ -14,11 +14,13 @@ from core.runner import (
     open_position_poll_interval_seconds,
     pending_order_poll_interval_seconds,
     perform_startup_sanity_check,
+    refresh_daily_pnl_window,
     reversed_signal_origin,
     same_direction_entry_cooldown_age_sec,
     should_reset_clean_start_loss_streak,
     sync_open_positions,
 )
+from core.risk import RiskState
 from core.runtime_paths import mode_label, run_journal_path, runtime_state_path, trade_journal_path
 
 
@@ -279,6 +281,34 @@ def main():
     finally:
         runner_mod.SETTINGS.clean_start_loss_streak_reset_sec = original_reset_sec
 
+    now_dt = runner_mod.datetime(2026, 4, 3, 10, 48, 0)
+    prior_day_ts = runner_mod.datetime(2026, 4, 2, 12, 0, 0).timestamp()
+    same_day_ts = runner_mod.datetime(2026, 4, 3, 8, 30, 0).timestamp()
+    stored_date_risk = RiskState(daily_pnl=-3.5, daily_pnl_date="2026-04-01")
+    stored_date_reset, stored_date_note = refresh_daily_pnl_window(
+        stored_date_risk,
+        last_trade_ts=same_day_ts,
+        now_dt=now_dt,
+    )
+    inferred_date_risk = RiskState(daily_pnl=-2.25, daily_pnl_date="")
+    inferred_date_reset, inferred_date_note = refresh_daily_pnl_window(
+        inferred_date_risk,
+        last_trade_ts=prior_day_ts,
+        now_dt=now_dt,
+    )
+    same_day_risk = RiskState(daily_pnl=-1.25, daily_pnl_date="2026-04-03")
+    same_day_reset, same_day_note = refresh_daily_pnl_window(
+        same_day_risk,
+        last_trade_ts=same_day_ts,
+        now_dt=now_dt,
+    )
+    empty_date_risk = RiskState(daily_pnl=0.0, daily_pnl_date="")
+    empty_date_reset, empty_date_note = refresh_daily_pnl_window(
+        empty_date_risk,
+        last_trade_ts=None,
+        now_dt=now_dt,
+    )
+
     startup_logged_messages: list[str] = []
     startup_events: list[dict] = []
 
@@ -335,6 +365,34 @@ def main():
         ("clean_start_resets_stale_loss_streak", stale_loss_reset is True and abs(stale_loss_age - 350.0) < 1e-9),
         ("clean_start_keeps_recent_loss_streak", recent_loss_reset is False and abs(recent_loss_age - 250.0) < 1e-9),
         ("clean_start_keeps_loss_streak_when_positions_are_active", active_position_reset is False),
+        (
+            "daily_pnl_reset_uses_stored_date",
+            stored_date_reset is True
+            and abs(stored_date_risk.daily_pnl) < 1e-9
+            and stored_date_risk.daily_pnl_date == "2026-04-03"
+            and "stored_date=2026-04-01" in stored_date_note
+        ),
+        (
+            "daily_pnl_reset_can_infer_old_state_from_last_trade",
+            inferred_date_reset is True
+            and abs(inferred_date_risk.daily_pnl) < 1e-9
+            and inferred_date_risk.daily_pnl_date == "2026-04-03"
+            and "inferred_last_trade_date=2026-04-02" in inferred_date_note
+        ),
+        (
+            "daily_pnl_window_keeps_same_day_state",
+            same_day_reset is False
+            and same_day_note == ""
+            and abs(same_day_risk.daily_pnl + 1.25) < 1e-9
+            and same_day_risk.daily_pnl_date == "2026-04-03"
+        ),
+        (
+            "daily_pnl_window_initializes_empty_date_silently",
+            empty_date_reset is True
+            and empty_date_note == ""
+            and abs(empty_date_risk.daily_pnl) < 1e-9
+            and empty_date_risk.daily_pnl_date == "2026-04-03"
+        ),
         (
             "startup_journal_reconcile_note_logged_once",
             startup_positions == []

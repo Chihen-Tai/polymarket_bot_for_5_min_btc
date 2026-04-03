@@ -276,6 +276,51 @@ def should_reset_clean_start_loss_streak(
     return age_sec >= reset_after_sec, age_sec
 
 
+def refresh_daily_pnl_window(
+    risk: RiskState,
+    *,
+    last_trade_ts: float | None,
+    now_dt: datetime | None = None,
+) -> tuple[bool, str]:
+    ref_now = datetime.now() if now_dt is None else now_dt
+    today_key = ref_now.date().isoformat()
+    stored_date = str(getattr(risk, "daily_pnl_date", "") or "").strip()
+    effective_date = stored_date
+    inferred_from_last_trade = False
+
+    if (
+        not effective_date
+        and abs(float(getattr(risk, "daily_pnl", 0.0) or 0.0)) > 1e-9
+        and last_trade_ts is not None
+        and float(last_trade_ts) > 0.0
+    ):
+        effective_date = datetime.fromtimestamp(float(last_trade_ts)).date().isoformat()
+        inferred_from_last_trade = True
+
+    if effective_date and effective_date != today_key:
+        previous_daily_pnl = float(getattr(risk, "daily_pnl", 0.0) or 0.0)
+        risk.daily_pnl = 0.0
+        risk.daily_pnl_date = today_key
+        if abs(previous_daily_pnl) > 1e-9:
+            source = (
+                f"inferred_last_trade_date={effective_date}"
+                if inferred_from_last_trade
+                else f"stored_date={effective_date}"
+            )
+            return (
+                True,
+                "reset stale daily pnl window | "
+                f"{source} today={today_key} previous_daily_pnl={previous_daily_pnl:.2f}",
+            )
+        return True, ""
+
+    if risk.daily_pnl_date != today_key:
+        risk.daily_pnl_date = today_key
+        return True, ""
+
+    return False, ""
+
+
 @dataclass
 class RuntimeFlags:
     live_consec_losses: int
@@ -1142,13 +1187,22 @@ def resolve_close_remaining_shares(
     sold_shares: float,
     remaining_hint: float | None,
 ) -> float:
-    # BUGFIX: `remaining_hint` from `close_position` returns the unfilled chunk of the *sell order target*.
-    # Since `requested_shares` here implies the total `starting_shares` of the position (e.g. 10 shares total, but we only sold 4),
-    # trusting `remaining_hint` destroys the position balance mathematically when partial-scaling or moonbagging.
-    # The true remaining balance is ALWAYS strictly starting_shares - sold_shares.
     requested = max(0.0, float(requested_shares or 0.0))
     sold = min(requested, max(0.0, float(sold_shares or 0.0)))
     local_remaining = max(0.0, requested - sold)
+    hint = None if remaining_hint is None else min(requested, max(0.0, float(remaining_hint or 0.0)))
+
+    if hint is not None:
+        # A zero remainder from the exchange is the strongest signal that the lot was
+        # fully cleared, even when reported filled shares lag or are rounded oddly.
+        if hint <= LOT_EPS_SHARES:
+            return 0.0
+        # Positive hints are only trusted when they reconcile with local math; this
+        # avoids reintroducing the partial-scaleout bug where the hint describes only
+        # the order target rather than the whole runtime position.
+        if abs((sold + hint) - requested) <= max(LOT_EPS_SHARES, 1e-6):
+            return hint
+
     return 0.0 if local_remaining <= LOT_EPS_SHARES else local_remaining
 
 
@@ -1957,6 +2011,7 @@ def save_runtime_state(
     save_state({
         "state_version": STATE_VERSION,
         "risk_daily_pnl": risk.daily_pnl,
+        "risk_daily_pnl_date": risk.daily_pnl_date,
         "risk_orders_this_window": risk.orders_this_window,
         "risk_window_key": risk.window_key,
         "risk_consec_losses": risk.consec_losses,
@@ -2093,6 +2148,7 @@ def main():
     open_positions, startup_notes, recovery_restart, runtime_state_changed = perform_startup_sanity_check(ex, state)
 
     risk.daily_pnl = float(state.get("risk_daily_pnl", 0.0))
+    risk.daily_pnl_date = str(state.get("risk_daily_pnl_date") or "")
     risk.orders_this_window = int(state.get("risk_orders_this_window", 0))
     risk.window_key = state.get("risk_window_key", "")
     risk.consec_losses = int(state.get("risk_consec_losses", 0))
@@ -2109,6 +2165,16 @@ def main():
     pending_orders = [PendingOrder(**dict(p)) for p in state.get("pending_orders", []) if isinstance(p, dict)]
     flags = load_runtime_flags(state, open_positions)
     panic_market_slug = str(state.get("panic_market_slug") or "")
+
+    daily_pnl_window_changed, daily_pnl_note = refresh_daily_pnl_window(
+        risk,
+        last_trade_ts=last_trade_ts,
+    )
+    if daily_pnl_window_changed:
+        runtime_state_changed = True
+    if daily_pnl_note:
+        startup_notes.append(daily_pnl_note)
+        recovery_restart = True
 
     startup_reset_note = ""
     should_reset_loss_streak, loss_streak_age_sec = should_reset_clean_start_loss_streak(
@@ -2138,6 +2204,8 @@ def main():
     set_journal_context(run_id=run_journal.run_id)
     install_signal_handlers(run_journal)
 
+    if daily_pnl_note:
+        log(f"startup sanity | {daily_pnl_note}")
     if startup_reset_note:
         log(f"startup sanity | {startup_reset_note}")
     log(f"bot started | dry_run={SETTINGS.dry_run}")
@@ -2187,6 +2255,13 @@ def main():
             now = datetime.now()
             key = current_5min_key(now)
             update_window(risk, key)
+            daily_pnl_window_changed, daily_pnl_note = refresh_daily_pnl_window(
+                risk,
+                last_trade_ts=last_trade_ts,
+                now_dt=now,
+            )
+            if daily_pnl_note:
+                log(daily_pnl_note)
 
             try:
                 acct, acct_ms = timed_call(ex.get_account)
