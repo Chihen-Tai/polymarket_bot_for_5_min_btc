@@ -86,6 +86,31 @@ def idle_sleep_seconds(*, has_open_positions: bool, has_pending_orders: bool, se
     return float(getattr(SETTINGS, "poll_seconds", 3) or 3.0)
 
 
+def risk_block_sleep_seconds(
+    *,
+    reason: str | None,
+    has_open_positions: bool,
+    has_pending_orders: bool,
+    secs_left: float | None = None,
+) -> float:
+    base_sleep = idle_sleep_seconds(
+        has_open_positions=has_open_positions,
+        has_pending_orders=has_pending_orders,
+        secs_left=secs_left,
+    )
+    normalized = str(reason or "").strip().lower()
+    if normalized != "daily max loss reached":
+        return base_sleep
+    if has_open_positions or has_pending_orders:
+        return base_sleep
+
+    min_pause_sec = 20.0
+    max_pause_sec = 60.0
+    if secs_left is None:
+        return max(base_sleep, min_pause_sec)
+    return max(base_sleep, min(max_pause_sec, max(min_pause_sec, float(secs_left) + 2.0)))
+
+
 def market_end_ts_from_slug(slug: str | None) -> float | None:
     text = str(slug or "").strip()
     if not text:
@@ -297,6 +322,37 @@ class PendingOrder:
     cancel_requested: bool = False
 
 
+def existing_token_entry_conflict(
+    open_positions: list[OpenPos],
+    pending_orders: list[PendingOrder],
+    *,
+    token_id: str | None,
+) -> tuple[bool, str, int, float]:
+    normalized = str(token_id or "").strip()
+    if not normalized:
+        return False, "", 0, 0.0
+
+    tracked_positions = [
+        p
+        for p in open_positions
+        if str(getattr(p, "token_id", "") or "").strip() == normalized
+        and float(getattr(p, "shares", 0.0) or 0.0) > LOT_EPS_SHARES
+    ]
+    if tracked_positions:
+        tracked_shares = sum(max(0.0, float(getattr(p, "shares", 0.0) or 0.0)) for p in tracked_positions)
+        return True, "open-position", len(tracked_positions), tracked_shares
+
+    pending_count = sum(
+        1
+        for po in pending_orders
+        if str(getattr(po, "token_id", "") or "").strip() == normalized
+    )
+    if pending_count > 0:
+        return True, "pending-order", pending_count, 0.0
+
+    return False, "", 0, 0.0
+
+
 def same_direction_entry_cooldown_age_sec(
     open_positions: list[OpenPos],
     *,
@@ -321,6 +377,172 @@ def same_direction_entry_cooldown_age_sec(
     ref_now = time.time() if now_ts is None else float(now_ts)
     youngest_entry = max(float(getattr(p, "opened_ts", 0.0) or 0.0) for p in same_signal_positions)
     return max(0.0, ref_now - youngest_entry)
+
+
+def dedupe_open_positions_by_token(
+    open_positions: list[OpenPos],
+    *,
+    live_positions: list[Position] | None = None,
+    source: str = "runtime",
+) -> tuple[list[OpenPos], list[str]]:
+    if not open_positions:
+        return [], []
+
+    live_actual = {
+        str(getattr(pos, "token_id", "") or "").strip(): pos
+        for pos in (live_positions or [])
+        if str(getattr(pos, "token_id", "") or "").strip()
+    }
+    grouped: dict[str, list[OpenPos]] = {}
+    ordered_tokens: list[str] = []
+
+    for pos in open_positions:
+        token = str(getattr(pos, "token_id", "") or "").strip()
+        if not token:
+            continue
+        if token not in grouped:
+            grouped[token] = []
+            ordered_tokens.append(token)
+        grouped[token].append(pos)
+
+    merged_positions: list[OpenPos] = []
+    notes: list[str] = []
+
+    def _first_positive(values: list[float], *, chooser=min) -> float:
+        positive = [value for value in values if value > 0.0]
+        if not positive:
+            return 0.0
+        return float(chooser(positive))
+
+    for token in ordered_tokens:
+        group = grouped[token]
+        if len(group) == 1:
+            merged_positions.append(group[0])
+            continue
+
+        ordered_group = sorted(
+            group,
+            key=lambda pos: (
+                float(getattr(pos, "opened_ts", 0.0) or 0.0) <= 0.0,
+                float(getattr(pos, "opened_ts", 0.0) or 0.0),
+            ),
+        )
+        base = OpenPos(**ordered_group[0].__dict__)
+        local_total_shares = sum(max(0.0, float(getattr(pos, "shares", 0.0) or 0.0)) for pos in ordered_group)
+        local_total_cost = sum(max(0.0, float(getattr(pos, "cost_usd", 0.0) or 0.0)) for pos in ordered_group)
+        local_entry_shares = sum(
+            max(
+                0.0,
+                float(getattr(pos, "entry_shares", 0.0) or getattr(pos, "shares", 0.0) or 0.0),
+            )
+            for pos in ordered_group
+        )
+        live_pos = live_actual.get(token)
+        if live_pos is not None and float(getattr(live_pos, "size", 0.0) or 0.0) > LOT_EPS_SHARES:
+            base.shares = float(getattr(live_pos, "size", 0.0) or 0.0)
+            live_initial_value = float(getattr(live_pos, "initial_value", 0.0) or 0.0)
+            base.cost_usd = live_initial_value if live_initial_value > LOT_EPS_COST_USD else local_total_cost
+            base.last_synced_size = float(getattr(live_pos, "size", 0.0) or 0.0)
+            base.last_synced_initial_value = live_initial_value
+            base.last_synced_current_value = float(getattr(live_pos, "current_value", 0.0) or 0.0)
+            base.last_synced_cash_pnl = float(getattr(live_pos, "cash_pnl", 0.0) or 0.0)
+            base.last_synced_at = time.time()
+            merge_mode = "live-authoritative"
+        else:
+            base.shares = local_total_shares
+            base.cost_usd = local_total_cost
+            merge_mode = "local-sum"
+
+        base.entry_shares = max(base.shares, local_entry_shares)
+        base.opened_ts = _first_positive(
+            [float(getattr(pos, "opened_ts", 0.0) or 0.0) for pos in ordered_group],
+            chooser=min,
+        )
+        if not base.position_id:
+            for pos in ordered_group[1:]:
+                if str(getattr(pos, "position_id", "") or "").strip():
+                    base.position_id = str(pos.position_id)
+                    break
+        if (not str(base.entry_reason or "").strip()) or str(base.entry_reason or "").strip().lower() == "signal":
+            for pos in ordered_group[1:]:
+                candidate_reason = str(getattr(pos, "entry_reason", "") or "").strip()
+                if candidate_reason and candidate_reason.lower() != "signal":
+                    base.entry_reason = candidate_reason
+                    break
+        if not base.slug:
+            for pos in ordered_group[1:]:
+                if str(getattr(pos, "slug", "") or "").strip():
+                    base.slug = str(pos.slug)
+                    break
+        if not base.side:
+            for pos in ordered_group[1:]:
+                if str(getattr(pos, "side", "") or "").strip():
+                    base.side = str(pos.side)
+                    break
+
+        base.live_miss_count = min(int(getattr(pos, "live_miss_count", 0) or 0) for pos in ordered_group)
+        base.pending_confirmation = any(bool(getattr(pos, "pending_confirmation", False)) for pos in ordered_group)
+        base.live_sync_protect_until_ts = max(float(getattr(pos, "live_sync_protect_until_ts", 0.0) or 0.0) for pos in ordered_group)
+        base.max_favorable_value_usd = max(
+            float(base.cost_usd or 0.0),
+            max(float(getattr(pos, "max_favorable_value_usd", 0.0) or 0.0) for pos in ordered_group),
+        )
+        adverse_value = _first_positive(
+            [float(getattr(pos, "max_adverse_value_usd", 0.0) or 0.0) for pos in ordered_group],
+            chooser=min,
+        )
+        base.max_adverse_value_usd = adverse_value if adverse_value > 0.0 else float(base.cost_usd or 0.0)
+        base.max_favorable_pnl_usd = max(float(getattr(pos, "max_favorable_pnl_usd", 0.0) or 0.0) for pos in ordered_group)
+        base.max_adverse_pnl_usd = min(float(getattr(pos, "max_adverse_pnl_usd", 0.0) or 0.0) for pos in ordered_group)
+        base.max_favorable_ts = _first_positive(
+            [float(getattr(pos, "max_favorable_ts", 0.0) or 0.0) for pos in ordered_group],
+            chooser=max,
+        )
+        base.has_scaled_out = any(bool(getattr(pos, "has_scaled_out", False)) for pos in ordered_group)
+        base.has_scaled_out_loss = any(bool(getattr(pos, "has_scaled_out_loss", False)) for pos in ordered_group)
+        base.has_taken_partial = any(bool(getattr(pos, "has_taken_partial", False)) for pos in ordered_group)
+        base.has_extracted_principal = any(bool(getattr(pos, "has_extracted_principal", False)) for pos in ordered_group)
+        base.has_panic_dumped = any(bool(getattr(pos, "has_panic_dumped", False)) for pos in ordered_group)
+        base.profit_plateau_entry_ts = _first_positive(
+            [float(getattr(pos, "profit_plateau_entry_ts", 0.0) or 0.0) for pos in ordered_group],
+            chooser=min,
+        )
+        base.force_close_only = any(bool(getattr(pos, "force_close_only", False)) for pos in ordered_group)
+        base.is_moonbag = any(bool(getattr(pos, "is_moonbag", False)) for pos in ordered_group)
+        base.is_loss_tail = any(bool(getattr(pos, "is_loss_tail", False)) for pos in ordered_group)
+        base.runner_peak_value_usd = max(float(getattr(pos, "runner_peak_value_usd", 0.0) or 0.0) for pos in ordered_group)
+        base.runner_peak_ts = _first_positive(
+            [float(getattr(pos, "runner_peak_ts", 0.0) or 0.0) for pos in ordered_group],
+            chooser=max,
+        )
+        base.dust_retry_count = max(int(getattr(pos, "dust_retry_count", 0) or 0) for pos in ordered_group)
+        base.last_watch_log_ts = 0.0
+        base.last_watch_log_sig = ""
+        base.soft_stop_breach_ts = _first_positive(
+            [float(getattr(pos, "soft_stop_breach_ts", 0.0) or 0.0) for pos in ordered_group],
+            chooser=min,
+        )
+        base.binance_adverse_breach_ts = _first_positive(
+            [float(getattr(pos, "binance_adverse_breach_ts", 0.0) or 0.0) for pos in ordered_group],
+            chooser=min,
+        )
+        base.binance_profit_protect_breach_ts = _first_positive(
+            [float(getattr(pos, "binance_profit_protect_breach_ts", 0.0) or 0.0) for pos in ordered_group],
+            chooser=min,
+        )
+        base.lottery_activated = any(bool(getattr(pos, "lottery_activated", False)) for pos in ordered_group)
+        base.lottery_activated_ts = _first_positive(
+            [float(getattr(pos, "lottery_activated_ts", 0.0) or 0.0) for pos in ordered_group],
+            chooser=max,
+        )
+        merged_positions.append(base)
+        notes.append(
+            f"sanitize_merge[{source}] token={token} slug={base.slug} side={base.side} "
+            f"positions={len(group)} mode={merge_mode} local_shares={local_total_shares:.6f} "
+            f"merged_shares={base.shares:.6f}"
+        )
+
+    return merged_positions, notes
 
 
 def should_reset_clean_start_loss_streak(
@@ -927,6 +1149,18 @@ def emergency_exit_retry_kwargs(*, reason: str | None, secs_left: float | None, 
     return {
         "retry_delay_sec": max(0.25, float(getattr(SETTINGS, "emergency_exit_retry_delay_sec", 1.0) or 1.0)),
         "max_attempts": max(1, int(getattr(SETTINGS, "emergency_exit_max_attempts", 8) or 8)),
+    }
+
+
+def loss_exit_retry_kwargs(*, reason: str | None, dry_run: bool) -> dict[str, float | int]:
+    if dry_run:
+        return {}
+    normalized = str(reason or "").strip().lower()
+    if not is_loss_exit_reason(normalized):
+        return {}
+    return {
+        "retry_delay_sec": max(0.05, float(getattr(SETTINGS, "loss_exit_retry_delay_sec", 0.25) or 0.25)),
+        "max_attempts": max(1, int(getattr(SETTINGS, "loss_exit_max_attempts", 4) or 4)),
     }
 
 
@@ -1858,10 +2092,15 @@ def inspect_open_position(pos: OpenPos, live_pos: Position | None = None) -> tup
 
 
 def sanitize_open_positions(open_positions: list[OpenPos], *, live_positions: list[Position] | None = None, source: str = "runtime") -> tuple[list[OpenPos], list[str]]:
+    deduped_positions, dedupe_notes = dedupe_open_positions_by_token(
+        open_positions,
+        live_positions=live_positions,
+        source=source,
+    )
     actual = {p.token_id: p for p in (live_positions or [])}
     kept: list[OpenPos] = []
-    notes: list[str] = []
-    for pos in open_positions:
+    notes: list[str] = list(dedupe_notes)
+    for pos in deduped_positions:
         row_notes, flags = inspect_open_position(pos, actual.get(pos.token_id))
         if flags["worthless"] or flags["stale"]:
             reason_bits = ", ".join(row_notes) or "unknown"
@@ -1947,8 +2186,14 @@ def sync_open_positions(ex, open_positions: list[OpenPos]) -> tuple[list[OpenPos
         notes.insert(0, "sync_hold_all: data-api returned empty (no positions), holding all without miss penalty")
         return sanitized, notes
 
+    open_positions, pre_sync_notes = sanitize_open_positions(
+        open_positions,
+        live_positions=live_list,
+        source="runtime-pre-sync",
+    )
+
     synced: list[OpenPos] = []
-    notes: list[str] = []
+    notes: list[str] = list(pre_sync_notes)
     base_grace_sec = max(5.0, float(getattr(SETTINGS, "live_position_grace_sec", 90) or 90.0))
     base_miss_limit = max(1, int(getattr(SETTINGS, "live_position_miss_limit", 3) or 3))
     now_ts = time.time()
@@ -2441,9 +2686,18 @@ def main():
         log(f"Failed to start WS: {e}")
 
     last_rest_query_ts = 0.0
+    daily_loss_pause_until_ts = 0.0
 
     try:
         while True:
+            if (
+                not open_positions
+                and not pending_orders
+                and daily_loss_pause_until_ts > time.time()
+            ):
+                time.sleep(max(0.5, min(60.0, daily_loss_pause_until_ts - time.time())))
+                continue
+
             time_since_last_query = time.time() - last_rest_query_ts
             cycle_interval = next_cycle_interval_seconds(
                 has_pending_orders=bool(pending_orders),
@@ -2464,6 +2718,8 @@ def main():
                 last_trade_ts=last_trade_ts,
                 now_dt=now,
             )
+            if daily_pnl_window_changed or risk.daily_pnl > -float(getattr(SETTINGS, "daily_max_loss", 0.0) or 0.0):
+                daily_loss_pause_until_ts = 0.0
             if daily_pnl_note:
                 log(daily_pnl_note)
 
@@ -3737,11 +3993,15 @@ def main():
                                 continue
 
                             try:
-                                close_retry_kwargs = emergency_exit_retry_kwargs(
+                                close_retry_kwargs = loss_exit_retry_kwargs(
+                                    reason=exit_decision.reason,
+                                    dry_run=SETTINGS.dry_run,
+                                )
+                                close_retry_kwargs.update(emergency_exit_retry_kwargs(
                                     reason=exit_decision.reason,
                                     secs_left=secs_left,
                                     dry_run=SETTINGS.dry_run,
-                                )
+                                ))
                                 loss_tail_pct = loss_exit_tail_fraction(
                                     reason=exit_decision.reason,
                                     pnl_pct=pnl_pct,
@@ -4522,6 +4782,33 @@ def main():
                 smart_sleep(SETTINGS.poll_seconds)
                 continue
 
+            token_conflict, token_conflict_source, token_conflict_count, token_conflict_shares = existing_token_entry_conflict(
+                open_positions,
+                pending_orders,
+                token_id=token_override,
+            )
+            if token_conflict:
+                reason_suffix = "same-token-open-position" if token_conflict_source == "open-position" else "same-token-pending-order"
+                maybe_record_cycle_label(
+                    state,
+                    "signal-blocked",
+                    slug=last_market_slug,
+                    side=signal_side,
+                    reason=reason_suffix,
+                )
+                if token_conflict_source == "open-position":
+                    log(
+                        f"skip entry: token already open locally | token={token_override} side={signal_side} "
+                        f"tracked_positions={token_conflict_count} tracked_shares={token_conflict_shares:.6f}"
+                    )
+                else:
+                    log(
+                        f"skip entry: token already has pending order | token={token_override} side={signal_side} "
+                        f"pending_orders={token_conflict_count}"
+                    )
+                smart_sleep(SETTINGS.poll_seconds)
+                continue
+
             if same_market_reentry_block_slug and same_market_reentry_block_slug == last_market_slug:
                 maybe_record_cycle_label(
                     state,
@@ -4609,7 +4896,22 @@ def main():
                 maybe_record_cycle_label(state, "signal-blocked", slug=last_market_slug, side=signal_side, reason=reason)
                 log(f"blocked by risk: {reason}")
                 notify_discord(SETTINGS.discord_webhook_url, f"🚫 Bot blocked: {reason}")
-                smart_sleep(SETTINGS.poll_seconds)
+                block_sleep_sec = risk_block_sleep_seconds(
+                    reason=reason,
+                    has_open_positions=bool(open_positions),
+                    has_pending_orders=bool(pending_orders),
+                    secs_left=secs_left if "secs_left" in locals() else None,
+                )
+                if (
+                    str(reason or "").strip().lower() == "daily max loss reached"
+                    and not open_positions
+                    and not pending_orders
+                ):
+                    daily_loss_pause_until_ts = max(daily_loss_pause_until_ts, time.time() + block_sleep_sec)
+                    log(f"daily loss pause armed | sleep={block_sleep_sec:.0f}s")
+                    time.sleep(block_sleep_sec)
+                else:
+                    smart_sleep(block_sleep_sec)
                 continue
 
             try:

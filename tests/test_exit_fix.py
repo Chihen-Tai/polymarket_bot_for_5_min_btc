@@ -1,5 +1,6 @@
 import os
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -29,6 +30,7 @@ from core.runner import (
     observed_exit_value_from_mark,
     extract_entry_cost_usd,
     is_loss_exit_reason,
+    loss_exit_retry_kwargs,
     loss_exit_tail_fraction,
     realized_exit_pnl,
     principal_extraction_sell_fraction,
@@ -72,6 +74,8 @@ def make_paper_exchange() -> PolymarketExchange:
 
 def main():
     # Keep these checks independent from any prior test file mutating SETTINGS.
+    SETTINGS.loss_exit_retry_delay_sec = 0.25
+    SETTINGS.loss_exit_max_attempts = 4
     SETTINGS.leave_loss_tail_pct = 0.10
     SETTINGS.stop_loss_partial_pct = 0.10
     SETTINGS.soft_stop_confirm_sec = 2.5
@@ -87,12 +91,17 @@ def main():
     SETTINGS.binance_adverse_exit_require_current_confirm = True
     SETTINGS.binance_profit_protect_enabled = True
     SETTINGS.binance_profit_protect_min_profit_pct = 0.08
-    SETTINGS.binance_profit_protect_max_profit_pct = 0.17
+    SETTINGS.binance_profit_protect_max_profit_pct = 0.18
     SETTINGS.binance_profit_protect_stall_sec = 6.0
     SETTINGS.binance_profit_protect_confirm_sec = 1.0
     SETTINGS.binance_profit_protect_velocity = 0.00012
-    SETTINGS.binance_profit_protect_min_hold_sec = 10.0
+    SETTINGS.binance_profit_protect_min_hold_sec = 8.0
     SETTINGS.binance_profit_protect_require_current_confirm = False
+    SETTINGS.profit_reversal_enabled = True
+    SETTINGS.profit_reversal_min_mfe_pct = 0.25
+    SETTINGS.profit_reversal_min_current_profit_pct = 0.08
+    SETTINGS.profit_reversal_drawdown_pct = 0.12
+    SETTINGS.profit_reversal_adverse_velocity = 0.0003
     SETTINGS.take_profit_soft_pct = 0.18
     SETTINGS.take_profit_partial_fraction = 0.40
     SETTINGS.take_profit_hard_pct = 0.30
@@ -238,6 +247,49 @@ def main():
         remaining_shares=0.0,
         remaining_cost_usd=0.0,
     )
+    live_taker_retry_ex = make_paper_exchange()
+    live_taker_retry_ex.dry_run = False
+
+    class ForceTakerRetryClient:
+        def __init__(self, fills: list[float]):
+            self.fills = list(fills)
+
+        def create_order(self, order_args):
+            return order_args
+
+        def post_order(self, order, order_type):
+            filled = self.fills.pop(0) if self.fills else 0.0
+            if filled <= 0.0:
+                return {"takingAmount": 0.0, "makingAmount": 0.0}
+            return {
+                "takingAmount": round(filled * 0.49, 6),
+                "makingAmount": filled,
+            }
+
+    live_taker_retry_ex.client = ForceTakerRetryClient([0.0, 0.0, 1.0])
+    live_taker_retry_open_order_calls = {"count": 0}
+    live_taker_retry_cash_reads = {"count": 0}
+
+    def fake_live_taker_retry_open_orders(_token_id=None):
+        live_taker_retry_open_order_calls["count"] += 1
+        return []
+
+    def fake_live_taker_retry_cash_balance():
+        live_taker_retry_cash_reads["count"] += 1
+        return 10.0 if live_taker_retry_cash_reads["count"] == 1 else 10.49
+
+    live_taker_retry_ex.get_open_orders = fake_live_taker_retry_open_orders
+    live_taker_retry_ex._get_cash_balance = fake_live_taker_retry_cash_balance
+    with patch("time.sleep") as live_taker_retry_sleep:
+        live_taker_retry_close = live_taker_retry_ex.close_position(
+            "tok-stop-fast",
+            1.0,
+            simulated_price=0.49,
+            force_taker=True,
+            max_attempts=4,
+            retry_delay_sec=0.25,
+        )
+    live_taker_retry_sleep_calls = [call.args[0] for call in live_taker_retry_sleep.call_args_list]
     parsed_balance_shares = parse_balance_allowance_available_shares(
         "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance: "
         "the balance is not enough -> balance: 1198827, order amount: 1200000'}]"
@@ -380,13 +432,22 @@ def main():
         ("live_take_profit_prefers_taker", should_force_taker_take_profit(dry_run=False) is True),
         ("dry_run_take_profit_does_not_force_taker", should_force_taker_take_profit(dry_run=True) is False),
         ("profit_reversal_exit_triggers_after_big_profit_drawdown", should_trigger_profit_reversal_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.18, mfe_pnl_pct=0.60, current_value_usd=1.18, peak_value_usd=1.50, ws_velocity=-0.0010, secs_left=120.0) is True),
-        ("profit_reversal_exit_skips_if_peak_profit_too_small", should_trigger_profit_reversal_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.18, mfe_pnl_pct=0.30, current_value_usd=1.18, peak_value_usd=1.50, ws_velocity=-0.0010, secs_left=120.0) is False),
+        ("profit_reversal_exit_skips_if_peak_profit_too_small", should_trigger_profit_reversal_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.18, mfe_pnl_pct=0.20, current_value_usd=1.18, peak_value_usd=1.50, ws_velocity=-0.0010, secs_left=120.0) is False),
         ("profit_reversal_exit_skips_if_velocity_not_adverse", should_trigger_profit_reversal_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.18, mfe_pnl_pct=0.60, current_value_usd=1.18, peak_value_usd=1.50, ws_velocity=0.0001, secs_left=120.0) is False),
         ("profit_reversal_exit_skips_risk_free_runner", should_trigger_profit_reversal_exit(has_extracted_principal=True, side="UP", profit_pnl_pct=0.18, mfe_pnl_pct=0.60, current_value_usd=1.18, peak_value_usd=1.50, ws_velocity=-0.0010, secs_left=120.0) is False),
+        ("profit_reversal_exit_triggers_for_mid_teens_winner_after_sharp_pullback", should_trigger_profit_reversal_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.09, mfe_pnl_pct=0.30, current_value_usd=1.09, peak_value_usd=1.25, ws_velocity=-0.0010, secs_left=120.0) is True),
         ("profit_reversal_full_exit_prefers_taker_live", should_force_taker_profit_protection(reason="profit-reversal-stop", dry_run=False) is True),
         ("binance_adverse_exit_prefers_taker_live", should_force_taker_profit_protection(reason="binance-adverse-exit", dry_run=False) is True),
         ("deadline_weak_win_prefers_taker_live", should_force_taker_profit_protection(reason="deadline-exit-weak-win", dry_run=False) is True),
         ("deadline_flat_prefers_taker_live", should_force_taker_profit_protection(reason="deadline-exit-flat", dry_run=False) is True),
+        (
+            "stop_loss_exit_uses_fast_retry_loop",
+            loss_exit_retry_kwargs(reason="stop-loss", dry_run=False) == {
+                "retry_delay_sec": 0.25,
+                "max_attempts": 4,
+            },
+        ),
+        ("non_loss_exit_has_no_fast_retry", loss_exit_retry_kwargs(reason="take-profit-principal", dry_run=False) == {}),
         (
             "deadline_exit_emergency_retry_uses_one_second_loop",
             emergency_exit_retry_kwargs(reason="deadline-exit-weak-win", secs_left=18.0, dry_run=False) == {
@@ -406,6 +467,7 @@ def main():
         ("binance_adverse_exit_requires_current_confirmation_when_enabled", should_trigger_binance_adverse_exit(has_extracted_principal=False, side="DOWN", pnl_pct=-0.02, profit_pnl_pct=None, hold_sec=10.0, breach_age_sec=3.1, secs_left=120.0, ws_velocity=0.0010, current_ws_velocity=0.0) is False),
         ("binance_profit_protect_exit_waits_for_stall_window", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.10, take_profit_soft_pct=0.18, hold_sec=12.0, peak_age_sec=5.0, breach_age_sec=1.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is False),
         ("binance_profit_protect_exit_triggers_for_stalled_small_profit", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.10, take_profit_soft_pct=0.18, hold_sec=12.0, peak_age_sec=7.0, breach_age_sec=1.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is True),
+        ("binance_profit_protect_exit_triggers_early_for_fast_winner", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.10, take_profit_soft_pct=0.18, hold_sec=8.5, peak_age_sec=6.1, breach_age_sec=1.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is True),
         ("binance_profit_protect_exit_skips_big_profit_reserved_for_take_profit", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.19, take_profit_soft_pct=0.18, hold_sec=12.0, peak_age_sec=7.0, breach_age_sec=1.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is False),
         ("binance_profit_protect_exit_can_fire_without_current_confirmation", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="DOWN", profit_pnl_pct=0.10, take_profit_soft_pct=0.18, hold_sec=12.0, peak_age_sec=7.0, breach_age_sec=1.1, secs_left=120.0, ws_velocity=0.0010, current_ws_velocity=0.0) is True),
         ("binance_profit_protect_prefers_taker_live", should_force_taker_profit_protection(reason="binance-profit-protect-exit", dry_run=False) is True),
@@ -466,11 +528,17 @@ def main():
         ("paper_zero_settlement_clears_position", "tok1" not in ex._position_cost and "tok1" not in ex._position_shares),
         ("paper_zero_settlement_source", settle.get("close_response_value_source") == "paper_trade_simulation"),
         ("reconcile_dry_run_positions_clears_ghost_exposure", reconciled is True and acct.cash == 100.0 and acct.equity == 100.0 and acct.open_exposure == 0.0),
+        ("force_taker_retry_skips_repeated_open_order_fetches", live_taker_retry_open_order_calls["count"] == 1),
+        ("force_taker_retry_skips_post_fill_sleep", live_taker_retry_sleep_calls == [0.25, 0.25]),
+        ("force_taker_retry_eventually_closes_full_size", live_taker_retry_close.get("ok") is True and abs(float(live_taker_retry_close.get("closed_shares", 0.0)) - 1.0) < 1e-9 and int(live_taker_retry_close.get("attempts", 0) or 0) == 3),
     ]
 
     failed = [name for name, ok in cases if not ok]
     if os.path.exists(ex.paper_balance_file):
-        os.remove(ex.paper_balance_file)
+        try:
+            os.remove(ex.paper_balance_file)
+        except FileNotFoundError:
+            pass
     if failed:
         raise SystemExit(f"FAILED: {', '.join(failed)}")
     print("OK")

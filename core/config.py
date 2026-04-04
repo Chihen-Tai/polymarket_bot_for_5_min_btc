@@ -163,6 +163,8 @@ class Settings:
     exit_deadline_profit_sec: float = _f("EXIT_DEADLINE_PROFIT_SEC", 45.0)
     exit_ghost_town_sec: float = _f("EXIT_GHOST_TOWN_SEC", 30.0)
     exit_deadline_flat_pnl_pct: float = _f("EXIT_DEADLINE_FLAT_PNL_PCT", 0.0)
+    loss_exit_retry_delay_sec: float = _f("LOSS_EXIT_RETRY_DELAY_SEC", 0.25)
+    loss_exit_max_attempts: int = _i("LOSS_EXIT_MAX_ATTEMPTS", 4)
     emergency_exit_retry_delay_sec: float = _f("EMERGENCY_EXIT_RETRY_DELAY_SEC", 1.0)
     emergency_exit_max_attempts: int = _i("EMERGENCY_EXIT_MAX_ATTEMPTS", 8)
     stop_loss_warn_pct: float = _f("STOP_LOSS_WARN_PCT", 0.08)

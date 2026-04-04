@@ -934,11 +934,13 @@ class PolymarketExchange:
                     chunk = max(remaining * 0.35, 0.01)
 
             try:
-                open_ords = self.get_open_orders(token_id)
-                for o in open_ords:
-                    oid = o.get("id") or o.get("orderID")
-                    if oid:
-                        self.cancel_order(oid)
+                should_clear_open_orders = attempts == 1 or not (force_taker or is_hard_stop)
+                if should_clear_open_orders:
+                    open_ords = self.get_open_orders(token_id)
+                    for o in open_ords:
+                        oid = o.get("id") or o.get("orderID")
+                        if oid:
+                            self.cancel_order(oid)
                 
                 # Maker Exits for first 5 attempts, Taker Fallback for remaining
                 if not force_taker and attempts <= 5:
@@ -1022,7 +1024,8 @@ class PolymarketExchange:
 
                 effective_filled = min(chunk, max(0.0, float(filled_shares or 0.0)))
                 if effective_filled <= 0:
-                    time.sleep(retry_sleep)
+                    if remaining > 0.0001 and attempts < attempt_limit and retry_sleep > 0:
+                        time.sleep(retry_sleep)
                     continue
 
                 shares_sold_per_attempt.append(effective_filled)
@@ -1038,10 +1041,12 @@ class PolymarketExchange:
                         time.sleep(min(1.0, retry_sleep) if retry_sleep > 0 else 0.0)
                         continue
                 # small delay then retry
-                time.sleep(retry_sleep)
+                if remaining > 0.0001 and attempts < attempt_limit and retry_sleep > 0:
+                    time.sleep(retry_sleep)
                 continue
 
-            time.sleep(retry_sleep)
+            if remaining > 0.0001 and attempts < attempt_limit and retry_sleep > 0:
+                time.sleep(retry_sleep)
 
         cash_after = None
         cash_delta = None

@@ -732,6 +732,13 @@ def _collapse_overflow_residual_rows(rows: list[TradePairRow]) -> list[TradePair
         base_row = rows[base_idx]
         if row.exit_recovered_actual_usd is not None:
             base_row.exit_recovered_actual_usd = (base_row.exit_recovered_actual_usd or 0.0) + row.exit_recovered_actual_usd
+        elif row.exit_recovered_observed_usd is not None and base_row.exit_recovered_actual_usd is not None:
+            # When a later exit leg is missing live actuals, keep the already-realized
+            # accounting whole by falling back only that leg to its observed value.
+            base_row.exit_recovered_actual_usd = (base_row.exit_recovered_actual_usd or 0.0) + row.exit_recovered_observed_usd
+            base_row.actual_source = "mixed-actual-observed-fallback"
+            base_row.actual_source_tier = "medium"
+            base_row.flags.append("actual-partial-observed-fallback")
         if row.exit_recovered_observed_usd is not None:
             base_row.exit_recovered_observed_usd = (base_row.exit_recovered_observed_usd or 0.0) + row.exit_recovered_observed_usd
         if _actual_source_rank(row.actual_source_tier) > _actual_source_rank(base_row.actual_source_tier):
@@ -778,6 +785,7 @@ def build_trade_pairs(events: list[dict]) -> list[TradePairRow]:
                 "has_observed": False,
                 "actual_source": "unavailable",
                 "actual_source_tier": "none",
+                "observed_fallback_actual_usd": 0.0,
                 "entry_execution_style": normalize_execution_style(ev.get("execution_style")),
                 "exit_execution_style": "unknown",
                 "close_reason": "",
@@ -823,12 +831,17 @@ def build_trade_pairs(events: list[dict]) -> list[TradePairRow]:
                 actual_piece = actual_value * (matched / exit_shares)
                 lot["exit_recovered_actual_usd"] += actual_piece
                 lot["has_actual"] = True
+                if _actual_source_rank(actual_tier) >= _actual_source_rank(str(lot.get("actual_source_tier") or "none")):
+                    lot["actual_source"] = actual_source
+                    lot["actual_source_tier"] = actual_tier
 
             observed_piece = None
             if observed_total is not None and exit_shares > EPS:
                 observed_piece = observed_total * (matched / exit_shares)
                 lot["exit_recovered_observed_usd"] += observed_piece
                 lot["has_observed"] = True
+                if actual_piece is None:
+                    lot["observed_fallback_actual_usd"] += observed_piece
 
             lot["remaining_shares"] = max(0.0, available_shares - matched)
             lot["remaining_cost_usd"] = max(0.0, cost_basis - cost_piece)
@@ -838,8 +851,6 @@ def build_trade_pairs(events: list[dict]) -> list[TradePairRow]:
             lot["entry_quality"] = str(ev.get("entry_quality") or lot.get("entry_quality") or "unknown")
             lot["closed_ts"] = str(ev.get("ts") or lot["closed_ts"] or "")
             lot["exit_count"] += 1
-            lot["actual_source"] = actual_source
-            lot["actual_source_tier"] = actual_tier
             lot["exit_execution_style"] = normalize_execution_style(ev.get("exit_execution_style"))
             lot["mae_pnl_usd"] = _coalesce_extreme(lot.get("mae_pnl_usd"), _maybe_float(ev.get("mae_pnl_usd")), min)
             lot["mfe_pnl_usd"] = _coalesce_extreme(lot.get("mfe_pnl_usd"), _maybe_float(ev.get("mfe_pnl_usd")), max)
@@ -950,6 +961,7 @@ def _finalize_pair_row(entry_ev: dict, token_id: str, key: str, lot: dict) -> Tr
     entry_shares = _f(entry_ev.get("shares"), 0.0)
     exit_actual = lot["exit_recovered_actual_usd"] if lot.get("has_actual") else None
     exit_observed = lot["exit_recovered_observed_usd"] if lot.get("has_observed") else None
+    observed_fallback_actual = float(lot.get("observed_fallback_actual_usd") or 0.0)
     matched_cost = float(lot.get("matched_cost_usd") or 0.0)
     matched_exit_shares = float(lot.get("matched_shares") or 0.0)
     entry_execution_style = normalize_execution_style(lot.get("entry_execution_style") or entry_ev.get("execution_style"))
@@ -962,6 +974,12 @@ def _finalize_pair_row(entry_ev: dict, token_id: str, key: str, lot: dict) -> Tr
     legs = list(lot.get("legs") or [])
     settlement_applied = False
     settlement_closed_ts = ""
+
+    if exit_actual is not None and observed_fallback_actual > EPS:
+        exit_actual += observed_fallback_actual
+        actual_source = "mixed-actual-observed-fallback"
+        actual_source_tier = "medium"
+        flags.append("actual-partial-observed-fallback")
 
     if remaining_shares > EPS:
         settlement_price, settlement_reason = _fetch_market_settlement(

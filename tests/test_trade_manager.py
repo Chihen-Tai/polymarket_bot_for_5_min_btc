@@ -354,6 +354,55 @@ def main():
         },
     ])
     collapsed_principal_summary = summarize_trade_pairs(collapsed_principal_rows)
+    mixed_actual_fallback_rows = build_trade_pairs([
+        {
+            "kind": "entry",
+            "ts": "2026-03-19T10:25:00",
+            "event_id": "entry_mixed_actual",
+            "position_id": "pos_mixed_actual",
+            "slug": "m_mixed_actual",
+            "side": "DOWN",
+            "token_id": "tok_mixed_actual",
+            "shares": 2.0,
+            "cost_usd": 1.0,
+            "execution_style": "taker",
+        },
+        {
+            "kind": "exit",
+            "ts": "2026-03-19T10:26:00",
+            "event_id": "exit_mixed_actual_partial",
+            "position_id": "pos_mixed_actual",
+            "slug": "m_mixed_actual",
+            "side": "DOWN",
+            "token_id": "tok_mixed_actual",
+            "closed_shares": 1.0,
+            "remaining_shares": 1.0,
+            "realized_cost_usd": 0.5,
+            "actual_exit_value_usd": 0.6,
+            "actual_exit_value_source": "cash_balance_delta",
+            "observed_exit_value_usd": 0.6,
+            "reason": "take-profit-partial",
+            "exit_execution_style": "taker",
+        },
+        {
+            "kind": "exit",
+            "ts": "2026-03-19T10:27:00",
+            "event_id": "exit_mixed_actual_principal",
+            "position_id": "pos_mixed_actual",
+            "slug": "m_mixed_actual",
+            "side": "DOWN",
+            "token_id": "tok_mixed_actual",
+            "closed_shares": 1.0,
+            "remaining_shares": 0.0,
+            "realized_cost_usd": 0.5,
+            "actual_exit_value_usd": None,
+            "actual_exit_value_source": "unavailable",
+            "observed_exit_value_usd": 0.9,
+            "reason": "take-profit-principal",
+            "exit_execution_style": "taker",
+        },
+    ])
+    mixed_actual_fallback_summary = summarize_trade_pairs(mixed_actual_fallback_rows)
     original_fetch_market_settlement = journal_analysis_mod._fetch_market_settlement
     journal_analysis_mod._fetch_market_settlement = lambda slug, side: (0.0, "market-expired-binary-loss")
     try:
@@ -1086,6 +1135,17 @@ def main():
             and abs((collapsed_principal_rows[0].actual_pnl_usd or 0.0) - 0.2) < 1e-9
             and "collapsed-overflow-residual" in collapsed_principal_rows[0].flags
             and abs((collapsed_principal_summary["actual_pnl"]["sum"] or 0.0) - 0.2) < 1e-9
+        ),
+        (
+            "mixed_actual_rows_fill_missing_late_exit_legs_from_observed_value",
+            len(mixed_actual_fallback_rows) == 1
+            and mixed_actual_fallback_rows[0].status == "closed"
+            and abs((mixed_actual_fallback_rows[0].exit_recovered_actual_usd or 0.0) - 1.5) < 1e-9
+            and abs((mixed_actual_fallback_rows[0].actual_pnl_usd or 0.0) - 0.5) < 1e-9
+            and mixed_actual_fallback_rows[0].actual_source == "mixed-actual-observed-fallback"
+            and mixed_actual_fallback_rows[0].actual_source_tier == "medium"
+            and "actual-partial-observed-fallback" in mixed_actual_fallback_rows[0].flags
+            and abs((mixed_actual_fallback_summary["actual_pnl"]["sum"] or 0.0) - 0.5) < 1e-9
         ),
         (
             "expired_unmatched_position_is_settled_in_report",

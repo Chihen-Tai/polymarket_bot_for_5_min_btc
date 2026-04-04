@@ -9,6 +9,8 @@ from core.runner import (
     OpenPos,
     PendingOrder,
     clear_expired_market_state,
+    dedupe_open_positions_by_token,
+    existing_token_entry_conflict,
     idle_sleep_seconds,
     maybe_apply_stale_loss_streak_reset,
     next_cycle_interval_seconds,
@@ -16,6 +18,7 @@ from core.runner import (
     pending_order_poll_interval_seconds,
     perform_startup_sanity_check,
     refresh_daily_pnl_window,
+    risk_block_sleep_seconds,
     reversed_signal_origin,
     same_direction_entry_cooldown_age_sec,
     should_reset_clean_start_loss_streak,
@@ -126,12 +129,20 @@ def main():
     synced_positions, synced_notes = sync_open_positions(dummy, [])
 
     class DummyLivePos:
-        def __init__(self, token_id: str):
+        def __init__(
+            self,
+            token_id: str,
+            *,
+            size: float = 1.0,
+            initial_value: float = 1.0,
+            current_value: float = 1.0,
+            cash_pnl: float = 0.0,
+        ):
             self.token_id = token_id
-            self.size = 1.0
-            self.initial_value = 1.0
-            self.current_value = 1.0
-            self.cash_pnl = 0.0
+            self.size = size
+            self.initial_value = initial_value
+            self.current_value = current_value
+            self.cash_pnl = cash_pnl
 
     class MismatchExchange:
         def __init__(self):
@@ -211,6 +222,76 @@ def main():
                 lottery_activated_ts=123.0,
             ),
         ],
+    )
+    deduped_positions, dedupe_notes = dedupe_open_positions_by_token(
+        [
+            OpenPos(
+                slug="btc-updown-5m-current",
+                side="UP",
+                token_id="dup-token",
+                shares=1.0,
+                cost_usd=0.60,
+                opened_ts=100.0,
+                position_id="dup-old",
+                has_taken_partial=True,
+                live_miss_count=9,
+            ),
+            OpenPos(
+                slug="btc-updown-5m-current",
+                side="UP",
+                token_id="dup-token",
+                shares=0.5,
+                cost_usd=0.40,
+                opened_ts=150.0,
+                position_id="dup-new",
+                pending_confirmation=True,
+                live_miss_count=1,
+            ),
+        ],
+        live_positions=[
+            DummyLivePos(
+                "dup-token",
+                size=1.25,
+                initial_value=0.95,
+                current_value=1.10,
+                cash_pnl=0.15,
+            ),
+        ],
+        source="runtime-test",
+    )
+    token_conflict_open = existing_token_entry_conflict(
+        [
+            OpenPos(
+                slug="btc-updown-5m-current",
+                side="UP",
+                token_id="dup-token",
+                shares=1.0,
+                cost_usd=1.0,
+                opened_ts=1.0,
+            ),
+        ],
+        [],
+        token_id="dup-token",
+    )
+    token_conflict_pending = existing_token_entry_conflict(
+        [],
+        [
+            PendingOrder(
+                order_id="po-1",
+                slug="btc-updown-5m-current",
+                side="UP",
+                token_id="dup-token",
+                placed_ts=1.0,
+                order_usd=1.0,
+            ),
+        ],
+        token_id="dup-token",
+    )
+    daily_loss_pause_sleep = risk_block_sleep_seconds(
+        reason="daily max loss reached",
+        has_open_positions=False,
+        has_pending_orders=False,
+        secs_left=42.0,
     )
     same_market_cooldown_age = same_direction_entry_cooldown_age_sec(
         [
@@ -462,6 +543,24 @@ def main():
             and synced_lottery_positions[0].lottery_activated is True
             and abs(synced_lottery_positions[0].lottery_activated_ts - 123.0) < 1e-9
         ),
+        (
+            "dedupe_open_positions_uses_live_position_as_authoritative_total",
+            len(deduped_positions) == 1
+            and abs(deduped_positions[0].shares - 1.25) < 1e-9
+            and abs(deduped_positions[0].cost_usd - 0.95) < 1e-9
+            and deduped_positions[0].pending_confirmation is True
+            and deduped_positions[0].has_taken_partial is True
+            and deduped_positions[0].live_miss_count == 1
+            and any("sanitize_merge[runtime-test] token=dup-token" in note for note in dedupe_notes)
+        ),
+        (
+            "existing_token_entry_conflict_blocks_duplicate_open_positions",
+            token_conflict_open == (True, "open-position", 1, 1.0)
+        ),
+        (
+            "existing_token_entry_conflict_blocks_duplicate_pending_orders",
+            token_conflict_pending == (True, "pending-order", 1, 0.0)
+        ),
         ("same_direction_cooldown_scopes_to_current_market", same_market_cooldown_age is not None and abs(same_market_cooldown_age - 100.0) < 1e-9),
         ("same_direction_cooldown_ignores_other_markets", cross_market_cooldown_age is None),
         ("loss_reversal_origin_flips_strategy_side", reversed_loss_origin == "model-ws_order_flow_up+loss-reversal"),
@@ -541,6 +640,7 @@ def main():
         ("next_cycle_interval_uses_two_second_market_poll_floor", abs(next_cycle_interval_seconds(has_pending_orders=False, has_open_positions=False) - 2.0) < 1e-9),
         ("idle_sleep_prefers_fast_pending_poll", abs(idle_sleep_seconds(has_open_positions=False, has_pending_orders=True) - 1.0) < 1e-9),
         ("idle_sleep_prefers_fast_open_position_poll", abs(idle_sleep_seconds(has_open_positions=True, has_pending_orders=False) - 1.0) < 1e-9),
+        ("daily_loss_pause_sleep_backs_off_until_market_end", abs(daily_loss_pause_sleep - 44.0) < 1e-9),
     ])
 
     failed = [name for name, ok in cases if not ok]
