@@ -84,6 +84,7 @@ _BALANCE_ALLOWANCE_RE = re.compile(
     r"balance:\s*(?P<balance>\d+)\s*,\s*order amount:\s*(?P<amount>\d+)",
     re.IGNORECASE,
 )
+MIN_LIVE_CLOSE_SHARES = 0.01
 
 
 def parse_balance_allowance_available_shares(error_text: str) -> float | None:
@@ -915,23 +916,25 @@ class PolymarketExchange:
         taker_filled = False
         
         while remaining > 0.0001 and attempts < attempt_limit:
+            if remaining + 1e-9 < MIN_LIVE_CLOSE_SHARES:
+                break
             attempts += 1
             # For aggressive taker exits, keep sweeping the full residual size.
             # Shrinking chunks creates dust-like leftovers that are hard to clear.
             if force_taker or is_hard_stop:
-                chunk = max(remaining, 0.01)
+                chunk = remaining
             else:
                 # progressively smaller chunks on retries
                 if attempts == 1:
                     chunk = remaining
                 elif attempts == 2:
-                    chunk = max(remaining * 0.85, 0.01)
+                    chunk = max(remaining * 0.85, MIN_LIVE_CLOSE_SHARES)
                 elif attempts == 3:
-                    chunk = max(remaining * 0.7, 0.01)
+                    chunk = max(remaining * 0.7, MIN_LIVE_CLOSE_SHARES)
                 elif attempts == 4:
-                    chunk = max(remaining * 0.5, 0.01)
+                    chunk = max(remaining * 0.5, MIN_LIVE_CLOSE_SHARES)
                 else:
-                    chunk = max(remaining * 0.35, 0.01)
+                    chunk = max(remaining * 0.35, MIN_LIVE_CLOSE_SHARES)
 
             try:
                 should_clear_open_orders = attempts == 1 or not (force_taker or is_hard_stop)
@@ -1038,6 +1041,8 @@ class PolymarketExchange:
                     adjusted_remaining = max(0.0, round(adjusted_remaining - 0.0005, 6))
                     if 0.0 < adjusted_remaining + 1e-9 < remaining:
                         remaining = adjusted_remaining
+                        if remaining + 1e-9 < MIN_LIVE_CLOSE_SHARES:
+                            break
                         time.sleep(min(1.0, retry_sleep) if retry_sleep > 0 else 0.0)
                         continue
                 # small delay then retry

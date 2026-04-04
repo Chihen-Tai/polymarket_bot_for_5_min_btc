@@ -97,6 +97,11 @@ def main():
     SETTINGS.binary_kelly_divisor = 4.0
     SETTINGS.force_full_exit_on_take_profit = False
     SETTINGS.force_full_exit_on_stop_loss_scaleout = False
+    SETTINGS.breakeven_giveback_enabled = True
+    SETTINGS.breakeven_giveback_min_mfe_pct = 0.08
+    SETTINGS.breakeven_giveback_floor_pct = 0.0
+    SETTINGS.breakeven_giveback_min_hold_sec = 12.0
+    SETTINGS.breakeven_giveback_min_secs_left = 45.0
     SETTINGS.failed_follow_through_window_sec = 45
     SETTINGS.failed_follow_through_loss_pct = 0.03
     SETTINGS.failed_follow_through_max_mfe_pct = 0.02
@@ -931,6 +936,9 @@ def main():
         ("deadline_exit_weak_win_without_principal", decide_exit(pnl_pct=0.12, hold_sec=50, secs_left=10).reason == "deadline-exit-weak-win"),
         ("deadline_exit_weak_win_skips_risk_free_moonbag", decide_exit(pnl_pct=0.22, hold_sec=50, secs_left=10, has_extracted_principal=True).reason != "deadline-exit-weak-win"),
         ("deadline_exit_loss_skips_risk_free_moonbag", decide_exit(pnl_pct=-0.40, hold_sec=50, secs_left=10, has_extracted_principal=True).should_close is False),
+        ("break_even_giveback_triggers_after_real_winner_round_trips_to_flat", decide_exit(pnl_pct=0.0, hold_sec=20, secs_left=120, mfe_pnl_pct=0.10).reason == "break-even-giveback"),
+        ("break_even_giveback_skips_if_trade_never_had_real_profit", decide_exit(pnl_pct=0.0, hold_sec=20, secs_left=120, mfe_pnl_pct=0.05).reason != "break-even-giveback"),
+        ("break_even_giveback_skips_after_partial_profit_taken", decide_exit(pnl_pct=0.0, hold_sec=20, secs_left=120, mfe_pnl_pct=0.10, has_taken_partial=True).reason != "break-even-giveback"),
         (
             "profit_between_45_and_30s_forces_full_exit",
             evaluate_with_settings(
@@ -1068,6 +1076,7 @@ def main():
         ("fully_closed_scale_out_now_blocks_same_market_reentry", should_block_same_market_reentry("stop-loss-scale-out", remaining_shares=0.0, realized_pnl_usd=-0.22) is True),
         ("deadline_exit_now_sets_market_block", should_block_same_market_reentry("deadline-exit-flat", remaining_shares=0.0) is True and should_block_same_market_reentry("deadline-exit-loss", remaining_shares=0.0) is True),
         ("binance_profit_protect_exit_blocks_same_market_reentry", should_block_same_market_reentry("binance-profit-protect-exit", remaining_shares=0.0, realized_pnl_usd=0.10) is True),
+        ("break_even_giveback_blocks_same_market_reentry", should_block_same_market_reentry("break-even-giveback", remaining_shares=0.0, realized_pnl_usd=0.0) is True),
         ("lottery_plateau_stop_blocks_same_market_reentry", should_block_same_market_reentry("lottery-plateau-stop", remaining_shares=0.0, realized_pnl_usd=0.10) is True),
         ("terminal_take_profit_now_sets_market_block", should_block_same_market_reentry("take-profit-partial", remaining_shares=0.0, realized_pnl_usd=0.0) is True),
         ("non_terminal_exit_does_not_block_same_market_reentry", should_block_same_market_reentry("take-profit-partial", remaining_shares=0.5) is False),

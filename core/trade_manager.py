@@ -109,6 +109,20 @@ def decide_exit(
         return ExitDecision(False, "", pnl_pct, hold_sec)
 
     if (
+        bool(getattr(SETTINGS, "breakeven_giveback_enabled", True))
+        and not has_taken_partial
+        and not has_extracted_principal
+        and mfe_pnl_pct >= float(getattr(SETTINGS, "breakeven_giveback_min_mfe_pct", 0.10) or 0.10)
+        and pnl_pct <= float(getattr(SETTINGS, "breakeven_giveback_floor_pct", 0.0) or 0.0)
+        and hold_sec >= float(getattr(SETTINGS, "breakeven_giveback_min_hold_sec", 12.0) or 12.0)
+        and (
+            secs_left is None
+            or secs_left >= float(getattr(SETTINGS, "breakeven_giveback_min_secs_left", 45.0) or 45.0)
+        )
+    ):
+        return ExitDecision(True, "break-even-giveback", pnl_pct, hold_sec)
+
+    if (
         hold_sec >= getattr(SETTINGS, "failed_follow_through_window_sec", 45)
         and pnl_pct <= -getattr(SETTINGS, "failed_follow_through_loss_pct", 0.03)
         and secs_left is not None
@@ -217,6 +231,7 @@ def should_block_same_market_reentry(
     if normalized in {
         "binance-adverse-exit",
         "binance-profit-protect-exit",
+        "break-even-giveback",
         "deadline-exit-flat",
         "deadline-exit-loss",
         "deadline-exit-weak-win",

@@ -83,6 +83,11 @@ def main():
     SETTINGS.soft_stop_adverse_velocity = 0.00018
     SETTINGS.stop_loss_partial_fraction = 0.50
     SETTINGS.live_stop_loss_partial_fraction = 0.80
+    SETTINGS.breakeven_giveback_enabled = True
+    SETTINGS.breakeven_giveback_min_mfe_pct = 0.08
+    SETTINGS.breakeven_giveback_floor_pct = 0.0
+    SETTINGS.breakeven_giveback_min_hold_sec = 12.0
+    SETTINGS.breakeven_giveback_min_secs_left = 45.0
     SETTINGS.binance_adverse_exit_enabled = True
     SETTINGS.binance_adverse_exit_confirm_sec = 3.0
     SETTINGS.binance_adverse_exit_velocity = 0.00035
@@ -290,6 +295,32 @@ def main():
             retry_delay_sec=0.25,
         )
     live_taker_retry_sleep_calls = [call.args[0] for call in live_taker_retry_sleep.call_args_list]
+    live_dust_retry_ex = make_paper_exchange()
+    live_dust_retry_ex.dry_run = False
+
+    class DustBalanceRetryClient:
+        def create_order(self, order_args):
+            return order_args
+
+        def post_order(self, order, order_type):
+            raise Exception(
+                "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance: "
+                "the balance is not enough -> balance: 8060, order amount: 10000'}]"
+            )
+
+    live_dust_retry_ex.client = DustBalanceRetryClient()
+    live_dust_retry_ex.get_open_orders = lambda _token_id=None: []
+    live_dust_retry_ex._get_cash_balance = lambda: 10.0
+    with patch("time.sleep") as live_dust_retry_sleep:
+        live_dust_retry_close = live_dust_retry_ex.close_position(
+            "tok-deadline-dust",
+            0.517321,
+            simulated_price=0.715,
+            force_taker=True,
+            max_attempts=8,
+            retry_delay_sec=1.0,
+        )
+    live_dust_retry_sleep_calls = [call.args[0] for call in live_dust_retry_sleep.call_args_list]
     parsed_balance_shares = parse_balance_allowance_available_shares(
         "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance: "
         "the balance is not enough -> balance: 1198827, order amount: 1200000'}]"
@@ -423,6 +454,7 @@ def main():
         ("loss_exit_reason_rejects_take_profit", is_loss_exit_reason("take-profit-principal") is False),
         ("loss_exit_tail_uses_configured_ten_percent_for_stop_loss", abs(loss_exit_tail_fraction(reason="stop-loss-full", pnl_pct=-0.08) - 0.10) < 1e-9),
         ("loss_exit_tail_uses_negative_pnl_for_stalled_loss", abs(loss_exit_tail_fraction(reason="stalled-trade", pnl_pct=-0.01) - 0.10) < 1e-9),
+        ("loss_exit_tail_skips_break_even_giveback_cleanup", abs(loss_exit_tail_fraction(reason="break-even-giveback", pnl_pct=-0.01) - 0.0) < 1e-9),
         ("loss_exit_tail_skips_profit_exit", abs(loss_exit_tail_fraction(reason="take-profit-principal", pnl_pct=0.12) - 0.0) < 1e-9),
         ("loss_exit_tail_skips_residual_force_close_cleanup", abs(loss_exit_tail_fraction(reason="residual-force-close", pnl_pct=-0.12) - 0.0) < 1e-9),
         ("live_force_full_loss_exit_skips_stop_loss_scaleout", should_force_full_loss_exit(reason="stop-loss-scale-out", dry_run=False) is False),
@@ -437,7 +469,9 @@ def main():
         ("profit_reversal_exit_skips_risk_free_runner", should_trigger_profit_reversal_exit(has_extracted_principal=True, side="UP", profit_pnl_pct=0.18, mfe_pnl_pct=0.60, current_value_usd=1.18, peak_value_usd=1.50, ws_velocity=-0.0010, secs_left=120.0) is False),
         ("profit_reversal_exit_triggers_for_mid_teens_winner_after_sharp_pullback", should_trigger_profit_reversal_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.09, mfe_pnl_pct=0.30, current_value_usd=1.09, peak_value_usd=1.25, ws_velocity=-0.0010, secs_left=120.0) is True),
         ("profit_reversal_full_exit_prefers_taker_live", should_force_taker_profit_protection(reason="profit-reversal-stop", dry_run=False) is True),
+        ("break_even_giveback_prefers_taker_live", should_force_taker_profit_protection(reason="break-even-giveback", dry_run=False) is True),
         ("binance_adverse_exit_prefers_taker_live", should_force_taker_profit_protection(reason="binance-adverse-exit", dry_run=False) is True),
+        ("deadline_take_profit_prefers_taker_live", should_force_taker_profit_protection(reason="deadline-take-profit-full", dry_run=False) is True),
         ("deadline_weak_win_prefers_taker_live", should_force_taker_profit_protection(reason="deadline-exit-weak-win", dry_run=False) is True),
         ("deadline_flat_prefers_taker_live", should_force_taker_profit_protection(reason="deadline-exit-flat", dry_run=False) is True),
         (
@@ -451,6 +485,13 @@ def main():
         (
             "deadline_exit_emergency_retry_uses_one_second_loop",
             emergency_exit_retry_kwargs(reason="deadline-exit-weak-win", secs_left=18.0, dry_run=False) == {
+                "retry_delay_sec": 1.0,
+                "max_attempts": 8,
+            },
+        ),
+        (
+            "deadline_take_profit_uses_one_second_emergency_retry_loop",
+            emergency_exit_retry_kwargs(reason="deadline-take-profit-full", secs_left=18.0, dry_run=False) == {
                 "retry_delay_sec": 1.0,
                 "max_attempts": 8,
             },
@@ -501,6 +542,8 @@ def main():
         ("live_close_exit_value_keeps_cash_delta_when_it_agrees", abs((live_close_value_close_match or 0.0) - 0.5877) < 1e-9 and live_close_source_close_match == "cash_balance_delta"),
         ("live_close_exit_value_prefers_response_when_cash_delta_lags", abs((live_close_value_mismatched or 0.0) - 1.3846) < 1e-9 and live_close_source_mismatched == "close_response_takingAmount"),
         ("parse_balance_allowance_available_shares_handles_live_error", abs((parsed_balance_shares or 0.0) - 1.198827) < 1e-9),
+        ("balance_allowance_dust_stops_retrying_once_sub_minimum_shares_remain", live_dust_retry_close["attempts"] == 1 and abs(live_dust_retry_close["remaining_shares"] - 0.00756) < 1e-9),
+        ("balance_allowance_dust_skips_extra_sleep_loops", live_dust_retry_sleep_calls == []),
         ("stop_loss_scaleout_arms_live_tail_cleanup", residual_force_close_armed is True),
         ("stop_loss_scaleout_tail_cleanup_skips_dry_run", residual_force_close_not_armed_dry_run is False),
         ("stop_loss_scaleout_tail_cleanup_skips_dust", residual_force_close_not_armed_for_dust is False),

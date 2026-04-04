@@ -914,7 +914,7 @@ def is_loss_exit_reason(reason: str | None) -> bool:
 
 def loss_exit_tail_fraction(*, reason: str | None, pnl_pct: float | None) -> float:
     normalized = str(reason or "").strip().lower()
-    if normalized in {"manual-emergency-close", "residual-force-close"}:
+    if normalized in {"manual-emergency-close", "residual-force-close", "break-even-giveback"}:
         return 0.0
     pnl_value = None if pnl_pct is None else float(pnl_pct)
     is_loss_exit = is_loss_exit_reason(normalized) or (pnl_value is not None and pnl_value < 0.0)
@@ -1146,7 +1146,9 @@ def should_force_taker_profit_protection(*, reason: str | None, dry_run: bool) -
         "take-profit-full",
         "binance-adverse-exit",
         "binance-profit-protect-exit",
+        "break-even-giveback",
         "profit-reversal-stop",
+        "deadline-take-profit-full",
         "deadline-exit-weak-win",
         "deadline-exit-flat",
     } and bool(
@@ -1159,6 +1161,7 @@ def emergency_exit_retry_kwargs(*, reason: str | None, secs_left: float | None, 
         return {}
     normalized = str(reason or "").strip().lower()
     if normalized not in {
+        "deadline-take-profit-full",
         "deadline-exit-weak-win",
         "deadline-exit-flat",
         "deadline-exit-loss",
@@ -4308,6 +4311,51 @@ def main():
                                                 f"remaining_cost={remaining_cost:.6f}"
                                             )
                                 else:
+                                    err_text = str(close_resp.get("error") or "")
+                                    remaining_hint = max(0.0, float(close_resp.get("remaining_shares", 0.0) or 0.0))
+                                    balance_or_allowance_error = (
+                                        "not enough balance" in err_text.lower()
+                                        or "allowance" in err_text.lower()
+                                    )
+                                    if balance_or_allowance_error and remaining_hint < 0.01:
+                                        flags.close_fail_streak = 0
+                                        closed_any = True
+                                        log(
+                                            f"{exit_decision.reason} close reconciled to dust -> drop local lot | "
+                                            f"token={p.token_id} remaining_shares={remaining_hint:.6f} err={err_text or 'n/a'}"
+                                        )
+                                        if should_block_same_market_reentry(
+                                            exit_decision.reason,
+                                            remaining_shares=0.0,
+                                            realized_pnl_usd=0.0,
+                                        ):
+                                            same_market_reentry_block_slug = p.slug
+                                        continue
+                                    if balance_or_allowance_error and remaining_hint + LOT_EPS_SHARES < p.shares:
+                                        flags.close_fail_streak = 0
+                                        resized_shares = remaining_hint
+                                        resized_cost = p.avg_cost_per_share * resized_shares
+                                        residual_force_close = should_force_full_loss_exit(
+                                            reason=exit_decision.reason,
+                                            dry_run=SETTINGS.dry_run,
+                                        )
+                                        log(
+                                            f"{exit_decision.reason} close reconciled live remainder | token={p.token_id} "
+                                            f"local_shares={p.shares:.6f} live_shares={resized_shares:.6f} err={err_text or 'n/a'}"
+                                        )
+                                        keep_positions.append(replace(
+                                            p,
+                                            shares=resized_shares,
+                                            cost_usd=resized_cost,
+                                            max_favorable_ts=float(getattr(p, "max_favorable_ts", p.opened_ts) or p.opened_ts or 0.0),
+                                            has_panic_dumped=should_force_taker_exit(
+                                                reason=exit_decision.reason,
+                                                dry_run=SETTINGS.dry_run,
+                                                has_panic_dumped=getattr(p, "has_panic_dumped", False),
+                                            ),
+                                            force_close_only=residual_force_close,
+                                        ))
+                                        continue
                                     flags.close_fail_streak += 1
                                     if urgent_exit:
                                         flags.panic_exit_mode = True
