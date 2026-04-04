@@ -618,6 +618,27 @@ def refresh_daily_pnl_window(
     return False, ""
 
 
+def maybe_apply_manual_daily_max_loss_reset(
+    risk: RiskState,
+    *,
+    enabled: bool,
+    now_dt: datetime | None = None,
+) -> str:
+    if not enabled:
+        return ""
+
+    ref_now = datetime.now() if now_dt is None else now_dt
+    today_key = ref_now.date().isoformat()
+    previous_daily_pnl = float(getattr(risk, "daily_pnl", 0.0) or 0.0)
+    previous_daily_date = str(getattr(risk, "daily_pnl_date", "") or "").strip() or "unknown"
+    risk.daily_pnl = 0.0
+    risk.daily_pnl_date = today_key
+    return (
+        "manual daily max loss reset on start | "
+        f"previous_date={previous_daily_date} today={today_key} previous_daily_pnl={previous_daily_pnl:.2f}"
+    )
+
+
 @dataclass
 class RuntimeFlags:
     live_consec_losses: int
@@ -2626,6 +2647,14 @@ def main():
     flags = load_runtime_flags(state, open_positions)
     panic_market_slug = str(state.get("panic_market_slug") or "")
 
+    manual_daily_reset_note = maybe_apply_manual_daily_max_loss_reset(
+        risk,
+        enabled=bool(getattr(SETTINGS, "manual_reset_daily_max_loss_on_start", False)),
+    )
+    if manual_daily_reset_note:
+        startup_notes.append(manual_daily_reset_note)
+        runtime_state_changed = True
+
     daily_pnl_window_changed, daily_pnl_note = refresh_daily_pnl_window(
         risk,
         last_trade_ts=last_trade_ts,
@@ -2653,6 +2682,8 @@ def main():
     set_journal_context(run_id=run_journal.run_id)
     install_signal_handlers(run_journal)
 
+    if manual_daily_reset_note:
+        log(f"startup sanity | {manual_daily_reset_note}")
     if daily_pnl_note:
         log(f"startup sanity | {daily_pnl_note}")
     if startup_reset_note:

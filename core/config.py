@@ -50,6 +50,7 @@ class Settings:
     max_consec_loss: int = _i("MAX_CONSEC_LOSS", 3)
     clean_start_loss_streak_reset_sec: float = _f("CLEAN_START_LOSS_STREAK_RESET_SEC", 300.0)
     daily_max_loss: float = _f("DAILY_MAX_LOSS", 3.0)
+    manual_reset_daily_max_loss_on_start: bool = _b("MANUAL_RESET_DAILY_MAX_LOSS_ON_START", False)
     ofi_bypass_threshold: float = _f("OFI_BYPASS_THRESHOLD", 0.65)
 
     poll_seconds: int = _i("POLL_SECONDS", 15)

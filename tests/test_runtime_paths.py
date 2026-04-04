@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+from datetime import datetime
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -12,6 +13,7 @@ from core.runner import (
     dedupe_open_positions_by_token,
     existing_token_entry_conflict,
     idle_sleep_seconds,
+    maybe_apply_manual_daily_max_loss_reset,
     maybe_apply_stale_loss_streak_reset,
     next_cycle_interval_seconds,
     open_position_poll_interval_seconds,
@@ -450,6 +452,18 @@ def main():
         last_trade_ts=None,
         now_dt=now_dt,
     )
+    manual_reset_risk = RiskState(daily_pnl=-4.25, daily_pnl_date="2026-04-03")
+    manual_reset_note = maybe_apply_manual_daily_max_loss_reset(
+        manual_reset_risk,
+        enabled=True,
+        now_dt=datetime(2026, 4, 4, 9, 30, 0),
+    )
+    manual_reset_disabled_risk = RiskState(daily_pnl=-2.5, daily_pnl_date="2026-04-04")
+    manual_reset_disabled_note = maybe_apply_manual_daily_max_loss_reset(
+        manual_reset_disabled_risk,
+        enabled=False,
+        now_dt=datetime(2026, 4, 4, 9, 30, 0),
+    )
 
     startup_logged_messages: list[str] = []
     startup_events: list[dict] = []
@@ -603,6 +617,18 @@ def main():
             and empty_date_note == ""
             and abs(empty_date_risk.daily_pnl) < 1e-9
             and empty_date_risk.daily_pnl_date == "2026-04-03"
+        ),
+        (
+            "manual_daily_reset_zeros_pnl",
+            abs(manual_reset_risk.daily_pnl) < 1e-9
+            and manual_reset_risk.daily_pnl_date == "2026-04-04"
+            and "manual daily max loss reset on start" in manual_reset_note
+        ),
+        (
+            "manual_daily_reset_disabled_keeps_state",
+            abs(manual_reset_disabled_risk.daily_pnl + 2.5) < 1e-9
+            and manual_reset_disabled_risk.daily_pnl_date == "2026-04-04"
+            and manual_reset_disabled_note == ""
         ),
         (
             "startup_journal_reconcile_note_logged_once",
