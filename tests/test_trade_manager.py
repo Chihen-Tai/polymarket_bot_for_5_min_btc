@@ -79,7 +79,11 @@ def main():
     SETTINGS.take_profit_soft_pct = 0.18
     SETTINGS.take_profit_bid_discount_buffer = 0.08
     SETTINGS.take_profit_partial_fraction = 0.40
-    SETTINGS.take_profit_hard_pct = 0.30
+    SETTINGS.take_profit_hard_pct = 0.26
+    SETTINGS.take_profit_principal_after_partial_enabled = True
+    SETTINGS.take_profit_principal_after_partial_min_mfe_pct = 0.24
+    SETTINGS.take_profit_principal_after_partial_drawdown_pct = 0.08
+    SETTINGS.take_profit_principal_after_partial_min_current_pct = 0.14
     SETTINGS.take_profit_runner_fraction = 0.10
     SETTINGS.edge_threshold = 0.02
     SETTINGS.entry_neutral_band_half_width = 0.03
@@ -99,7 +103,7 @@ def main():
     SETTINGS.force_full_exit_on_stop_loss_scaleout = False
     SETTINGS.breakeven_giveback_enabled = True
     SETTINGS.breakeven_giveback_min_mfe_pct = 0.08
-    SETTINGS.breakeven_giveback_floor_pct = 0.0
+    SETTINGS.breakeven_giveback_floor_pct = 0.03
     SETTINGS.breakeven_giveback_min_hold_sec = 12.0
     SETTINGS.breakeven_giveback_min_secs_left = 45.0
     SETTINGS.failed_follow_through_window_sec = 25
@@ -976,9 +980,10 @@ def main():
         ("deadline_exit_weak_win_without_principal", decide_exit(pnl_pct=0.12, hold_sec=50, secs_left=10).reason == "deadline-exit-weak-win"),
         ("deadline_exit_weak_win_skips_risk_free_moonbag", decide_exit(pnl_pct=0.22, hold_sec=50, secs_left=10, has_extracted_principal=True).reason != "deadline-exit-weak-win"),
         ("deadline_exit_loss_skips_risk_free_moonbag", decide_exit(pnl_pct=-0.40, hold_sec=50, secs_left=10, has_extracted_principal=True).should_close is False),
-        ("break_even_giveback_triggers_after_real_winner_round_trips_to_flat", decide_exit(pnl_pct=0.0, hold_sec=20, secs_left=120, mfe_pnl_pct=0.10).reason == "break-even-giveback"),
-        ("break_even_giveback_skips_if_trade_never_had_real_profit", decide_exit(pnl_pct=0.0, hold_sec=20, secs_left=120, mfe_pnl_pct=0.05).reason != "break-even-giveback"),
-        ("break_even_giveback_skips_after_partial_profit_taken", decide_exit(pnl_pct=0.0, hold_sec=20, secs_left=120, mfe_pnl_pct=0.10, has_taken_partial=True).reason != "break-even-giveback"),
+        ("break_even_giveback_triggers_before_roundtrip_reaches_flat", decide_exit(pnl_pct=0.03, hold_sec=20, secs_left=120, mfe_pnl_pct=0.10).reason == "break-even-giveback"),
+        ("break_even_giveback_skips_if_trade_never_had_real_profit", decide_exit(pnl_pct=0.03, hold_sec=20, secs_left=120, mfe_pnl_pct=0.05).reason != "break-even-giveback"),
+        ("break_even_giveback_skips_if_still_above_floor", decide_exit(pnl_pct=0.04, hold_sec=20, secs_left=120, mfe_pnl_pct=0.10).reason != "break-even-giveback"),
+        ("break_even_giveback_skips_after_partial_profit_taken", decide_exit(pnl_pct=0.03, hold_sec=20, secs_left=120, mfe_pnl_pct=0.10, has_taken_partial=True).reason != "break-even-giveback"),
         (
             "profit_between_45_and_30s_forces_full_exit",
             evaluate_with_settings(
@@ -1072,6 +1077,9 @@ def main():
         ("hard_stop_loss", decide_exit(pnl_pct=-0.55, hold_sec=5).reason == "hard-stop-loss"),
         ("take_profit_uses_profit_reference_even_if_hard_stop_is_negative", decide_exit(pnl_pct=-0.05, profit_pnl_pct=0.60, hold_sec=5).reason == "take-profit-principal"),
         ("partial_take_profit_uses_profit_reference_even_if_hard_stop_is_negative", decide_exit(pnl_pct=-0.05, profit_pnl_pct=0.20, hold_sec=5).reason == "take-profit-partial"),
+        ("partial_runner_giveback_extracts_principal_early", decide_exit(pnl_pct=0.17, profit_pnl_pct=0.16, hold_sec=25, has_taken_partial=True, mfe_pnl_pct=0.28).reason == "take-profit-principal"),
+        ("partial_runner_giveback_skips_if_runner_never_got_big_enough", decide_exit(pnl_pct=0.15, profit_pnl_pct=0.15, hold_sec=25, has_taken_partial=True, mfe_pnl_pct=0.20).reason != "take-profit-principal"),
+        ("partial_runner_giveback_requires_usable_profit_to_extract_principal", decide_exit(pnl_pct=0.17, profit_pnl_pct=0.10, hold_sec=25, has_taken_partial=True, mfe_pnl_pct=0.28).reason != "take-profit-principal"),
         ("take_profit_does_not_trigger_without_executable_profit_signal", decide_exit(pnl_pct=0.60, profit_pnl_pct=None, hold_sec=5).should_close is False),
         ("mark_fallback_requires_executable_profit_floor", decide_exit(pnl_pct=0.30, profit_pnl_pct=0.10, hold_sec=5).should_close is False),
         ("mark_fallback_allows_small_bid_discount", decide_exit(pnl_pct=0.28, profit_pnl_pct=0.11, hold_sec=5).reason == "take-profit-partial"),

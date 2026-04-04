@@ -163,7 +163,11 @@ class Settings:
     # bid 可成交報酬因流動性打折時，mark 報酬需超過 soft_pct + 此緩衝才觸發 fallback 停利
     take_profit_bid_discount_buffer: float = _f("TAKE_PROFIT_BID_DISCOUNT_BUFFER", 0.08)
     take_profit_partial_fraction: float = _f("TAKE_PROFIT_PARTIAL_FRACTION", 0.40)
-    take_profit_hard_pct: float = _f("TAKE_PROFIT_HARD_PCT", 0.30)   # Stage 2: extract principal at +30%
+    take_profit_hard_pct: float = _f("TAKE_PROFIT_HARD_PCT", 0.26)   # Stage 2: extract principal at +26%
+    take_profit_principal_after_partial_enabled: bool = _b("TAKE_PROFIT_PRINCIPAL_AFTER_PARTIAL_ENABLED", True)
+    take_profit_principal_after_partial_min_mfe_pct: float = _f("TAKE_PROFIT_PRINCIPAL_AFTER_PARTIAL_MIN_MFE_PCT", 0.24)
+    take_profit_principal_after_partial_drawdown_pct: float = _f("TAKE_PROFIT_PRINCIPAL_AFTER_PARTIAL_DRAWDOWN_PCT", 0.08)
+    take_profit_principal_after_partial_min_current_pct: float = _f("TAKE_PROFIT_PRINCIPAL_AFTER_PARTIAL_MIN_CURRENT_PCT", 0.14)
     take_profit_runner_fraction: float = _f("TAKE_PROFIT_RUNNER_FRACTION", 0.10)
     moonbag_drawdown_pct: float = _f("MOONBAG_DRAWDOWN_PCT", 0.35)
     moonbag_drawdown_window_sec: int = _i("MOONBAG_DRAWDOWN_WINDOW_SEC", 45)
@@ -230,7 +234,7 @@ class Settings:
     live_loss_exit_force_taker: bool = _b("LIVE_LOSS_EXIT_FORCE_TAKER", False)
     breakeven_giveback_enabled: bool = _b("BREAKEVEN_GIVEBACK_ENABLED", True)
     breakeven_giveback_min_mfe_pct: float = _f("BREAKEVEN_GIVEBACK_MIN_MFE_PCT", 0.10)
-    breakeven_giveback_floor_pct: float = _f("BREAKEVEN_GIVEBACK_FLOOR_PCT", 0.0)
+    breakeven_giveback_floor_pct: float = _f("BREAKEVEN_GIVEBACK_FLOOR_PCT", 0.03)
     breakeven_giveback_min_hold_sec: float = _f("BREAKEVEN_GIVEBACK_MIN_HOLD_SEC", 12.0)
     breakeven_giveback_min_secs_left: float = _f("BREAKEVEN_GIVEBACK_MIN_SECS_LEFT", 45.0)
     profit_reversal_enabled: bool = _b("PROFIT_REVERSAL_ENABLED", True)

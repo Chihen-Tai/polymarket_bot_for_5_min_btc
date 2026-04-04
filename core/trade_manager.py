@@ -84,6 +84,36 @@ def decide_exit(
             return ExitDecision(True, "take-profit-full", take_profit_pnl_pct, hold_sec)
         # Sell enough to recover principal -> guaranteed risk-free
         return ExitDecision(True, "take-profit-principal", take_profit_pnl_pct, hold_sec)
+
+    if (
+        bool(getattr(SETTINGS, "take_profit_principal_after_partial_enabled", True))
+        and has_taken_partial
+        and not has_extracted_principal
+        and take_profit_pnl_pct is not None
+    ):
+        partial_runner_min_mfe_pct = float(
+            getattr(SETTINGS, "take_profit_principal_after_partial_min_mfe_pct", 0.24) or 0.24
+        )
+        partial_runner_drawdown_pct = float(
+            getattr(SETTINGS, "take_profit_principal_after_partial_drawdown_pct", 0.08) or 0.08
+        )
+        partial_runner_min_current_pct = float(
+            getattr(SETTINGS, "take_profit_principal_after_partial_min_current_pct", 0.14) or 0.14
+        )
+        partial_runner_giveback_trigger_pct = max(
+            partial_runner_min_current_pct,
+            mfe_pnl_pct - partial_runner_drawdown_pct,
+        )
+        if (
+            mfe_pnl_pct >= partial_runner_min_mfe_pct
+            and pnl_pct <= partial_runner_giveback_trigger_pct
+            and take_profit_pnl_pct >= partial_runner_min_current_pct
+        ):
+            if getattr(SETTINGS, "force_full_exit_on_take_profit", False):
+                return ExitDecision(True, "take-profit-full", take_profit_pnl_pct, hold_sec)
+            # After a partial clip, a runner that has already shown real life should not
+            # be allowed to give back most of its gains before principal is secured.
+            return ExitDecision(True, "take-profit-principal", take_profit_pnl_pct, hold_sec)
         
     if (
         take_profit_pnl_pct is not None

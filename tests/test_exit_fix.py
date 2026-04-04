@@ -85,7 +85,7 @@ def main():
     SETTINGS.live_stop_loss_partial_fraction = 0.80
     SETTINGS.breakeven_giveback_enabled = True
     SETTINGS.breakeven_giveback_min_mfe_pct = 0.08
-    SETTINGS.breakeven_giveback_floor_pct = 0.0
+    SETTINGS.breakeven_giveback_floor_pct = 0.03
     SETTINGS.breakeven_giveback_min_hold_sec = 12.0
     SETTINGS.breakeven_giveback_min_secs_left = 45.0
     SETTINGS.binance_adverse_exit_enabled = True
@@ -109,7 +109,11 @@ def main():
     SETTINGS.profit_reversal_adverse_velocity = 0.0003
     SETTINGS.take_profit_soft_pct = 0.18
     SETTINGS.take_profit_partial_fraction = 0.40
-    SETTINGS.take_profit_hard_pct = 0.30
+    SETTINGS.take_profit_hard_pct = 0.26
+    SETTINGS.take_profit_principal_after_partial_enabled = True
+    SETTINGS.take_profit_principal_after_partial_min_mfe_pct = 0.24
+    SETTINGS.take_profit_principal_after_partial_drawdown_pct = 0.08
+    SETTINGS.take_profit_principal_after_partial_min_current_pct = 0.14
     SETTINGS.take_profit_runner_fraction = 0.10
 
     ex = make_paper_exchange()
@@ -565,7 +569,9 @@ def main():
         ("preserve_partial_close_residual_keeps_true_full_close_at_zero", abs(preserved_full_close_residual - 0.0) < 1e-9),
         ("take_profit_soft_pct_uses_eighteen_percent_default", abs(float(getattr(SETTINGS, "take_profit_soft_pct", 0.0)) - 0.18) < 1e-9),
         ("take_profit_partial_fraction_uses_forty_percent_default", abs(float(getattr(SETTINGS, "take_profit_partial_fraction", 0.0)) - 0.40) < 1e-9),
-        ("take_profit_hard_pct_uses_thirty_percent_default", abs(float(getattr(SETTINGS, "take_profit_hard_pct", 0.0)) - 0.30) < 1e-9),
+        ("take_profit_hard_pct_uses_twenty_six_percent_default", abs(float(getattr(SETTINGS, "take_profit_hard_pct", 0.0)) - 0.26) < 1e-9),
+        ("take_profit_partial_runner_principal_min_mfe_uses_twenty_four_percent_default", abs(float(getattr(SETTINGS, "take_profit_principal_after_partial_min_mfe_pct", 0.0)) - 0.24) < 1e-9),
+        ("breakeven_giveback_floor_uses_three_percent_default", abs(float(getattr(SETTINGS, "breakeven_giveback_floor_pct", 0.0)) - 0.03) < 1e-9),
         ("take_profit_runner_fraction_uses_ten_percent_default", abs(float(getattr(SETTINGS, "take_profit_runner_fraction", 0.0)) - 0.10) < 1e-9),
         ("paper_entry_is_taker_simulated", entry.get("execution_style") == "taker-simulated"),
         ("paper_partial_close_value", abs(float(partial["actual_exit_value_usd"]) - 0.6) < 1e-9),
