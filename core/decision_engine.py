@@ -231,12 +231,14 @@ def explain_choose_side(
     if secs_left is None:
         base_result["reason"] = "missing_end_time"
         return base_result
-    if secs_left > SETTINGS.entry_window_max_sec:
-        base_result["reason"] = "too_early_in_market"
-        return base_result
-    if secs_left < SETTINGS.entry_window_min_sec:
-        base_result["reason"] = "too_late_in_market"
-        return base_result
+    time_valid = False
+    if secs_left is not None:
+        if secs_left > SETTINGS.entry_window_max_sec:
+            base_result["reason"] = "too_early_in_market"
+        elif secs_left < SETTINGS.entry_window_min_sec:
+            base_result["reason"] = "too_late_in_market"
+        else:
+            time_valid = True
 
     regular_valid_up = up is not None and SETTINGS.min_entry_price <= float(up) <= SETTINGS.max_entry_price
     regular_valid_down = down is not None and SETTINGS.min_entry_price <= float(down) <= SETTINGS.max_entry_price
@@ -246,9 +248,8 @@ def explain_choose_side(
     snipe_valid_up = up is not None and _snipe_min <= float(up) <= _snipe_max
     snipe_valid_down = down is not None and _snipe_min <= float(down) <= _snipe_max
 
-    if not regular_valid_up and not regular_valid_down and not snipe_valid_up and not snipe_valid_down:
+    if base_result.get("reason") == "no_valid_signals" and not regular_valid_up and not regular_valid_down and not snipe_valid_up and not snipe_valid_down:
         base_result["reason"] = f"prices_out_of_bounds_up{up}_down{down}"
-        return base_result
 
     candidates = {}
 
@@ -601,12 +602,21 @@ def explain_choose_side(
             candidates["mean_reversion_signal"] = r
 
 
-    # Apply Momentum Confirmation (OFI/flash-snipe strategies are exempt — they carry own velocity)
+    # Apply Momentum Confirmation and Time Locks (OFI/flash-snipe/strike_cross strategies are exempt)
     filtered_candidates = {}
     for name, s_result in candidates.items():
         if name in _MOMENTUM_EXEMPT:
             filtered_candidates[name] = s_result
             continue
+            
+        # For non-exempt strategies, time window and standard price bounds strictly apply
+        if not time_valid:
+            continue
+        if not regular_valid_up and s_result.get("side") == "UP":
+            continue
+        if not regular_valid_down and s_result.get("side") == "DOWN":
+            continue
+
         if up_window is not None and down_window is not None:
             if not _has_momentum(s_result.get("side"), up_window, down_window):
                 continue
@@ -614,11 +624,12 @@ def explain_choose_side(
 
     if not filtered_candidates:
         r = base_result.copy()
-        # Report why — if momentum filter ate everything vs no candidates at all
+        # Report why — if momentum or time lock filter ate everything vs no candidates at all
         if candidates:
-            r["reason"] = f"flow_too_weak_{len(candidates)}{int(secs_left or 0)}"
+            r["reason"] = f"flow_too_weak_{len(candidates)}{int(secs_left or 0)}" if time_valid else r.get("reason", "too_late_in_market")
         else:
-            r["reason"] = "no_valid_signals"
+            if r.get("reason") is None or r.get("reason") == "":
+                 r["reason"] = "no_valid_signals"
         return r
 
     best_decision = _select_best_candidate(filtered_candidates)
