@@ -1020,6 +1020,13 @@ def effective_stop_loss_partial_fraction(*, dry_run: bool) -> float:
     return min(0.99, max(0.01, float(configured or 0.50)))
 
 
+def close_fill_ratio(*, requested_close_shares: float, sold_shares: float) -> float:
+    requested = max(0.0, float(requested_close_shares or 0.0))
+    if requested <= LOT_EPS_SHARES:
+        return 1.0
+    return min(1.0, max(0.0, float(sold_shares or 0.0)) / max(requested, 1e-9))
+
+
 def should_delay_soft_stop_scaleout(
     *,
     reason: str | None,
@@ -1205,14 +1212,47 @@ def should_force_full_loss_exit(*, reason: str | None, dry_run: bool) -> bool:
 def should_arm_residual_force_close_after_stop_loss_scaleout(
     *,
     dry_run: bool,
+    requested_close_shares: float,
+    sold_shares: float,
+    starting_cost_usd: float,
     remaining_shares: float,
     remaining_cost_usd: float,
 ) -> bool:
-    return (
-        not dry_run
-        and float(remaining_shares or 0.0) > LOT_EPS_SHARES
-        and float(remaining_cost_usd or 0.0) > LOT_EPS_COST_USD
+    if dry_run:
+        return False
+    if float(remaining_shares or 0.0) <= LOT_EPS_SHARES:
+        return False
+    remaining_cost = max(0.0, float(remaining_cost_usd or 0.0))
+    if remaining_cost <= LOT_EPS_COST_USD:
+        return False
+    fill_ratio = close_fill_ratio(
+        requested_close_shares=requested_close_shares,
+        sold_shares=sold_shares,
     )
+    min_fill_ratio = min(
+        0.99,
+        max(0.05, float(getattr(SETTINGS, "stop_loss_scaleout_emergency_fill_ratio", 0.60) or 0.60)),
+    )
+    if fill_ratio + 1e-9 < min_fill_ratio:
+        return True
+    starting_cost = max(0.0, float(starting_cost_usd or 0.0))
+    if starting_cost <= LOT_EPS_COST_USD:
+        return False
+    remaining_cost_ratio = remaining_cost / max(starting_cost, 1e-9)
+    max_remaining_cost_ratio = min(
+        0.99,
+        max(
+            0.01,
+            float(
+                getattr(
+                    SETTINGS,
+                    "stop_loss_scaleout_emergency_remaining_cost_pct",
+                    0.45,
+                ) or 0.45
+            ),
+        ),
+    )
+    return remaining_cost_ratio > max_remaining_cost_ratio
 
 
 def should_force_taker_take_profit(*, dry_run: bool) -> bool:
@@ -1240,15 +1280,21 @@ def should_force_taker_profit_protection(*, reason: str | None, dry_run: bool) -
 
 
 def emergency_exit_retry_kwargs(*, reason: str | None, secs_left: float | None, dry_run: bool) -> dict[str, float | int]:
-    if dry_run or secs_left is None:
+    if dry_run:
         return {}
     normalized = str(reason or "").strip().lower()
+    if normalized == "residual-force-close":
+        return {
+            "retry_delay_sec": max(0.25, float(getattr(SETTINGS, "emergency_exit_retry_delay_sec", 1.0) or 1.0)),
+            "max_attempts": max(1, int(getattr(SETTINGS, "emergency_exit_max_attempts", 8) or 8)),
+        }
+    if secs_left is None:
+        return {}
     if normalized not in {
         "deadline-take-profit-full",
         "deadline-exit-weak-win",
         "deadline-exit-flat",
         "deadline-exit-loss",
-        "residual-force-close",
     }:
         return {}
     if float(secs_left) > float(getattr(SETTINGS, "exit_deadline_sec", 20) or 20):
@@ -1304,6 +1350,34 @@ def favorable_peak_age_sec(pos: OpenPos, *, now_ts: float | None = None) -> floa
         return None
     now_value = float(now_ts or time.time())
     return max(0.0, now_value - peak_ts)
+
+
+def evaluate_hedge_mode(ex, token_id: str, side: str, sell_shares: float) -> tuple[bool, str | None]:
+    """
+    Evaluates whether buying the opposite token yields better net USDC than selling the current position (due to lack of bid liquidity).
+    """
+    opposite_token = getattr(SETTINGS, "token_id_down", None) if side == "UP" else getattr(SETTINGS, "token_id_up", None)
+    if not opposite_token or opposite_token == token_id:
+        return False, None
+    if not getattr(SETTINGS, "hedge_exit_enabled", True):
+        return False, opposite_token
+    try:
+        from core.exchange import estimate_book_exit_value, estimate_hedge_exit_value
+        t_book = ex.get_full_orderbook(token_id)
+        o_book = ex.get_full_orderbook(opposite_token)
+        s_val, s_fill = estimate_book_exit_value(t_book, sell_shares)
+        h_val, h_fill = estimate_hedge_exit_value(o_book, sell_shares)
+        if s_val is None or h_val is None:
+            return False, opposite_token
+        threshold = float(getattr(SETTINGS, "hedge_exit_advantage_threshold", 0.005) or 0.0) * float(sell_shares)
+        if h_fill >= s_fill - 0.01 and h_val > s_val + threshold:
+            log(f"🔥 HEDGE EXIT PREFERRED! token={token_id[-6:]} side={side} "
+                f"Sell_Yield=${s_val:.4f} ({s_fill:.0%}) "
+                f"Hedge_Yield=${h_val:.4f} ({h_fill:.0%}) -> expected saving ${(h_val - s_val):.4f}")
+            return True, opposite_token
+    except Exception as e:
+        log(f"Evaluate hedge mode error: {e}")
+    return False, opposite_token
 
 
 def decide_pending_order_action(
@@ -3762,8 +3836,25 @@ def main():
                                 )
                                 sell_shares = p.shares * sell_fraction
                                 
+                                hedge_mode, opp_token = evaluate_hedge_mode(ex, p.token_id, p.side, sell_shares)
+                                
                                 try:
-                                    close_resp = ex.close_position(p.token_id, sell_shares, simulated_price=float(mark) if mark is not None else None)
+                                    close_resp = ex.close_position(
+                                        p.token_id,
+                                        sell_shares,
+                                        simulated_price=float(mark) if mark is not None else None,
+                                        force_taker=should_force_taker_exit(
+                                            reason=exit_decision.reason,
+                                            dry_run=SETTINGS.dry_run,
+                                            has_panic_dumped=getattr(p, "has_panic_dumped", False),
+                                        ),
+                                        hedge_mode=hedge_mode,
+                                        opposite_token_id=opp_token,
+                                        **loss_exit_retry_kwargs(
+                                            reason=exit_decision.reason,
+                                            dry_run=SETTINGS.dry_run,
+                                        ),
+                                    )
                                     if close_resp.get("ok"):
                                         starting_shares = float(p.shares)
                                         starting_cost = float(p.cost_usd)
@@ -3795,17 +3886,24 @@ def main():
                                             p.has_scaled_out_loss = True
                                             if resolved_remaining_shares > LOT_EPS_SHARES:
                                                 extend_live_sync_protection(p)
-                                            if should_arm_residual_force_close_after_stop_loss_scaleout(
+                                            residual_force_close_armed = should_arm_residual_force_close_after_stop_loss_scaleout(
                                                 dry_run=SETTINGS.dry_run,
+                                                requested_close_shares=sell_shares,
+                                                sold_shares=sold_shares,
+                                                starting_cost_usd=starting_cost,
                                                 remaining_shares=resolved_remaining_shares,
                                                 remaining_cost_usd=remaining_cost,
-                                            ):
+                                            )
+                                            if residual_force_close_armed:
                                                 p.force_close_only = True
                                                 p.has_panic_dumped = should_force_taker_exit(
                                                     reason="residual-force-close",
                                                     dry_run=SETTINGS.dry_run,
                                                     has_panic_dumped=getattr(p, "has_panic_dumped", False),
                                                 )
+                                                arm_near_stop_poll(p)
+                                            else:
+                                                p.force_close_only = False
                                             
                                             _raw_act_val = close_resp.get("actual_exit_value_usd", 0.0)
                                             _raw_act_src = str(close_resp.get("actual_exit_value_source") or "unavailable")
@@ -3846,6 +3944,17 @@ def main():
                                             })
                                             
                                             log(f"STOP-LOSS SCALED OUT! Sold {sold_shares:.2f} shares to mitigate risk.")
+                                            if residual_force_close_armed:
+                                                scaleout_fill_ratio = close_fill_ratio(
+                                                    requested_close_shares=sell_shares,
+                                                    sold_shares=sold_shares,
+                                                )
+                                                remaining_cost_ratio = remaining_cost / max(starting_cost, 1e-9)
+                                                log(
+                                                    f"stop-loss scale-out underfilled | token={p.token_id} "
+                                                    f"fill_ratio={scaleout_fill_ratio:.2%} remaining_cost_ratio={remaining_cost_ratio:.2%} "
+                                                    f"remaining_shares={p.shares:.6f} remaining_cost={p.cost_usd:.6f} -> escalating residual cleanup"
+                                                )
                                             if getattr(p, "force_close_only", False):
                                                 log(
                                                     f"stop-loss tail cleanup armed | token={p.token_id} "
@@ -4136,6 +4245,8 @@ def main():
                                     if sell_target > 0.0001:
                                         sell_shares = sell_target
 
+                                hedge_mode, opp_token = evaluate_hedge_mode(ex, p.token_id, p.side, sell_shares)
+
                                 close_resp = ex.close_position(
                                     p.token_id,
                                     sell_shares,
@@ -4151,6 +4262,8 @@ def main():
                                             dry_run=SETTINGS.dry_run,
                                         )
                                     ),
+                                    hedge_mode=hedge_mode,
+                                    opposite_token_id=opp_token,
                                     **close_retry_kwargs,
                                 )
                                 if close_resp.get("ok"):
@@ -4542,7 +4655,9 @@ def main():
                         entry_price = up if signal_side == "UP" else down
                         if entry_price and entry_price > 0:
                             try:
-                                book = ex.get_full_orderbook(token_override)
+                                book = poly_ob_up if signal_side == "UP" else poly_ob_down
+                                if not book:
+                                    book = ex.get_full_orderbook(token_override)
                                 clob_best_ask = book.get("best_ask", 0.0)
                                 if clob_best_ask > 0:
                                     if clob_best_ask < SETTINGS.min_entry_price:
@@ -4901,7 +5016,11 @@ def main():
                             )
                             order_usd = required_usd
                         est_shares = required_shares
-                    entry_book = ex.get_full_orderbook(token_override)
+                    
+                    entry_book = poly_ob_up if signal_side == "UP" else poly_ob_down
+                    if not entry_book:
+                        entry_book = ex.get_full_orderbook(token_override)
+                        
                     if live_market_entry:
                         (
                             estimated_market_entry_avg_price,

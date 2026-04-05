@@ -111,6 +111,7 @@ class Settings:
     entry_window_max_sec: float = _f("ENTRY_WINDOW_MAX_SEC", 999999.0)
     min_entry_price: float = _f("MIN_ENTRY_PRICE", 0.35)
     snipe_min_entry_price: float = _f("SNIPE_MIN_ENTRY_PRICE", 0.05)
+    snipe_max_entry_price: float = _f("SNIPE_MAX_ENTRY_PRICE", 0.96)
     max_entry_price: float = _f("MAX_ENTRY_PRICE", 0.75)
     entry_slippage_guard_enabled: bool = _b("ENTRY_SLIPPAGE_GUARD_ENABLED", True)
     entry_max_actual_slippage_pct: float = _f("ENTRY_MAX_ACTUAL_SLIPPAGE_PCT", 0.18)
@@ -182,7 +183,12 @@ class Settings:
     loss_exit_max_attempts: int = _i("LOSS_EXIT_MAX_ATTEMPTS", 4)
     emergency_exit_retry_delay_sec: float = _f("EMERGENCY_EXIT_RETRY_DELAY_SEC", 1.0)
     emergency_exit_max_attempts: int = _i("EMERGENCY_EXIT_MAX_ATTEMPTS", 8)
+    stop_loss_scaleout_emergency_fill_ratio: float = _f("STOP_LOSS_SCALEOUT_EMERGENCY_FILL_RATIO", 0.60)
+    stop_loss_scaleout_emergency_remaining_cost_pct: float = _f("STOP_LOSS_SCALEOUT_EMERGENCY_REMAINING_COST_PCT", 0.45)
     stop_loss_warn_pct: float = _f("STOP_LOSS_WARN_PCT", 0.08)
+
+    hedge_exit_enabled: bool = _b("HEDGE_EXIT_ENABLED", True)
+    hedge_exit_advantage_threshold: float = _f("HEDGE_EXIT_ADVANTAGE_THRESHOLD", 0.005)
 
     # Strategy 1: Binance Oracle Front-running
     use_cex_oracle: bool = _b("USE_CEX_ORACLE", True)
@@ -274,6 +280,14 @@ class Settings:
     binance_signal_lag_sec: float = _f("BINANCE_SIGNAL_LAG_SEC", 0.5)
     entry_dual_velocity_confirm: bool = _b("ENTRY_DUAL_VELOCITY_CONFIRM", True)
     ws_stale_max_age_sec: float = _f("WS_STALE_MAX_AGE_SEC", 5.0)
+    
+    # Advanced Options Strategies (Theta Bleed & Strike Cross Front-run)
+    theta_bleed_enabled: bool = _b("THETA_BLEED_ENABLED", True)
+    theta_bleed_min_sec: float = _f("THETA_BLEED_MIN_SEC", 60.0)
+    theta_bleed_distance: float = _f("THETA_BLEED_DISTANCE", 120.0)
+    strike_cross_snipe_enabled: bool = _b("STRIKE_CROSS_SNIPE_ENABLED", True)
+    strike_cross_gap: float = _f("STRIKE_CROSS_GAP", 20.0)
+
     ws_stale_fail_safe_streak: int = _i("WS_STALE_FAIL_SAFE_STREAK", 2)
     api_slow_threshold_ms: float = _f("API_SLOW_THRESHOLD_MS", 1500.0)
     api_fail_safe_streak: int = _i("API_FAIL_SAFE_STREAK", 3)

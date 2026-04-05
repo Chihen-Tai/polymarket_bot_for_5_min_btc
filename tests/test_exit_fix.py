@@ -19,6 +19,7 @@ from core.exchange import (
 from core.runner import (
     ExitDecision as RunnerExitDecision,
     OpenPos,
+    close_fill_ratio,
     conservative_exit_decision_value,
     emergency_exit_retry_kwargs,
     estimate_book_entry_fill,
@@ -76,6 +77,8 @@ def main():
     # Keep these checks independent from any prior test file mutating SETTINGS.
     SETTINGS.loss_exit_retry_delay_sec = 0.25
     SETTINGS.loss_exit_max_attempts = 4
+    SETTINGS.stop_loss_scaleout_emergency_fill_ratio = 0.60
+    SETTINGS.stop_loss_scaleout_emergency_remaining_cost_pct = 0.45
     SETTINGS.leave_loss_tail_pct = 0.0
     SETTINGS.stop_loss_partial_pct = 0.10
     SETTINGS.soft_stop_confirm_sec = 2.5
@@ -243,16 +246,33 @@ def main():
     )
     residual_force_close_armed = should_arm_residual_force_close_after_stop_loss_scaleout(
         dry_run=False,
-        remaining_shares=0.42,
-        remaining_cost_usd=0.18,
+        requested_close_shares=1.68,
+        sold_shares=0.20,
+        starting_cost_usd=1.0,
+        remaining_shares=2.12,
+        remaining_cost_usd=0.91,
     )
     residual_force_close_not_armed_dry_run = should_arm_residual_force_close_after_stop_loss_scaleout(
         dry_run=True,
+        requested_close_shares=1.68,
+        sold_shares=0.20,
+        starting_cost_usd=1.0,
+        remaining_shares=2.12,
+        remaining_cost_usd=0.91,
+    )
+    residual_force_close_not_armed_for_healthy_scaleout = should_arm_residual_force_close_after_stop_loss_scaleout(
+        dry_run=False,
+        requested_close_shares=1.68,
+        sold_shares=1.60,
+        starting_cost_usd=1.0,
         remaining_shares=0.42,
         remaining_cost_usd=0.18,
     )
     residual_force_close_not_armed_for_dust = should_arm_residual_force_close_after_stop_loss_scaleout(
         dry_run=False,
+        requested_close_shares=1.68,
+        sold_shares=1.68,
+        starting_cost_usd=1.0,
         remaining_shares=0.0,
         remaining_cost_usd=0.0,
     )
@@ -506,6 +526,13 @@ def main():
                 "max_attempts": 8,
             },
         ),
+        (
+            "residual_force_close_always_uses_emergency_retry_loop",
+            emergency_exit_retry_kwargs(reason="residual-force-close", secs_left=120.0, dry_run=False) == {
+                "retry_delay_sec": 1.0,
+                "max_attempts": 8,
+            },
+        ),
         ("non_deadline_exit_has_no_emergency_retry", emergency_exit_retry_kwargs(reason="take-profit-principal", secs_left=18.0, dry_run=False) == {}),
         ("panic_dump_always_forces_taker", should_force_taker_exit(reason="", dry_run=True, has_panic_dumped=True) is True),
         ("soft_stop_scaleout_waits_for_confirmation_when_shallow_and_flat", should_delay_soft_stop_scaleout(reason="stop-loss-scale-out", side="UP", pnl_pct=-0.08, breach_age_sec=1.0, secs_left=120.0, ws_velocity=0.0) is True),
@@ -524,6 +551,7 @@ def main():
         ("binance_profit_protect_prefers_taker_live", should_force_taker_profit_protection(reason="binance-profit-protect-exit", dry_run=False) is True),
         ("dry_run_stop_loss_partial_fraction_unchanged", abs(effective_stop_loss_partial_fraction(dry_run=True) - 0.50) < 1e-9),
         ("live_stop_loss_partial_fraction_leaves_small_recovery_runner", abs(effective_stop_loss_partial_fraction(dry_run=False) - 0.80) < 1e-9),
+        ("close_fill_ratio_caps_to_requested_clip", abs(close_fill_ratio(requested_close_shares=1.68, sold_shares=0.20) - (0.20 / 1.68)) < 1e-9),
         ("runner_exports_exit_decision_for_force_close_branch", RunnerExitDecision(True, "residual-force-close").reason == "residual-force-close"),
         ("limit_order_type_prefers_post_only_when_available", _limit_order_type(LegacyOrderType) == "POST_ONLY"),
         ("limit_order_type_falls_back_to_gtc", _limit_order_type(ModernOrderType) == "GTC"),
@@ -554,8 +582,9 @@ def main():
         ("parse_balance_allowance_available_shares_handles_live_error", abs((parsed_balance_shares or 0.0) - 1.198827) < 1e-9),
         ("balance_allowance_dust_stops_retrying_once_sub_minimum_shares_remain", live_dust_retry_close["attempts"] == 1 and abs(live_dust_retry_close["remaining_shares"] - 0.00756) < 1e-9),
         ("balance_allowance_dust_skips_extra_sleep_loops", live_dust_retry_sleep_calls == []),
-        ("stop_loss_scaleout_arms_live_tail_cleanup", residual_force_close_armed is True),
+        ("stop_loss_scaleout_arms_live_tail_cleanup_when_fill_is_too_small", residual_force_close_armed is True),
         ("stop_loss_scaleout_tail_cleanup_skips_dry_run", residual_force_close_not_armed_dry_run is False),
+        ("stop_loss_scaleout_allows_recovery_window_after_healthy_fill", residual_force_close_not_armed_for_healthy_scaleout is False),
         ("stop_loss_scaleout_tail_cleanup_skips_dust", residual_force_close_not_armed_for_dust is False),
         ("live_account_cache_reuses_recent_snapshot", cash_calls["count"] == 2 and value_calls["count"] == 2 and acct_first.cash == acct_second.cash == acct_third.cash == 7.0 and acct_first.equity == acct_second.equity == acct_third.equity == 10.0),
         ("get_full_orderbook_accepts_object_style_orderbook", object_book.get("best_bid") == 0.48 and object_book.get("best_ask") == 0.49 and object_book.get("bids_volume") == 21.5 and object_book.get("asks_volume") == 18.0),

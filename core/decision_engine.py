@@ -44,6 +44,19 @@ def get_outcome_prices(market: dict) -> dict:
     return result
 
 
+def _extract_strike_price(question: str) -> float | None:
+    if not question:
+        return None
+    import re
+    match = re.search(r'\$([\d,]+(\.\d+)?)', question)
+    if match:
+        try:
+            return float(match.group(1).replace(',', ''))
+        except Exception:
+            return None
+    return None
+
+
 def seconds_to_market_end(market: dict) -> Optional[float]:
     end = str(market.get("endDate") or market.get("end_date_iso") or "")
     if not end:
@@ -97,6 +110,8 @@ _MOMENTUM_EXEMPT = frozenset([
     "binance_macd_rsi_up", "binance_macd_rsi_down",
     "cex_oracle_pump", "cex_oracle_dump", # Exempt front-running to ensure early entry!
     "liquidation_fade_up", "liquidation_fade_down", # Exempt mean-reverting liquidations
+    "theta_bleed_up", "theta_bleed_down", # Exempt distance arbitrage
+    "strike_cross_snipe_up", "strike_cross_snipe_down", # Exempt cross front-run
 ])
 
 
@@ -227,14 +242,95 @@ def explain_choose_side(
     regular_valid_down = down is not None and SETTINGS.min_entry_price <= float(down) <= SETTINGS.max_entry_price
 
     _snipe_min = float(getattr(SETTINGS, "snipe_min_entry_price", 0.05))
-    snipe_valid_up = up is not None and _snipe_min <= float(up) <= SETTINGS.max_entry_price
-    snipe_valid_down = down is not None and _snipe_min <= float(down) <= SETTINGS.max_entry_price
+    _snipe_max = float(getattr(SETTINGS, "snipe_max_entry_price", 0.96))
+    snipe_valid_up = up is not None and _snipe_min <= float(up) <= _snipe_max
+    snipe_valid_down = down is not None and _snipe_min <= float(down) <= _snipe_max
 
     if not regular_valid_up and not regular_valid_down and not snipe_valid_up and not snipe_valid_down:
         base_result["reason"] = f"prices_out_of_bounds_up{up}_down{down}"
         return base_result
 
     candidates = {}
+
+    # Extract Strike Price for Advanced Strategies
+    strike_price = _extract_strike_price(market.get("question", ""))
+
+    # Advanced Strategy 1: Theta Bleed Arbitrage
+    if getattr(SETTINGS, "theta_bleed_enabled", True) and strike_price is not None:
+        try:
+            from core.ws_binance import BINANCE_WS
+            if secs_left is not None and secs_left <= float(getattr(SETTINGS, "theta_bleed_min_sec", 60.0)):
+                if BINANCE_WS.get_last_update_age() < 5.0:
+                    binance_bba = BINANCE_WS.get_bba()
+                    binance_mid = (binance_bba.get("b", 0.0) + binance_bba.get("a", 0.0)) / 2.0
+                    if binance_mid > 0:
+                        dist = binance_mid - strike_price
+                        theta_dist = float(getattr(SETTINGS, "theta_bleed_distance", 120.0))
+                        
+                        # If Binance is > 120 dist ABOVE strike, UP is highly certain
+                        if dist > theta_dist and snipe_valid_up:
+                            r = _build_candidate(
+                                base_result,
+                                side="UP",
+                                strategy_key="theta_bleed_up",
+                                entry_price=float(up),
+                                model_probability=0.99,  # Extremely high probability
+                                signal_confidence=1.0,
+                                extras={"binance_mid": binance_mid, "strike_price": strike_price, "dist": dist},
+                            )
+                            candidates["theta_bleed_up"] = r
+                            
+                        # If Binance is < 120 dist BELOW strike, DOWN is highly certain
+                        elif dist < -theta_dist and snipe_valid_down:
+                            r = _build_candidate(
+                                base_result,
+                                side="DOWN",
+                                strategy_key="theta_bleed_down",
+                                entry_price=float(down),
+                                model_probability=0.99,
+                                signal_confidence=1.0,
+                                extras={"binance_mid": binance_mid, "strike_price": strike_price, "dist": dist},
+                            )
+                            candidates["theta_bleed_down"] = r
+        except Exception:
+            pass
+
+    # Advanced Strategy 3: Strike Cross Front-run Snipe
+    if getattr(SETTINGS, "strike_cross_snipe_enabled", True) and strike_price is not None:
+        try:
+            from core.ws_binance import BINANCE_WS
+            if BINANCE_WS.get_last_update_age() < 5.0:
+                oldest, newest = BINANCE_WS.get_recent_prices_window(seconds=5.0)
+                if oldest is not None and newest is not None:
+                    gap = float(getattr(SETTINGS, "strike_cross_gap", 20.0))
+                    
+                    # Crossed UP securely
+                    if oldest < strike_price and newest > (strike_price + gap) and snipe_valid_up:
+                        r = _build_candidate(
+                            base_result,
+                            side="UP",
+                            strategy_key="strike_cross_snipe_up",
+                            entry_price=float(up),
+                            model_probability=0.90,  # High, but lower than distance bleed
+                            signal_confidence=0.95,
+                            extras={"oldest": oldest, "newest": newest, "strike_price": strike_price},
+                        )
+                        candidates["strike_cross_snipe_up"] = r
+                        
+                    # Crossed DOWN securely
+                    elif oldest > strike_price and newest < (strike_price - gap) and snipe_valid_down:
+                        r = _build_candidate(
+                            base_result,
+                            side="DOWN",
+                            strategy_key="strike_cross_snipe_down",
+                            entry_price=float(down),
+                            model_probability=0.90,
+                            signal_confidence=0.95,
+                            extras={"oldest": oldest, "newest": newest, "strike_price": strike_price},
+                        )
+                        candidates["strike_cross_snipe_down"] = r
+        except Exception:
+            pass
 
     # Strategy 1: Binance Oracle Front-running (Disabled: 1-minute candle causes 60-second continuous false re-entries. Using Strategy 7 WS 3s pulse instead.)
     # if SETTINGS.use_cex_oracle and binance_1m:

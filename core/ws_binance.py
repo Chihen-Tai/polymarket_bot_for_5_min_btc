@@ -171,6 +171,28 @@ class BinanceWebSocket:
         current_price = eligible[-1][1]  # newest eligible price
         return (current_price - oldest_price) / oldest_price
 
+    def get_recent_prices_window(self, seconds: float = 5.0, lag_sec: float = 0.0) -> tuple[float | None, float | None]:
+        """Returns the oldest and newest mid-price in the requested time window up to strictly now."""
+        if not self.recent_prices:
+            return None, None
+        now = time.time() - max(0.0, lag_sec)
+        snapshot = list(self.recent_prices)
+        eligible = [(ts, price) for ts, price in snapshot if ts <= now]
+        if not eligible:
+            return None, None
+
+        oldest_price = None
+        for ts, price in eligible:
+            if now - ts <= seconds:
+                oldest_price = price
+                break
+
+        if oldest_price is None:
+            return None, None
+            
+        newest_price = eligible[-1][1]
+        return oldest_price, newest_price
+
     def get_last_update_age(self) -> float:
         """Returns seconds since last WS price tick. Used to detect stale/disconnected state."""
         if not self.recent_prices:

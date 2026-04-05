@@ -255,6 +255,49 @@ def estimate_book_exit_floor_price(book: dict | None, shares: float) -> float | 
     return float(best_bid)
 
 
+def estimate_hedge_exit_value(book_opposite: dict | None, shares: float) -> tuple[float | None, float]:
+    """Estimate the equivalent exit value by taking the ASK liquidity of the opposite token."""
+    target_shares = max(0.0, float(shares or 0.0))
+    if target_shares <= 0.0:
+        return 0.0, 1.0
+    if not isinstance(book_opposite, dict):
+        return None, 0.0
+
+    ask_levels = _normalize_book_levels(book_opposite.get("ask_levels"), reverse=False)
+    if ask_levels:
+        remaining = target_shares
+        total_cost = 0.0
+        filled_shares = 0.0
+        for price, size in ask_levels:
+            take = min(remaining, size)
+            if take <= 0.0:
+                continue
+            total_cost += take * price
+            filled_shares += take
+            remaining -= take
+            if remaining <= 1e-9:
+                break
+        fill_ratio = min(1.0, filled_shares / target_shares)
+        if filled_shares <= 0.0:
+            return 0.0, 0.0
+        # For a full fill, effective value is (shares - cost).
+        effective_value = filled_shares - total_cost
+        return effective_value, fill_ratio
+
+    best_ask = _to_float(book_opposite.get("best_ask"), 0.0)
+    if best_ask <= 0.0:
+        return 0.0, 0.0
+    best_ask_size = _to_float(book_opposite.get("best_ask_size"), 0.0)
+    if best_ask_size > 0.0:
+        filled_shares = min(target_shares, best_ask_size)
+        fill_ratio = min(1.0, filled_shares / target_shares)
+        if filled_shares <= 0.0:
+            return 0.0, 0.0
+        effective_value = filled_shares - (filled_shares * best_ask)
+        return effective_value, fill_ratio
+    return target_shares - (target_shares * best_ask), 1.0
+
+
 class PolymarketExchange:
     """
     dry-run: 本地模擬
@@ -856,6 +899,8 @@ class PolymarketExchange:
         max_attempts: int | None = None,
         retry_delay_sec: float | None = None,
         is_hard_stop: bool = False,
+        hedge_mode: bool = False,
+        opposite_token_id: str | None = None,
     ) -> dict:
         if self.dry_run:
             if simulated_price is not None and simulated_price >= 0:
@@ -874,6 +919,37 @@ class PolymarketExchange:
             remaining_shares = max(0.0, current_shares - closed_shares)
             remaining_cost = max(0.0, current_cost - realized_cost)
             value_received = closed_shares * best_bid
+
+            if hedge_mode and opposite_token_id:
+                # In hedge mode, we simulate buying the opposite token instead of selling the current one.
+                book_opp = self.get_full_orderbook(opposite_token_id)
+                if not book_opp or book_opp.get("best_ask", 0.0) == 0.0:
+                    book_opp = {"best_ask": 0.5}
+                best_ask = book_opp.get("best_ask", 0.5)
+                # cost to hedge
+                hedge_cost = closed_shares * best_ask
+                self._cash -= hedge_cost
+                # Conceptually, the position is now fully risk-neutral, so we just remove it from open exposure.
+                self._open_exposure = max(0.0, self._open_exposure - realized_cost)
+                if remaining_shares > 0 and remaining_cost > 0:
+                    self._position_cost[token_id] = remaining_cost
+                    self._position_shares[token_id] = remaining_shares
+                else:
+                    self._position_cost.pop(token_id, None)
+                    self._position_shares.pop(token_id, None)
+                self._save_paper_balance()
+                
+                return {
+                    "ok": True, 
+                    "mode": "dry-run", 
+                    "closed_shares": closed_shares,
+                    "actual_exit_value_usd": closed_shares - hedge_cost,
+                    "actual_exit_value_source": "paper_trade_simulation_hedge",
+                    "close_response_value": closed_shares - hedge_cost,
+                    "close_response_value_source": "paper_trade_simulation_hedge",
+                    "remaining_shares": remaining_shares,
+                    "execution_style": "taker-simulated-hedge",
+                }
 
             self._cash += value_received
             self._open_exposure = max(0.0, self._open_exposure - realized_cost)
@@ -898,7 +974,7 @@ class PolymarketExchange:
             }
 
         from py_clob_client.clob_types import MarketOrderArgs, OrderArgs, OrderType
-        from py_clob_client.order_builder.constants import SELL
+        from py_clob_client.order_builder.constants import SELL, BUY
         import time
 
         cash_before = self._get_cash_balance()
@@ -945,8 +1021,8 @@ class PolymarketExchange:
                         if oid:
                             self.cancel_order(oid)
                 
-                # Maker Exits for first 5 attempts, Taker Fallback for remaining
-                if not force_taker and attempts <= 5:
+                # Maker Exits for first 5 attempts, Taker Fallback for remaining (except Hedge Mode always uses Taker)
+                if not force_taker and attempts <= 5 and not (hedge_mode and opposite_token_id):
                     book = self.get_full_orderbook(token_id)
                     best_bid = float(book.get("best_bid", 0.01)) if book else 0.01
                     best_ask = float(book.get("best_ask", 1.00)) if book else 1.00
@@ -988,40 +1064,57 @@ class PolymarketExchange:
                         usdc_src = "maker-no-fill"
                         
                 else:
-                    # Taker Fallback (Attempts 6-8) with Adaptive Slippage Padding from simulated mark price
-                    worst_price = 0.01
-                    book = self.get_full_orderbook(token_id)
-                    book_floor_price = estimate_book_exit_floor_price(book, chunk)
-                    if book_floor_price is not None and book_floor_price > 0.01:
-                        # When we have enough live bid depth for the requested chunk,
-                        # cross only as deep as the actual executable floor instead of
-                        # using a loose mark-based slippage ladder.
-                        worst_price = round(float(book_floor_price), 3)
-                    elif simulated_price is not None and simulated_price > 0.01:
-                        # Adaptive slippage: starts at 8%, widens up to 30% across attempts
-                        base_slip = 0.08
-                        fallback_idx = max(0, attempts if force_taker else attempts - 5)
-                        bonus_slip = (fallback_idx - 1) * 0.08 if fallback_idx >= 1 else 0.0
-                        total_slip = min(0.30, base_slip + bonus_slip)
-                        
-                        worst_price = round(max(0.01, simulated_price * (1.0 - total_slip)), 3)
+                    # Taker Fallback (Attempts 6-8) or Hedge Mode
+                    if hedge_mode and opposite_token_id:
+                        target_token = opposite_token_id
+                        target_side = BUY
+                        worst_price = 0.99  # Cross the whole spread for hedge BUY
+                    else:
+                        target_token = token_id
+                        target_side = SELL
+                        worst_price = 0.01
+                        book = self.get_full_orderbook(token_id)
+                        book_floor_price = estimate_book_exit_floor_price(book, chunk)
+                        if book_floor_price is not None and book_floor_price > 0.01:
+                            worst_price = round(float(book_floor_price), 3)
+                        elif simulated_price is not None and simulated_price > 0.01:
+                            base_slip = 0.08
+                            fallback_idx = max(0, attempts if force_taker else attempts - 5)
+                            bonus_slip = (fallback_idx - 1) * 0.08 if fallback_idx >= 1 else 0.0
+                            total_slip = min(0.30, base_slip + bonus_slip)
+                            worst_price = round(max(0.01, simulated_price * (1.0 - total_slip)), 3)
                         
                     order = self.client.create_order(
                         OrderArgs(
-                            token_id=token_id,
+                            token_id=target_token,
                             price=float(worst_price),
                             size=float(chunk),
-                            side=SELL,
+                            side=target_side,
                         )
                     )
                     from py_clob_client.clob_types import OrderType
                     last_resp = self.client.post_order(order, OrderType.FAK)
-                    usdc_this, usdc_src = self._extract_close_usdc_received(last_resp)
-                    filled_shares, _ = self._extract_close_shares_sold(last_resp)
-                    if filled_shares and filled_shares > 0:
-                        taker_filled = True
+                    
+                    if hedge_mode and opposite_token_id:
+                        # It was a BUY, so we look at makingAmount for cost
+                        filled_cost, _ = self._extract_entry_cost_usd(last_resp)
+                        filled_shares, _ = self._extract_close_shares_sold(last_resp)
+                        if filled_shares and filled_shares > 0:
+                            taker_filled = True
+                        if filled_cost is not None and filled_cost > 0:
+                            # Equivalent exit value is the shares secured minus the cost we paid
+                            usdc_this = (filled_shares or 0.0) - filled_cost
+                            usdc_src = "taker-buy-hedge"
+                        else:
+                            usdc_this = None
+                            usdc_src = "taker-buy-hedge-failed"
+                    else:
+                        usdc_this, usdc_src = self._extract_close_usdc_received(last_resp)
+                        filled_shares, _ = self._extract_close_shares_sold(last_resp)
+                        if filled_shares and filled_shares > 0:
+                            taker_filled = True
 
-                if usdc_this is not None and usdc_this > 0:
+                if usdc_this is not None and usdc_this > 0 or (hedge_mode and usdc_this is not None):
                     usdc_received_total = (usdc_received_total or 0.0) + usdc_this
                     usdc_received_source = usdc_src
 
