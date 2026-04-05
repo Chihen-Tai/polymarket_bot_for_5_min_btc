@@ -268,7 +268,7 @@ def explain_choose_side(
                     binance_mid = (binance_bba.get("b", 0.0) + binance_bba.get("a", 0.0)) / 2.0
                     if binance_mid > 0:
                         dist = binance_mid - strike_price
-                        theta_dist = float(getattr(SETTINGS, "theta_bleed_distance", 50.0))
+                        theta_dist = float(getattr(SETTINGS, "theta_bleed_distance", 120.0))
                         
                         # If Binance is > 120 dist ABOVE strike, UP is highly certain
                         if dist > theta_dist and snipe_valid_up:
@@ -305,7 +305,7 @@ def explain_choose_side(
             if BINANCE_WS.get_last_update_age() < 5.0:
                 oldest, newest = BINANCE_WS.get_recent_prices_window(seconds=5.0)
                 if oldest is not None and newest is not None:
-                    gap = float(getattr(SETTINGS, "strike_cross_gap", 10.0))
+                    gap = float(getattr(SETTINGS, "strike_cross_gap", 20.0))
                     
                     # Crossed UP securely
                     if oldest < strike_price and newest > (strike_price + gap) and snipe_valid_up:
