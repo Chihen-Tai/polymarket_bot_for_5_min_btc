@@ -604,16 +604,18 @@ def explain_choose_side(
             candidates["mean_reversion_signal"] = r
 
 
-    # Apply Momentum Confirmation and Time Locks (OFI/flash-snipe/strike_cross strategies are exempt)
+    # Apply Momentum Confirmation and Time Locks
     filtered_candidates = {}
     for name, s_result in candidates.items():
+        # Enforce time_valid for ALL strategies to prevent round-trip dumps
+        if not time_valid:
+            continue
+
         if name in _MOMENTUM_EXEMPT:
             filtered_candidates[name] = s_result
             continue
             
-        # For non-exempt strategies, time window and standard price bounds strictly apply
-        if not time_valid:
-            continue
+        # For non-exempt strategies, standard price bounds strictly apply
         if not regular_valid_up and s_result.get("side") == "UP":
             continue
         if not regular_valid_down and s_result.get("side") == "DOWN":
