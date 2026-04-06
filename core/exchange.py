@@ -725,21 +725,27 @@ class PolymarketExchange:
         use_market_entry = force_taker or bool(getattr(SETTINGS, "live_entry_use_market_orders", True))
 
         if use_market_entry:
-            actual_order_usd = round(max(float(amount_usd), min_live_order_usd), 4)
+            price_rounded = 0.99
+            size_rounded, actual_order_usd = plan_live_order(
+                amount_usd,
+                price_rounded,
+                min_live_order_shares,
+                min_live_order_usd,
+            )
             if live_order_hard_cap_usd > 0.0 and actual_order_usd > live_order_hard_cap_usd + 1e-9:
                 raise ValueError(
                     f"order notional exceeds live cap: requested=${amount_usd:.2f} "
                     f"actual=${actual_order_usd:.4f} cap=${live_order_hard_cap_usd:.2f}"
                 )
-            from py_clob_client.clob_types import MarketOrderArgs
-            order = self.client.create_market_order(
-                MarketOrderArgs(
+            order = self.client.create_order(
+                OrderArgs(
                     token_id=token_id,
-                    amount=float(actual_order_usd),
+                    price=float(price_rounded),
+                    size=float(size_rounded),
                     side=BUY,
-                    order_type=OrderType.FAK,
                 )
             )
+            from py_clob_client.clob_types import OrderType
             resp = self.client.post_order(order, OrderType.FAK)
         else:
             size_rounded, actual_order_usd = plan_live_order(
@@ -1073,17 +1079,6 @@ class PolymarketExchange:
                         target_token = token_id
                         target_side = SELL
                         worst_price = 0.01
-                        book = self.get_full_orderbook(token_id)
-                        book_floor_price = estimate_book_exit_floor_price(book, chunk)
-                        if book_floor_price is not None and book_floor_price > 0.01:
-                            worst_price = round(float(book_floor_price), 3)
-                        elif simulated_price is not None and simulated_price > 0.01:
-                            base_slip = 0.08
-                            fallback_idx = max(0, attempts if force_taker else attempts - 5)
-                            bonus_slip = (fallback_idx - 1) * 0.08 if fallback_idx >= 1 else 0.0
-                            total_slip = min(0.30, base_slip + bonus_slip)
-                            worst_price = round(max(0.01, simulated_price * (1.0 - total_slip)), 3)
-                        
                     order = self.client.create_order(
                         OrderArgs(
                             token_id=target_token,
@@ -1149,16 +1144,6 @@ class PolymarketExchange:
         cash_after = None
         cash_delta = None
         cash_delta_source = "cash_balance_unavailable"
-        if sold_total > 0:
-            for _ in range(3):
-                cash_after = self._get_cash_balance()
-                if cash_after > 0 or cash_before > 0:
-                    cash_delta = cash_after - cash_before
-                    if cash_delta > 0:
-                        cash_delta_source = "cash_balance_delta"
-                        break
-                    cash_delta_source = "cash_balance_non_positive"
-                time.sleep(min(1.0, retry_sleep) if retry_sleep > 0 else 0.0)
 
         ok = sold_total > 0 and (last_resp is not None)
         best_exit_value, best_exit_source = select_live_close_exit_value(

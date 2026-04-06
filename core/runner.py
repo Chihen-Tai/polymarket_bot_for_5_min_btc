@@ -3751,7 +3751,7 @@ def main():
                                 
                                 try:
                                     close_resp = ex.close_position(p.token_id, sell_shares, simulated_price=float(mark) if mark is not None else None)
-                                    if close_resp.get("ok"):
+                                    if close_resp.get("ok") or float(close_resp.get("closed_shares", 0.0) or 0.0) > 0.0:
                                         starting_shares = float(p.shares)
                                         starting_cost = float(p.cost_usd)
                                         sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
@@ -3859,7 +3859,7 @@ def main():
                                             dry_run=SETTINGS.dry_run,
                                         ),
                                     )
-                                    if close_resp.get("ok"):
+                                    if close_resp.get("ok") or float(close_resp.get("closed_shares", 0.0) or 0.0) > 0.0:
                                         starting_shares = float(p.shares)
                                         starting_cost = float(p.cost_usd)
                                         sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
@@ -4010,7 +4010,7 @@ def main():
                                         simulated_price=float(mark) if mark is not None else None,
                                         force_taker=True,
                                     )
-                                    if close_resp.get("ok"):
+                                    if close_resp.get("ok") or float(close_resp.get("closed_shares", 0.0) or 0.0) > 0.0:
                                         starting_shares = float(p.shares)
                                         starting_cost = float(p.cost_usd)
                                         sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
@@ -4134,7 +4134,7 @@ def main():
                                             or should_force_taker_take_profit(dry_run=SETTINGS.dry_run)
                                         ),
                                     )
-                                    if close_resp.get("ok"):
+                                    if close_resp.get("ok") or float(close_resp.get("closed_shares", 0.0) or 0.0) > 0.0:
                                         starting_shares = float(p.shares)
                                         starting_cost = float(p.cost_usd)
                                         sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), sell_shares)
@@ -4270,7 +4270,7 @@ def main():
                                     opposite_token_id=opp_token,
                                     **close_retry_kwargs,
                                 )
-                                if close_resp.get("ok"):
+                                if close_resp.get("ok") or float(close_resp.get("closed_shares", 0.0) or 0.0) > 0.0:
                                     starting_shares = float(p.shares)
                                     starting_cost = float(p.cost_usd)
                                     sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), starting_shares)
@@ -5056,13 +5056,24 @@ def main():
                                 smart_sleep(SETTINGS.poll_seconds)
                                 continue
                 try:
+                    _current_book = entry_book if entry_book is not None else ex.get_full_orderbook(token_override)
                     entry_book_quality = assess_entry_liquidity(
-                        book=entry_book if entry_book is not None else ex.get_full_orderbook(token_override),
+                        book=_current_book,
                         est_shares=est_shares,
                         max_spread=float(getattr(SETTINGS, "entry_max_spread", 0.0)),
                         min_best_ask_multiple=float(getattr(SETTINGS, "entry_min_best_ask_multiple", 0.0)),
                         min_total_ask_multiple=float(getattr(SETTINGS, "entry_min_total_ask_multiple", 0.0)),
                     )
+                    if not entry_book_quality.get("available") and str(entry_book_quality.get("reason", "")).startswith("book-unavailable"):
+                        # Fallback to REST
+                        _current_book = ex.get_full_orderbook(token_override)
+                        entry_book_quality = assess_entry_liquidity(
+                            book=_current_book,
+                            est_shares=est_shares,
+                            max_spread=float(getattr(SETTINGS, "entry_max_spread", 0.0)),
+                            min_best_ask_multiple=float(getattr(SETTINGS, "entry_min_best_ask_multiple", 0.0)),
+                            min_total_ask_multiple=float(getattr(SETTINGS, "entry_min_total_ask_multiple", 0.0)),
+                        )
                 except Exception as e:
                     entry_book_quality = {"ok": True, "available": False, "reason": f"book-check-error:{e}"}
 
@@ -5399,7 +5410,7 @@ def main():
                                 simulated_price=expected_price,
                                 force_taker=True,
                             )
-                            if close_resp.get("ok"):
+                            if close_resp.get("ok") or float(close_resp.get("closed_shares", 0.0) or 0.0) > 0.0:
                                 sold_shares = min(float(close_resp.get("closed_shares", 0.0) or 0.0), shares)
                                 close_fraction = sold_shares / max(shares, 1e-9)
                                 realized_cost = actual_entry_cost_usd * close_fraction
