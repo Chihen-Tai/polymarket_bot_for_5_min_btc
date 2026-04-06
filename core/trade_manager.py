@@ -190,19 +190,24 @@ def decide_exit(
         return ExitDecision(True, "post-scaleout-stop-loss", pnl_pct, hold_sec)
 
     # 2. Stop Loss Handling
+    # Guard: don't fire ANY stop-loss before the minimum hold time
+    # (ordeerbook noise in first ~6s can look like -15-20% loss on thin binary markets)
+    _sl_min_hold = float(getattr(SETTINGS, "stop_loss_min_hold_sec", 0.0) or 0.0)
+    _stop_loss_armed = hold_sec >= _sl_min_hold
+
     if getattr(SETTINGS, "smart_stop_loss_enabled", False):
-        if pnl_pct <= -SETTINGS.stop_loss_pct:
+        if _stop_loss_armed and pnl_pct <= -SETTINGS.stop_loss_pct:
             return ExitDecision(True, "hard-stop-loss", pnl_pct, hold_sec)
-        if pnl_pct <= -getattr(SETTINGS, "stop_loss_warn_pct", 0.08) and recovery_chance_low:
+        if _stop_loss_armed and pnl_pct <= -getattr(SETTINGS, "stop_loss_warn_pct", 0.08) and recovery_chance_low:
             return ExitDecision(True, "smart-stop-loss", pnl_pct, hold_sec)
-        if not has_scaled_out_loss and pnl_pct <= -getattr(SETTINGS, "stop_loss_partial_pct", 0.05):
+        if _stop_loss_armed and not has_scaled_out_loss and pnl_pct <= -getattr(SETTINGS, "stop_loss_partial_pct", 0.05):
             if getattr(SETTINGS, "force_full_exit_on_stop_loss_scaleout", False):
                 return ExitDecision(True, "stop-loss-full", pnl_pct, hold_sec)
             return ExitDecision(True, "stop-loss-scale-out", pnl_pct, hold_sec)
     else:
-        if pnl_pct <= -SETTINGS.stop_loss_pct:
+        if _stop_loss_armed and pnl_pct <= -SETTINGS.stop_loss_pct:
             return ExitDecision(True, "stop-loss", pnl_pct, hold_sec)
-        if not has_scaled_out_loss and pnl_pct <= -getattr(SETTINGS, "stop_loss_partial_pct", 0.05):
+        if _stop_loss_armed and not has_scaled_out_loss and pnl_pct <= -getattr(SETTINGS, "stop_loss_partial_pct", 0.05):
             if getattr(SETTINGS, "force_full_exit_on_stop_loss_scaleout", False):
                 return ExitDecision(True, "stop-loss-full", pnl_pct, hold_sec)
             return ExitDecision(True, "stop-loss-scale-out", pnl_pct, hold_sec)
