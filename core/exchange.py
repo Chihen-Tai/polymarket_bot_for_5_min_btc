@@ -729,29 +729,24 @@ class PolymarketExchange:
         use_market_entry = force_taker or bool(getattr(SETTINGS, "live_entry_use_market_orders", True))
 
         if use_market_entry:
-            price_rounded = 0.99
-            size_rounded, actual_order_usd = plan_live_order(
-                amount_usd,
-                price_rounded,
-                min_live_order_shares,
-                min_live_order_usd,
-            )
-            expected_cost_usd = size_rounded * (simulated_price if simulated_price and simulated_price > 0 else price_rounded)
-            if live_order_hard_cap_usd > 0.0 and expected_cost_usd > live_order_hard_cap_usd + 1e-9:
+            actual_order_usd = round(max(float(amount_usd), min_live_order_usd), 4)
+            if live_order_hard_cap_usd > 0.0 and actual_order_usd > live_order_hard_cap_usd + 1e-9:
                 raise ValueError(
                     f"order notional exceeds live cap: requested=${amount_usd:.2f} "
-                    f"actual=${expected_cost_usd:.4f} cap=${live_order_hard_cap_usd:.2f}"
+                    f"actual=${actual_order_usd:.4f} cap=${live_order_hard_cap_usd:.2f}"
                 )
-            order = self.client.create_order(
-                OrderArgs(
+            from py_clob_client.clob_types import MarketOrderArgs, OrderType
+            order = self.client.create_market_order(
+                MarketOrderArgs(
                     token_id=token_id,
-                    price=float(price_rounded),
-                    size=float(size_rounded),
+                    amount=float(actual_order_usd),
                     side=BUY,
+                    order_type=OrderType.FAK,
                 )
             )
             from py_clob_client.clob_types import OrderType
             resp = self.client.post_order(order, OrderType.FAK)
+
         else:
             size_rounded, actual_order_usd = plan_live_order(
                 amount_usd,
