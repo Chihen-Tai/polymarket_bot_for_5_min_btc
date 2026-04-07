@@ -986,6 +986,10 @@ LOSS_EXIT_REASONS = {
     "stop-loss-full",
     "stop-loss-scale-out",
     "deadline-exit-loss",
+    "deadline-exit-flat",       # ← 到期前平手退出，必須快速 taker
+    "deadline-exit-weak-win",   # ← 到期前小贏退出，必須快速 taker
+    "stalled-trade",            # ← 長時間卡死，清倉要快
+    "break-even-giveback",      # ← 浮盈全吐回之前要趕快跑
     "max-hold-loss",
     "max-hold-loss-extended",
 }

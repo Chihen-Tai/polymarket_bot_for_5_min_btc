@@ -1029,8 +1029,8 @@ class PolymarketExchange:
                         if oid:
                             self.cancel_order(oid)
                 
-                # Maker Exits for first 5 attempts, Taker Fallback for remaining (except Hedge Mode always uses Taker)
-                if not force_taker and attempts <= 5 and not (hedge_mode and opposite_token_id):
+                # Maker Exits for first 2 attempts only, then switch to Taker (was 5, too slow for short-lived markets)
+                if not force_taker and attempts <= 2 and not (hedge_mode and opposite_token_id):
                     book = self.get_full_orderbook(token_id)
                     best_bid = float(book.get("best_bid", 0.01)) if book else 0.01
                     best_ask = float(book.get("best_ask", 1.00)) if book else 1.00
@@ -1051,8 +1051,10 @@ class PolymarketExchange:
                         raise AttributeError("py_clob_client OrderType missing both POST_ONLY and GTC")
                     last_resp = self.client.post_order(order, limit_order_type)
                     
-                    # If this is a limit order, it won't fill immediately. Sleep 3 seconds to expose liquidity to the market.
-                    time.sleep(3.0)
+                    # If this is a limit order, it won't fill immediately.
+                    # Sleep 1 second (was 3s) — shorter window reduces risk of market expiring
+                    # before taker fallback can execute in the remaining attempts.
+                    time.sleep(1.0)
                     
                     # Check USDC Delta to see if the market bought our Limit Ask!
                     current_cash = self._get_cash_balance()
