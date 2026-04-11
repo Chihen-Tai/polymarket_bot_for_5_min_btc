@@ -15,10 +15,13 @@ from core.exchange import (
     parse_balance_allowance_available_shares,
     plan_live_order,
     select_live_close_exit_value,
+    taker_sell_worst_price,
 )
 from core.runner import (
     ExitDecision as RunnerExitDecision,
     OpenPos,
+    PendingOrder,
+    build_take_profit_principal_exit_event,
     close_fill_ratio,
     conservative_exit_decision_value,
     emergency_exit_retry_kwargs,
@@ -33,6 +36,7 @@ from core.runner import (
     is_loss_exit_reason,
     loss_exit_retry_kwargs,
     loss_exit_tail_fraction,
+    maker_entry_timeout_seconds,
     realized_exit_pnl,
     principal_extraction_sell_fraction,
     principal_extraction_complete,
@@ -42,6 +46,7 @@ from core.runner import (
     should_block_live_entry_for_unavailable_book,
     should_arm_residual_force_close_after_stop_loss_scaleout,
     should_delay_soft_stop_scaleout,
+    should_allow_normal_taker_fallback,
     should_trigger_binance_adverse_exit,
     should_trigger_binance_profit_protect_exit,
     should_force_taker_profit_protection,
@@ -52,6 +57,7 @@ from core.runner import (
     resolve_close_remaining_shares,
     resolve_effective_closed_shares,
     preserve_partial_close_residual,
+    pending_order_allows_taker_fallback,
 )
 
 
@@ -67,7 +73,9 @@ def make_paper_exchange() -> PolymarketExchange:
     ex._open_exposure = 0.0
     ex._position_cost = {}
     ex._position_shares = {}
-    ex.paper_balance_file = os.path.join(os.path.dirname(__file__), "tmp_paper_balance.json")
+    ex.paper_balance_file = os.path.join(
+        os.path.dirname(__file__), "tmp_paper_balance.json"
+    )
     if os.path.exists(ex.paper_balance_file):
         os.remove(ex.paper_balance_file)
     return ex
@@ -118,6 +126,7 @@ def main():
     SETTINGS.take_profit_principal_after_partial_drawdown_pct = 0.08
     SETTINGS.take_profit_principal_after_partial_min_current_pct = 0.14
     SETTINGS.take_profit_runner_fraction = 0.10
+    SETTINGS.maker_order_timeout_sec = 11
 
     ex = make_paper_exchange()
 
@@ -128,14 +137,24 @@ def main():
     class ModernOrderType:
         GTC = "GTC"
 
-    value, source = ex._extract_close_usdc_received({"takingAmount": 0.9823, "makingAmount": 2.094658})
-    filled, filled_source = ex._extract_close_shares_sold({"takingAmount": 0.9823, "makingAmount": 2.094658})
-    entry_cost, entry_cost_source = ex._extract_entry_cost_usd({"takingAmount": 6.46, "makingAmount": 1.938})
+    value, source = ex._extract_close_usdc_received(
+        {"takingAmount": 0.9823, "makingAmount": 2.094658}
+    )
+    filled, filled_source = ex._extract_close_shares_sold(
+        {"takingAmount": 0.9823, "makingAmount": 2.094658}
+    )
+    entry_cost, entry_cost_source = ex._extract_entry_cost_usd(
+        {"takingAmount": 6.46, "makingAmount": 1.938}
+    )
     runner_entry_cost = extract_entry_cost_usd(
         {
             "amount_usd": 3.0039,
             "actual_entry_cost_usd": 1.938,
-            "response": {"takingAmount": "6.46", "makingAmount": "1.938", "status": "matched"},
+            "response": {
+                "takingAmount": "6.46",
+                "makingAmount": "1.938",
+                "status": "matched",
+            },
         },
         3.0039,
     )
@@ -156,19 +175,23 @@ def main():
         actual_avg_price=0.52,
         dry_run=False,
     )
-    estimated_entry_avg, estimated_entry_shares, estimated_entry_fill_ratio = estimate_book_entry_fill(
-        book={"ask_levels": [(0.85, 2.0)]},
-        amount_usd=1.0,
+    estimated_entry_avg, estimated_entry_shares, estimated_entry_fill_ratio = (
+        estimate_book_entry_fill(
+            book={"ask_levels": [(0.85, 2.0)]},
+            amount_usd=1.0,
+        )
     )
     prechecked_slippage_breach, prechecked_slippage_premium = entry_slippage_breach(
         expected_entry_price=0.525,
         actual_avg_price=estimated_entry_avg,
         dry_run=False,
     )
-    postcheck_with_estimated_expected, postcheck_with_estimated_premium = entry_slippage_breach(
-        expected_entry_price=estimated_entry_avg,
-        actual_avg_price=0.85,
-        dry_run=False,
+    postcheck_with_estimated_expected, postcheck_with_estimated_premium = (
+        entry_slippage_breach(
+            expected_entry_price=estimated_entry_avg,
+            actual_avg_price=0.85,
+            dry_run=False,
+        )
     )
     depth_book = {
         "best_bid": 0.475,
@@ -177,19 +200,37 @@ def main():
     }
     depth_value, depth_fill_ratio = estimate_book_exit_value(depth_book, 2.0)
     depth_floor_price = estimate_book_exit_floor_price(depth_book, 2.0)
-    thin_value, thin_fill_ratio = estimate_book_exit_value({"bid_levels": [(0.2, 1.0)]}, 2.0)
+    thin_value, thin_fill_ratio = estimate_book_exit_value(
+        {"bid_levels": [(0.2, 1.0)]}, 2.0
+    )
     thin_floor_price = estimate_book_exit_floor_price({"bid_levels": [(0.2, 1.0)]}, 2.0)
-    depth_pos = OpenPos(slug="m", side="UP", token_id="tok2", shares=2.0, cost_usd=1.0, opened_ts=0.0)
+    depth_pos = OpenPos(
+        slug="m", side="UP", token_id="tok2", shares=2.0, cost_usd=1.0, opened_ts=0.0
+    )
     realistic_value = realistic_exit_value(depth_pos, 0.52, 0.48, depth_book, None)
     executable_profit_value = executable_take_profit_value(depth_pos, depth_book, None)
     executable_profit_without_book = executable_take_profit_value(depth_pos, None, None)
     conservative_profitless_value = conservative_exit_decision_value(
-        OpenPos(slug="m2", side="DOWN", token_id="tok3", shares=20.0, cost_usd=1.0, opened_ts=0.0),
+        OpenPos(
+            slug="m2",
+            side="DOWN",
+            token_id="tok3",
+            shares=20.0,
+            cost_usd=1.0,
+            opened_ts=0.0,
+        ),
         executable_exit_value=None,
         mark_value=7.9,
     )
     conservative_loss_value = conservative_exit_decision_value(
-        OpenPos(slug="m3", side="UP", token_id="tok4", shares=2.0, cost_usd=1.0, opened_ts=0.0),
+        OpenPos(
+            slug="m3",
+            side="UP",
+            token_id="tok4",
+            shares=2.0,
+            cost_usd=1.0,
+            opened_ts=0.0,
+        ),
         executable_exit_value=None,
         mark_value=0.62,
     )
@@ -208,15 +249,39 @@ def main():
         shares=2.5,
         order_id="ord_456",
     )
-    block_missing_live_book, missing_live_book_reason = should_block_live_entry_for_unavailable_book(
-        dry_run=False,
-        entry_book_quality={"ok": True, "available": False, "reason": "book-unavailable"},
+    block_missing_live_book, missing_live_book_reason = (
+        should_block_live_entry_for_unavailable_book(
+            dry_run=False,
+            entry_book_quality={
+                "ok": True,
+                "available": False,
+                "reason": "book-unavailable",
+            },
+        )
     )
-    allow_available_live_book, allow_available_live_book_reason = should_block_live_entry_for_unavailable_book(
-        dry_run=False,
-        entry_book_quality={"ok": True, "available": True, "reason": "ok"},
+    allow_available_live_book, allow_available_live_book_reason = (
+        should_block_live_entry_for_unavailable_book(
+            dry_run=False,
+            entry_book_quality={"ok": True, "available": True, "reason": "ok"},
+        )
     )
     observed_partial_value = observed_exit_value_from_mark(sold_shares=1.61, mark=0.365)
+    historical_partial_observed_up = observed_exit_value_from_mark(
+        sold_shares=0.6601307189542484,
+        mark=0.765,
+    )
+    historical_partial_observed_spike = observed_exit_value_from_mark(
+        sold_shares=0.5690607734806629,
+        mark=0.905,
+    )
+    fast_retry_emergency_taker_floor = taker_sell_worst_price(
+        simulated_price=0.49,
+        emergency=True,
+    )
+    emergency_taker_floor = taker_sell_worst_price(
+        simulated_price=0.715, emergency=True
+    )
+    normal_taker_floor = taker_sell_worst_price(simulated_price=0.715, emergency=False)
     sane_actual_value, sane_actual_source = sanitize_live_actual_exit_value(
         actual_exit_value_usd=1.3846,
         actual_exit_value_source="close_response_takingAmount",
@@ -231,53 +296,110 @@ def main():
         mark=0.365,
         dry_run=False,
     )
-    principal_recovery_from_rejected_actual = sane_actual_value if sane_actual_value is not None else observed_partial_value
-    live_close_value_close_match, live_close_source_close_match = select_live_close_exit_value(
-        usdc_received_total=0.5920,
-        usdc_received_source="close_response_takingAmount",
-        cash_delta=0.5877,
-        cash_delta_source="cash_balance_delta",
+    principal_recovery_from_rejected_actual = (
+        sane_actual_value if sane_actual_value is not None else observed_partial_value
     )
-    live_close_value_mismatched, live_close_source_mismatched = select_live_close_exit_value(
-        usdc_received_total=1.3846,
-        usdc_received_source="close_response_takingAmount",
-        cash_delta=0.0589,
-        cash_delta_source="cash_balance_delta",
-    )
-    residual_force_close_armed = should_arm_residual_force_close_after_stop_loss_scaleout(
+    principal_partial_event = build_take_profit_principal_exit_event(
+        pos=OpenPos(
+            slug="btc-updown-5m-1774606500",
+            side="UP",
+            token_id="tok-principal",
+            shares=1.980198,
+            cost_usd=1.0,
+            opened_ts=0.0,
+            position_id="pos_1774606622_035340",
+        ),
+        sold_shares=0.6601307189542484,
+        remaining_shares=1.3200672810457515,
+        realized_cost=0.333366,
+        mark=0.765,
+        close_resp={
+            "actual_exit_value_usd": 0.48,
+            "actual_exit_value_source": "close_response_takingAmount",
+            "execution_style": "taker",
+        },
+        target_principal_usd=1.0,
         dry_run=False,
-        requested_close_shares=1.68,
-        sold_shares=0.20,
-        starting_cost_usd=1.0,
-        remaining_shares=2.12,
-        remaining_cost_usd=0.91,
     )
-    residual_force_close_not_armed_dry_run = should_arm_residual_force_close_after_stop_loss_scaleout(
-        dry_run=True,
-        requested_close_shares=1.68,
-        sold_shares=0.20,
-        starting_cost_usd=1.0,
-        remaining_shares=2.12,
-        remaining_cost_usd=0.91,
+    live_close_value_close_match, live_close_source_close_match = (
+        select_live_close_exit_value(
+            usdc_received_total=0.5920,
+            usdc_received_source="close_response_takingAmount",
+            cash_delta=0.5877,
+            cash_delta_source="cash_balance_delta",
+        )
     )
-    residual_force_close_not_armed_for_healthy_scaleout = should_arm_residual_force_close_after_stop_loss_scaleout(
-        dry_run=False,
-        requested_close_shares=1.68,
-        sold_shares=1.60,
-        starting_cost_usd=1.0,
-        remaining_shares=0.42,
-        remaining_cost_usd=0.18,
+    live_close_value_mismatched, live_close_source_mismatched = (
+        select_live_close_exit_value(
+            usdc_received_total=1.3846,
+            usdc_received_source="close_response_takingAmount",
+            cash_delta=0.0589,
+            cash_delta_source="cash_balance_delta",
+        )
     )
-    residual_force_close_not_armed_for_dust = should_arm_residual_force_close_after_stop_loss_scaleout(
-        dry_run=False,
-        requested_close_shares=1.68,
-        sold_shares=1.68,
-        starting_cost_usd=1.0,
-        remaining_shares=0.0,
-        remaining_cost_usd=0.0,
+    residual_force_close_armed = (
+        should_arm_residual_force_close_after_stop_loss_scaleout(
+            dry_run=False,
+            requested_close_shares=1.68,
+            sold_shares=0.20,
+            starting_cost_usd=1.0,
+            remaining_shares=2.12,
+            remaining_cost_usd=0.91,
+        )
+    )
+    residual_force_close_not_armed_dry_run = (
+        should_arm_residual_force_close_after_stop_loss_scaleout(
+            dry_run=True,
+            requested_close_shares=1.68,
+            sold_shares=0.20,
+            starting_cost_usd=1.0,
+            remaining_shares=2.12,
+            remaining_cost_usd=0.91,
+        )
+    )
+    residual_force_close_not_armed_for_healthy_scaleout = (
+        should_arm_residual_force_close_after_stop_loss_scaleout(
+            dry_run=False,
+            requested_close_shares=1.68,
+            sold_shares=1.60,
+            starting_cost_usd=1.0,
+            remaining_shares=0.42,
+            remaining_cost_usd=0.18,
+        )
+    )
+    residual_force_close_not_armed_for_dust = (
+        should_arm_residual_force_close_after_stop_loss_scaleout(
+            dry_run=False,
+            requested_close_shares=1.68,
+            sold_shares=1.68,
+            starting_cost_usd=1.0,
+            remaining_shares=0.0,
+            remaining_cost_usd=0.0,
+        )
     )
     live_taker_retry_ex = make_paper_exchange()
     live_taker_retry_ex.dry_run = False
+    live_taker_retry_prices: list[float] = []
+    weak_edge_pending_order = PendingOrder(
+        order_id="weak-edge",
+        slug="m-weak",
+        side="UP",
+        token_id="tok-weak",
+        placed_ts=1.0,
+        order_usd=1.0,
+        raw_edge=0.025,
+        required_edge=0.020,
+    )
+    strong_edge_pending_order = PendingOrder(
+        order_id="strong-edge",
+        slug="m-strong",
+        side="UP",
+        token_id="tok-strong",
+        placed_ts=1.0,
+        order_usd=1.0,
+        raw_edge=0.031,
+        required_edge=0.020,
+    )
 
     class ForceTakerRetryClient:
         def __init__(self, fills: list[float]):
@@ -287,6 +409,7 @@ def main():
             return order_args
 
         def post_order(self, order, order_type):
+            live_taker_retry_prices.append(float(getattr(order, "price", 0.0) or 0.0))
             filled = self.fills.pop(0) if self.fills else 0.0
             if filled <= 0.0:
                 return {"takingAmount": 0.0, "makingAmount": 0.0}
@@ -318,15 +441,19 @@ def main():
             max_attempts=4,
             retry_delay_sec=0.25,
         )
-    live_taker_retry_sleep_calls = [call.args[0] for call in live_taker_retry_sleep.call_args_list]
+    live_taker_retry_sleep_calls = [
+        call.args[0] for call in live_taker_retry_sleep.call_args_list
+    ]
     live_dust_retry_ex = make_paper_exchange()
     live_dust_retry_ex.dry_run = False
+    live_dust_retry_prices: list[float] = []
 
     class DustBalanceRetryClient:
         def create_order(self, order_args):
             return order_args
 
         def post_order(self, order, order_type):
+            live_dust_retry_prices.append(float(getattr(order, "price", 0.0) or 0.0))
             raise Exception(
                 "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance: "
                 "the balance is not enough -> balance: 8060, order amount: 10000'}]"
@@ -344,7 +471,46 @@ def main():
             max_attempts=8,
             retry_delay_sec=1.0,
         )
-    live_dust_retry_sleep_calls = [call.args[0] for call in live_dust_retry_sleep.call_args_list]
+    live_dust_retry_sleep_calls = [
+        call.args[0] for call in live_dust_retry_sleep.call_args_list
+    ]
+    normal_taker_fallback_ex = make_paper_exchange()
+    normal_taker_fallback_ex.dry_run = False
+
+    class NormalFallbackClient:
+        def __init__(self, fill_threshold: float):
+            self.fill_threshold = fill_threshold
+            self.taker_attempts = 0
+            self.fill_count = 0
+
+        def create_order(self, order_args):
+            return order_args
+
+        def post_order(self, order, order_type):
+            order_type_name = str(order_type)
+            price = float(getattr(order, "price", 0.0) or 0.0)
+            if order_type_name.endswith("FAK") and price <= self.fill_threshold:
+                self.taker_attempts += 1
+                self.fill_count += 1
+                size = float(getattr(order, "size", 0.0) or 0.0)
+                return {"takingAmount": round(price * size, 6), "makingAmount": size}
+            if order_type_name.endswith("FAK"):
+                self.taker_attempts += 1
+            return {"takingAmount": 0.0, "makingAmount": 0.0}
+
+    normal_taker_fallback_client = NormalFallbackClient(fill_threshold=0.48)
+    normal_taker_fallback_ex.client = normal_taker_fallback_client
+    normal_taker_fallback_ex.get_open_orders = lambda _token_id=None: []
+    normal_taker_fallback_ex._get_cash_balance = lambda: 10.0
+    with patch("time.sleep"):
+        normal_taker_fallback_close = normal_taker_fallback_ex.close_position(
+            "tok-normal-fallback",
+            1.0,
+            simulated_price=0.715,
+            force_taker=False,
+            max_attempts=4,
+            retry_delay_sec=0.25,
+        )
     parsed_balance_shares = parse_balance_allowance_available_shares(
         "PolyApiException[status_code=400, error_message={'error': 'not enough balance / allowance: "
         "the balance is not enough -> balance: 1198827, order amount: 1200000'}]"
@@ -442,22 +608,68 @@ def main():
     acct = ex.get_account()
 
     cases = [
-        ("close_response_value_prefers_taking_amount", abs((value or 0.0) - 0.9823) < 1e-9),
+        (
+            "close_response_value_prefers_taking_amount",
+            abs((value or 0.0) - 0.9823) < 1e-9,
+        ),
         ("close_response_value_source", source == "close_response_takingAmount"),
-        ("close_response_filled_shares_from_making_amount", abs((filled or 0.0) - 2.094658) < 1e-9),
-        ("close_response_filled_shares_source", filled_source == "close_response_makingAmount"),
-        ("entry_response_cost_from_making_amount", abs((entry_cost or 0.0) - 1.938) < 1e-9),
-        ("entry_response_cost_source", entry_cost_source == "entry_response_makingAmount"),
+        (
+            "close_response_filled_shares_from_making_amount",
+            abs((filled or 0.0) - 2.094658) < 1e-9,
+        ),
+        (
+            "close_response_filled_shares_source",
+            filled_source == "close_response_makingAmount",
+        ),
+        (
+            "entry_response_cost_from_making_amount",
+            abs((entry_cost or 0.0) - 1.938) < 1e-9,
+        ),
+        (
+            "entry_response_cost_source",
+            entry_cost_source == "entry_response_makingAmount",
+        ),
         ("runner_prefers_actual_entry_cost", abs(runner_entry_cost - 1.938) < 1e-9),
-        ("entry_implied_avg_price_uses_cost_divided_by_shares", abs((implied_entry_avg_price or 0.0) - 0.8) < 1e-9),
-        ("entry_slippage_breach_detects_extreme_live_fill", slippage_breach is True and abs(slippage_premium - ((0.8 / 0.475) - 1.0)) < 1e-9),
-        ("entry_slippage_breach_allows_normal_fill", slippage_ok is False and slippage_ok_premium < 0.18),
-        ("estimate_book_entry_fill_uses_ask_depth", abs((estimated_entry_avg or 0.0) - 0.85) < 1e-9 and abs(estimated_entry_shares - (1.0 / 0.85)) < 1e-9 and abs(estimated_entry_fill_ratio - 1.0) < 1e-9),
-        ("entry_slippage_precheck_blocks_too_expensive_market_fill", prechecked_slippage_breach is True and prechecked_slippage_premium > 0.18),
-        ("entry_slippage_postcheck_accepts_fill_near_prechecked_avg", postcheck_with_estimated_expected is False and abs(postcheck_with_estimated_premium) < 1e-9),
-        ("principal_extraction_rejects_tiny_partial_fill", principal_extraction_complete(0.0286, 1.0) is False),
-        ("principal_extraction_accepts_near_full_recovery", principal_extraction_complete(0.97, 1.0) is True),
-        ("principal_extraction_sell_fraction_uses_total_position_value", abs(principal_extraction_sell_fraction(1.6, 1.0) - 0.625) < 1e-9),
+        (
+            "entry_implied_avg_price_uses_cost_divided_by_shares",
+            abs((implied_entry_avg_price or 0.0) - 0.8) < 1e-9,
+        ),
+        (
+            "entry_slippage_breach_detects_extreme_live_fill",
+            slippage_breach is True
+            and abs(slippage_premium - ((0.8 / 0.475) - 1.0)) < 1e-9,
+        ),
+        (
+            "entry_slippage_breach_allows_normal_fill",
+            slippage_ok is False and slippage_ok_premium < 0.18,
+        ),
+        (
+            "estimate_book_entry_fill_uses_ask_depth",
+            abs((estimated_entry_avg or 0.0) - 0.85) < 1e-9
+            and abs(estimated_entry_shares - (1.0 / 0.85)) < 1e-9
+            and abs(estimated_entry_fill_ratio - 1.0) < 1e-9,
+        ),
+        (
+            "entry_slippage_precheck_blocks_too_expensive_market_fill",
+            prechecked_slippage_breach is True and prechecked_slippage_premium > 0.18,
+        ),
+        (
+            "entry_slippage_postcheck_accepts_fill_near_prechecked_avg",
+            postcheck_with_estimated_expected is False
+            and abs(postcheck_with_estimated_premium) < 1e-9,
+        ),
+        (
+            "principal_extraction_rejects_tiny_partial_fill",
+            principal_extraction_complete(0.0286, 1.0) is False,
+        ),
+        (
+            "principal_extraction_accepts_near_full_recovery",
+            principal_extraction_complete(0.97, 1.0) is True,
+        ),
+        (
+            "principal_extraction_sell_fraction_uses_total_position_value",
+            abs(principal_extraction_sell_fraction(1.6, 1.0) - 0.625) < 1e-9,
+        ),
         (
             "principal_extraction_sell_fraction_respects_final_runner_target",
             abs(
@@ -466,155 +678,881 @@ def main():
                     0.4,
                     current_shares=4.0,
                     target_remaining_shares=1.0,
-                ) - 0.75
-            ) < 1e-9,
+                )
+                - 0.75
+            )
+            < 1e-9,
         ),
-        ("realized_exit_pnl_falls_back_to_observed_when_actual_is_none", abs(realized_exit_pnl(None, 0.18, 0.20) + 0.02) < 1e-9),
-        ("realized_exit_pnl_prefers_actual_when_present", abs(realized_exit_pnl(0.22, 0.18, 0.20) - 0.02) < 1e-9),
-        ("ws_order_flow_down_blocked_on_rising_velocity", entry_velocity_gate_rejects("DOWN", "model-ws_order_flow_down", 0.0001) is True),
-        ("ws_order_flow_up_blocked_on_falling_velocity", entry_velocity_gate_rejects("UP", "model-ws_order_flow_up", -0.0001) is True),
-        ("ws_order_flow_down_allows_flat_or_down_velocity", entry_velocity_gate_rejects("DOWN", "model-ws_order_flow_down", 0.0) is False and entry_velocity_gate_rejects("DOWN", "model-ws_order_flow_down", -0.0001) is False),
-        ("loss_exit_reason_detects_stop_loss", is_loss_exit_reason("stop-loss") is True),
-        ("loss_exit_reason_rejects_take_profit", is_loss_exit_reason("take-profit-principal") is False),
-        ("loss_exit_tail_defaults_to_zero_for_stop_loss", abs(loss_exit_tail_fraction(reason="stop-loss-full", pnl_pct=-0.08) - 0.0) < 1e-9),
-        ("loss_exit_tail_defaults_to_zero_for_stalled_loss", abs(loss_exit_tail_fraction(reason="stalled-trade", pnl_pct=-0.01) - 0.0) < 1e-9),
+        (
+            "realized_exit_pnl_falls_back_to_observed_when_actual_is_none",
+            abs(realized_exit_pnl(None, 0.18, 0.20) + 0.02) < 1e-9,
+        ),
+        (
+            "realized_exit_pnl_prefers_actual_when_present",
+            abs(realized_exit_pnl(0.22, 0.18, 0.20) - 0.02) < 1e-9,
+        ),
+        (
+            "ws_order_flow_down_blocked_on_rising_velocity",
+            entry_velocity_gate_rejects("DOWN", "model-ws_order_flow_down", 0.0001)
+            is True,
+        ),
+        (
+            "ws_order_flow_up_blocked_on_falling_velocity",
+            entry_velocity_gate_rejects("UP", "model-ws_order_flow_up", -0.0001)
+            is True,
+        ),
+        (
+            "ws_order_flow_down_allows_flat_or_down_velocity",
+            entry_velocity_gate_rejects("DOWN", "model-ws_order_flow_down", 0.0)
+            is False
+            and entry_velocity_gate_rejects("DOWN", "model-ws_order_flow_down", -0.0001)
+            is False,
+        ),
+        (
+            "loss_exit_reason_detects_stop_loss",
+            is_loss_exit_reason("stop-loss") is True,
+        ),
+        (
+            "loss_exit_reason_rejects_take_profit",
+            is_loss_exit_reason("take-profit-principal") is False,
+        ),
+        (
+            "loss_exit_tail_defaults_to_zero_for_stop_loss",
+            abs(loss_exit_tail_fraction(reason="stop-loss-full", pnl_pct=-0.08) - 0.0)
+            < 1e-9,
+        ),
+        (
+            "loss_exit_tail_defaults_to_zero_for_stalled_loss",
+            abs(loss_exit_tail_fraction(reason="stalled-trade", pnl_pct=-0.01) - 0.0)
+            < 1e-9,
+        ),
         (
             "loss_exit_tail_can_still_use_small_configured_fraction",
             (setattr(SETTINGS, "leave_loss_tail_pct", 0.02) or True)
-            and abs(loss_exit_tail_fraction(reason="stop-loss-full", pnl_pct=-0.08) - 0.02) < 1e-9
+            and abs(
+                loss_exit_tail_fraction(reason="stop-loss-full", pnl_pct=-0.08) - 0.02
+            )
+            < 1e-9
             and (setattr(SETTINGS, "leave_loss_tail_pct", 0.0) or True),
         ),
-        ("loss_exit_tail_skips_break_even_giveback_cleanup", abs(loss_exit_tail_fraction(reason="break-even-giveback", pnl_pct=-0.01) - 0.0) < 1e-9),
-        ("loss_exit_tail_skips_profit_exit", abs(loss_exit_tail_fraction(reason="take-profit-principal", pnl_pct=0.12) - 0.0) < 1e-9),
-        ("loss_exit_tail_skips_residual_force_close_cleanup", abs(loss_exit_tail_fraction(reason="residual-force-close", pnl_pct=-0.12) - 0.0) < 1e-9),
-        ("live_force_full_loss_exit_skips_stop_loss_scaleout", should_force_full_loss_exit(reason="stop-loss-scale-out", dry_run=False) is False),
-        ("live_force_full_loss_exit_on_deadline_loss", should_force_full_loss_exit(reason="deadline-exit-loss", dry_run=False) is True),
-        ("dry_run_does_not_force_full_loss_exit", should_force_full_loss_exit(reason="stop-loss-scale-out", dry_run=True) is False),
-        ("live_force_taker_on_deadline_loss", should_force_taker_exit(reason="deadline-exit-loss", dry_run=False) is True),
-        ("live_take_profit_prefers_taker", should_force_taker_take_profit(dry_run=False) is True),
-        ("dry_run_take_profit_does_not_force_taker", should_force_taker_take_profit(dry_run=True) is False),
-        ("profit_reversal_exit_triggers_after_big_profit_drawdown", should_trigger_profit_reversal_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.18, mfe_pnl_pct=0.60, current_value_usd=1.18, peak_value_usd=1.50, ws_velocity=-0.0010, secs_left=120.0) is True),
-        ("profit_reversal_exit_skips_if_peak_profit_too_small", should_trigger_profit_reversal_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.18, mfe_pnl_pct=0.20, current_value_usd=1.18, peak_value_usd=1.50, ws_velocity=-0.0010, secs_left=120.0) is False),
-        ("profit_reversal_exit_skips_if_velocity_not_adverse", should_trigger_profit_reversal_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.18, mfe_pnl_pct=0.60, current_value_usd=1.18, peak_value_usd=1.50, ws_velocity=0.0001, secs_left=120.0) is False),
-        ("profit_reversal_exit_skips_risk_free_runner", should_trigger_profit_reversal_exit(has_extracted_principal=True, side="UP", profit_pnl_pct=0.18, mfe_pnl_pct=0.60, current_value_usd=1.18, peak_value_usd=1.50, ws_velocity=-0.0010, secs_left=120.0) is False),
-        ("profit_reversal_exit_triggers_for_mid_teens_winner_after_sharp_pullback", should_trigger_profit_reversal_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.09, mfe_pnl_pct=0.30, current_value_usd=1.09, peak_value_usd=1.25, ws_velocity=-0.0010, secs_left=120.0) is True),
-        ("profit_reversal_full_exit_prefers_taker_live", should_force_taker_profit_protection(reason="profit-reversal-stop", dry_run=False) is True),
-        ("break_even_giveback_prefers_taker_live", should_force_taker_profit_protection(reason="break-even-giveback", dry_run=False) is True),
-        ("binance_adverse_exit_prefers_taker_live", should_force_taker_profit_protection(reason="binance-adverse-exit", dry_run=False) is True),
-        ("deadline_take_profit_prefers_taker_live", should_force_taker_profit_protection(reason="deadline-take-profit-full", dry_run=False) is True),
-        ("deadline_weak_win_prefers_taker_live", should_force_taker_profit_protection(reason="deadline-exit-weak-win", dry_run=False) is True),
-        ("deadline_flat_prefers_taker_live", should_force_taker_profit_protection(reason="deadline-exit-flat", dry_run=False) is True),
+        (
+            "loss_exit_tail_skips_break_even_giveback_cleanup",
+            abs(
+                loss_exit_tail_fraction(reason="break-even-giveback", pnl_pct=-0.01)
+                - 0.0
+            )
+            < 1e-9,
+        ),
+        (
+            "loss_exit_tail_skips_profit_exit",
+            abs(
+                loss_exit_tail_fraction(reason="take-profit-principal", pnl_pct=0.12)
+                - 0.0
+            )
+            < 1e-9,
+        ),
+        (
+            "loss_exit_tail_skips_residual_force_close_cleanup",
+            abs(
+                loss_exit_tail_fraction(reason="residual-force-close", pnl_pct=-0.12)
+                - 0.0
+            )
+            < 1e-9,
+        ),
+        (
+            "live_force_full_loss_exit_skips_stop_loss_scaleout",
+            should_force_full_loss_exit(reason="stop-loss-scale-out", dry_run=False)
+            is False,
+        ),
+        (
+            "live_force_full_loss_exit_on_deadline_loss",
+            should_force_full_loss_exit(reason="deadline-exit-loss", dry_run=False)
+            is True,
+        ),
+        (
+            "dry_run_does_not_force_full_loss_exit",
+            should_force_full_loss_exit(reason="stop-loss-scale-out", dry_run=True)
+            is False,
+        ),
+        (
+            "live_force_taker_on_deadline_loss",
+            should_force_taker_exit(reason="deadline-exit-loss", dry_run=False) is True,
+        ),
+        (
+            "live_take_profit_prefers_taker",
+            should_force_taker_take_profit(dry_run=False) is True,
+        ),
+        (
+            "dry_run_take_profit_does_not_force_taker",
+            should_force_taker_take_profit(dry_run=True) is False,
+        ),
+        (
+            "profit_reversal_exit_triggers_after_big_profit_drawdown",
+            should_trigger_profit_reversal_exit(
+                has_extracted_principal=False,
+                side="UP",
+                profit_pnl_pct=0.18,
+                mfe_pnl_pct=0.60,
+                current_value_usd=1.18,
+                peak_value_usd=1.50,
+                ws_velocity=-0.0010,
+                secs_left=120.0,
+            )
+            is True,
+        ),
+        (
+            "profit_reversal_exit_skips_if_peak_profit_too_small",
+            should_trigger_profit_reversal_exit(
+                has_extracted_principal=False,
+                side="UP",
+                profit_pnl_pct=0.18,
+                mfe_pnl_pct=0.20,
+                current_value_usd=1.18,
+                peak_value_usd=1.50,
+                ws_velocity=-0.0010,
+                secs_left=120.0,
+            )
+            is False,
+        ),
+        (
+            "profit_reversal_exit_skips_if_velocity_not_adverse",
+            should_trigger_profit_reversal_exit(
+                has_extracted_principal=False,
+                side="UP",
+                profit_pnl_pct=0.18,
+                mfe_pnl_pct=0.60,
+                current_value_usd=1.18,
+                peak_value_usd=1.50,
+                ws_velocity=0.0001,
+                secs_left=120.0,
+            )
+            is False,
+        ),
+        (
+            "profit_reversal_exit_skips_risk_free_runner",
+            should_trigger_profit_reversal_exit(
+                has_extracted_principal=True,
+                side="UP",
+                profit_pnl_pct=0.18,
+                mfe_pnl_pct=0.60,
+                current_value_usd=1.18,
+                peak_value_usd=1.50,
+                ws_velocity=-0.0010,
+                secs_left=120.0,
+            )
+            is False,
+        ),
+        (
+            "profit_reversal_exit_triggers_for_mid_teens_winner_after_sharp_pullback",
+            should_trigger_profit_reversal_exit(
+                has_extracted_principal=False,
+                side="UP",
+                profit_pnl_pct=0.09,
+                mfe_pnl_pct=0.30,
+                current_value_usd=1.09,
+                peak_value_usd=1.25,
+                ws_velocity=-0.0010,
+                secs_left=120.0,
+            )
+            is True,
+        ),
+        (
+            "profit_reversal_full_exit_prefers_taker_live",
+            should_force_taker_profit_protection(
+                reason="profit-reversal-stop", dry_run=False
+            )
+            is True,
+        ),
+        (
+            "break_even_giveback_prefers_taker_live",
+            should_force_taker_profit_protection(
+                reason="break-even-giveback", dry_run=False
+            )
+            is True,
+        ),
+        (
+            "binance_adverse_exit_prefers_taker_live",
+            should_force_taker_profit_protection(
+                reason="binance-adverse-exit", dry_run=False
+            )
+            is True,
+        ),
+        (
+            "deadline_take_profit_prefers_taker_live",
+            should_force_taker_profit_protection(
+                reason="deadline-take-profit-full", dry_run=False
+            )
+            is True,
+        ),
+        (
+            "deadline_weak_win_prefers_taker_live",
+            should_force_taker_profit_protection(
+                reason="deadline-exit-weak-win", dry_run=False
+            )
+            is True,
+        ),
+        (
+            "deadline_flat_prefers_taker_live",
+            should_force_taker_profit_protection(
+                reason="deadline-exit-flat", dry_run=False
+            )
+            is True,
+        ),
         (
             "stop_loss_exit_uses_fast_retry_loop",
-            loss_exit_retry_kwargs(reason="stop-loss", dry_run=False) == {
+            loss_exit_retry_kwargs(reason="stop-loss", dry_run=False)
+            == {
                 "retry_delay_sec": 0.25,
                 "max_attempts": 4,
             },
         ),
-        ("non_loss_exit_has_no_fast_retry", loss_exit_retry_kwargs(reason="take-profit-principal", dry_run=False) == {}),
+        (
+            "non_loss_exit_has_no_fast_retry",
+            loss_exit_retry_kwargs(reason="take-profit-principal", dry_run=False) == {},
+        ),
         (
             "deadline_exit_emergency_retry_uses_one_second_loop",
-            emergency_exit_retry_kwargs(reason="deadline-exit-weak-win", secs_left=18.0, dry_run=False) == {
+            emergency_exit_retry_kwargs(
+                reason="deadline-exit-weak-win", secs_left=18.0, dry_run=False
+            )
+            == {
                 "retry_delay_sec": 1.0,
                 "max_attempts": 8,
             },
         ),
         (
             "deadline_take_profit_uses_one_second_emergency_retry_loop",
-            emergency_exit_retry_kwargs(reason="deadline-take-profit-full", secs_left=18.0, dry_run=False) == {
+            emergency_exit_retry_kwargs(
+                reason="deadline-take-profit-full", secs_left=18.0, dry_run=False
+            )
+            == {
                 "retry_delay_sec": 1.0,
                 "max_attempts": 8,
             },
         ),
         (
             "residual_force_close_always_uses_emergency_retry_loop",
-            emergency_exit_retry_kwargs(reason="residual-force-close", secs_left=120.0, dry_run=False) == {
+            emergency_exit_retry_kwargs(
+                reason="residual-force-close", secs_left=120.0, dry_run=False
+            )
+            == {
                 "retry_delay_sec": 1.0,
                 "max_attempts": 8,
             },
         ),
-        ("non_deadline_exit_has_no_emergency_retry", emergency_exit_retry_kwargs(reason="take-profit-principal", secs_left=18.0, dry_run=False) == {}),
-        ("panic_dump_always_forces_taker", should_force_taker_exit(reason="", dry_run=True, has_panic_dumped=True) is True),
-        ("soft_stop_scaleout_waits_for_confirmation_when_shallow_and_flat", should_delay_soft_stop_scaleout(reason="stop-loss-scale-out", side="UP", pnl_pct=-0.08, breach_age_sec=1.0, secs_left=120.0, ws_velocity=0.0) is True),
-        ("soft_stop_scaleout_does_not_wait_when_move_is_still_adverse", should_delay_soft_stop_scaleout(reason="stop-loss-scale-out", side="UP", pnl_pct=-0.08, breach_age_sec=1.0, secs_left=120.0, ws_velocity=-0.0010) is False),
-        ("soft_stop_scaleout_does_not_wait_after_confirmation_window", should_delay_soft_stop_scaleout(reason="stop-loss-scale-out", side="UP", pnl_pct=-0.08, breach_age_sec=3.0, secs_left=120.0, ws_velocity=0.0) is False),
-        ("soft_stop_scaleout_does_not_wait_when_loss_is_too_deep", should_delay_soft_stop_scaleout(reason="stop-loss-scale-out", side="UP", pnl_pct=-0.12, breach_age_sec=1.0, secs_left=120.0, ws_velocity=0.0) is False),
-        ("binance_adverse_exit_waits_for_confirmation_window", should_trigger_binance_adverse_exit(has_extracted_principal=False, side="UP", pnl_pct=-0.03, profit_pnl_pct=None, hold_sec=10.0, breach_age_sec=2.0, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is False),
-        ("binance_adverse_exit_triggers_after_confirmed_dual_adverse_velocity", should_trigger_binance_adverse_exit(has_extracted_principal=False, side="UP", pnl_pct=-0.03, profit_pnl_pct=None, hold_sec=10.0, breach_age_sec=3.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is True),
-        ("binance_adverse_exit_skips_safe_executable_profit", should_trigger_binance_adverse_exit(has_extracted_principal=False, side="UP", pnl_pct=0.02, profit_pnl_pct=0.12, hold_sec=10.0, breach_age_sec=3.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is False),
-        ("binance_adverse_exit_requires_current_confirmation_when_enabled", should_trigger_binance_adverse_exit(has_extracted_principal=False, side="DOWN", pnl_pct=-0.02, profit_pnl_pct=None, hold_sec=10.0, breach_age_sec=3.1, secs_left=120.0, ws_velocity=0.0010, current_ws_velocity=0.0) is False),
-        ("binance_profit_protect_exit_waits_for_stall_window", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.10, take_profit_soft_pct=0.18, hold_sec=12.0, peak_age_sec=5.0, breach_age_sec=1.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is False),
-        ("binance_profit_protect_exit_triggers_for_stalled_small_profit", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.10, take_profit_soft_pct=0.18, hold_sec=12.0, peak_age_sec=7.0, breach_age_sec=1.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is True),
-        ("binance_profit_protect_exit_triggers_early_for_fast_winner", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.10, take_profit_soft_pct=0.18, hold_sec=8.5, peak_age_sec=6.1, breach_age_sec=1.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is True),
-        ("binance_profit_protect_exit_skips_big_profit_reserved_for_take_profit", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="UP", profit_pnl_pct=0.19, take_profit_soft_pct=0.18, hold_sec=12.0, peak_age_sec=7.0, breach_age_sec=1.1, secs_left=120.0, ws_velocity=-0.0010, current_ws_velocity=-0.0011) is False),
-        ("binance_profit_protect_exit_can_fire_without_current_confirmation", should_trigger_binance_profit_protect_exit(has_extracted_principal=False, side="DOWN", profit_pnl_pct=0.10, take_profit_soft_pct=0.18, hold_sec=12.0, peak_age_sec=7.0, breach_age_sec=1.1, secs_left=120.0, ws_velocity=0.0010, current_ws_velocity=0.0) is True),
-        ("binance_profit_protect_prefers_taker_live", should_force_taker_profit_protection(reason="binance-profit-protect-exit", dry_run=False) is True),
-        ("dry_run_stop_loss_partial_fraction_unchanged", abs(effective_stop_loss_partial_fraction(dry_run=True) - 0.50) < 1e-9),
-        ("live_stop_loss_partial_fraction_leaves_small_recovery_runner", abs(effective_stop_loss_partial_fraction(dry_run=False) - 0.80) < 1e-9),
-        ("close_fill_ratio_caps_to_requested_clip", abs(close_fill_ratio(requested_close_shares=1.68, sold_shares=0.20) - (0.20 / 1.68)) < 1e-9),
-        ("runner_exports_exit_decision_for_force_close_branch", RunnerExitDecision(True, "residual-force-close").reason == "residual-force-close"),
-        ("limit_order_type_prefers_post_only_when_available", _limit_order_type(LegacyOrderType) == "POST_ONLY"),
-        ("limit_order_type_falls_back_to_gtc", _limit_order_type(ModernOrderType) == "GTC"),
-        ("minimum_order_usd_for_five_shares", abs(minimum_order_usd(0.535, 5.0) - 2.675) < 1e-9),
-        ("order_below_minimum_detects_small_live_order", order_below_minimum_shares(1.0, 0.535, 5.0) == (True, 1.87, 2.675)),
-        ("order_below_minimum_allows_exact_five_shares", order_below_minimum_shares(1.0, 0.2, 5.0) == (False, 5.0, 1.0)),
-        ("plan_live_order_rounds_up_small_notional_gap", plan_live_order(1.0, 0.4945, 0.0, 1.0) == (2.03, 1.0038)),
-        ("plan_live_order_respects_five_share_minimum", plan_live_order(1.0, 0.535, 5.0, 1.0) == (5.0, 2.675)),
-        ("plan_live_order_keeps_one_dollar_when_already_valid", plan_live_order(1.0, 0.2, 0.0, 1.0) == (5.0, 1.0)),
-        ("estimate_book_exit_value_sweeps_bid_depth", abs((depth_value or 0.0) - 0.595) < 1e-9 and abs(depth_fill_ratio - 1.0) < 1e-9),
-        ("estimate_book_exit_floor_price_uses_lowest_bid_needed_for_full_fill", abs((depth_floor_price or 0.0) - 0.12) < 1e-9),
-        ("estimate_book_exit_value_is_conservative_when_depth_is_thin", abs((thin_value or 0.0) - 0.2) < 1e-9 and abs(thin_fill_ratio - 0.5) < 1e-9),
-        ("estimate_book_exit_floor_price_requires_full_depth", thin_floor_price is None),
-        ("realistic_exit_value_uses_depth_aware_bids", abs((realistic_value or 0.0) - 0.595) < 1e-9),
-        ("executable_take_profit_value_uses_orderbook_only", abs((executable_profit_value or 0.0) - 0.595) < 1e-9 and executable_profit_without_book is None),
-        ("conservative_exit_decision_value_caps_unbacked_profit_to_cost", abs(conservative_profitless_value - 1.0) < 1e-9),
-        ("conservative_exit_decision_value_keeps_mark_for_losses", abs(conservative_loss_value - 0.62) < 1e-9),
-        ("market_limit_counts_normal_and_pending_entries", counted_normal_entry is True and counted_pending_entry is True),
-        ("market_limit_skips_entry_slippage_guard_retries", counted_slippage_breach is False),
-        ("live_entry_blocks_when_orderbook_is_unavailable", block_missing_live_book is True and missing_live_book_reason == "book-unavailable"),
-        ("live_entry_allows_usable_orderbook", allow_available_live_book is False and allow_available_live_book_reason == ""),
-        ("observed_exit_value_uses_sold_shares_times_mark", abs(observed_partial_value - 0.58765) < 1e-9),
-        ("sanitize_live_actual_exit_value_rejects_improbable_fill", sane_actual_value is None and sane_actual_source.startswith("sanity-rejected-")),
-        ("sanitize_live_actual_exit_value_accepts_close_to_mark_fill", abs((accepted_actual_value or 0.0) - 0.5877) < 1e-9 and accepted_actual_source == "close_response_takingAmount"),
-        ("rejected_actual_fill_falls_back_to_observed_mark_value", abs(principal_recovery_from_rejected_actual - observed_partial_value) < 1e-9),
-        ("live_close_exit_value_keeps_cash_delta_when_it_agrees", abs((live_close_value_close_match or 0.0) - 0.5877) < 1e-9 and live_close_source_close_match == "cash_balance_delta"),
-        ("live_close_exit_value_prefers_response_when_cash_delta_lags", abs((live_close_value_mismatched or 0.0) - 1.3846) < 1e-9 and live_close_source_mismatched == "close_response_takingAmount"),
-        ("parse_balance_allowance_available_shares_handles_live_error", abs((parsed_balance_shares or 0.0) - 1.198827) < 1e-9),
-        ("balance_allowance_dust_stops_retrying_once_sub_minimum_shares_remain", live_dust_retry_close["attempts"] == 1 and abs(live_dust_retry_close["remaining_shares"] - 0.00756) < 1e-9),
-        ("balance_allowance_dust_skips_extra_sleep_loops", live_dust_retry_sleep_calls == []),
-        ("stop_loss_scaleout_arms_live_tail_cleanup_when_fill_is_too_small", residual_force_close_armed is True),
-        ("stop_loss_scaleout_tail_cleanup_skips_dry_run", residual_force_close_not_armed_dry_run is False),
-        ("stop_loss_scaleout_allows_recovery_window_after_healthy_fill", residual_force_close_not_armed_for_healthy_scaleout is False),
-        ("stop_loss_scaleout_tail_cleanup_skips_dust", residual_force_close_not_armed_for_dust is False),
-        ("live_account_cache_reuses_recent_snapshot", cash_calls["count"] == 2 and value_calls["count"] == 2 and acct_first.cash == acct_second.cash == acct_third.cash == 7.0 and acct_first.equity == acct_second.equity == acct_third.equity == 10.0),
-        ("get_full_orderbook_accepts_object_style_orderbook", object_book.get("best_bid") == 0.48 and object_book.get("best_ask") == 0.49 and object_book.get("bids_volume") == 21.5 and object_book.get("asks_volume") == 18.0),
-        ("has_exit_liquidity_accepts_object_style_levels", object_book_liquidity is True),
-        ("close_remaining_shares_trusts_exchange_dust_hint", abs(resolved_close_remaining_dust - 0.0) < 1e-9),
-        ("close_remaining_shares_ignores_zero_hint_for_partial_clip", abs(resolved_close_remaining_partial_clip - 0.640382) < 1e-9),
-        ("close_remaining_shares_preserves_non_dust_hint", abs(resolved_close_remaining_live_hint - 0.498613) < 1e-9),
-        ("effective_closed_shares_uses_zero_remaining_hint_as_full_close", abs(effective_closed_from_zero_remaining_hint - 1.587300) < 1e-9),
-        ("effective_closed_shares_preserves_partial_when_residual_remains", abs(effective_closed_with_live_residual_hint - 1.3793088) < 1e-9),
-        ("preserve_partial_close_residual_recovers_expected_runner", abs(preserved_partial_residual - (1.960783 - 1.274509)) < 1e-9),
-        ("preserve_partial_close_residual_keeps_true_full_close_at_zero", abs(preserved_full_close_residual - 0.0) < 1e-9),
-        ("take_profit_soft_pct_uses_eighteen_percent_default", abs(float(getattr(SETTINGS, "take_profit_soft_pct", 0.0)) - 0.18) < 1e-9),
-        ("take_profit_partial_fraction_uses_forty_percent_default", abs(float(getattr(SETTINGS, "take_profit_partial_fraction", 0.0)) - 0.40) < 1e-9),
-        ("take_profit_hard_pct_uses_twenty_six_percent_default", abs(float(getattr(SETTINGS, "take_profit_hard_pct", 0.0)) - 0.26) < 1e-9),
-        ("take_profit_partial_runner_principal_min_mfe_uses_twenty_four_percent_default", abs(float(getattr(SETTINGS, "take_profit_principal_after_partial_min_mfe_pct", 0.0)) - 0.24) < 1e-9),
-        ("breakeven_giveback_floor_uses_three_percent_default", abs(float(getattr(SETTINGS, "breakeven_giveback_floor_pct", 0.0)) - 0.03) < 1e-9),
-        ("take_profit_runner_fraction_uses_ten_percent_default", abs(float(getattr(SETTINGS, "take_profit_runner_fraction", 0.0)) - 0.10) < 1e-9),
-        ("paper_entry_is_taker_simulated", entry.get("execution_style") == "taker-simulated"),
-        ("paper_partial_close_value", abs(float(partial["actual_exit_value_usd"]) - 0.6) < 1e-9),
-        ("paper_partial_close_remaining_shares", abs(float(partial["remaining_shares"]) - 1.0) < 1e-9),
+        (
+            "non_deadline_exit_has_no_emergency_retry",
+            emergency_exit_retry_kwargs(
+                reason="take-profit-principal", secs_left=18.0, dry_run=False
+            )
+            == {},
+        ),
+        (
+            "panic_dump_always_forces_taker",
+            should_force_taker_exit(reason="", dry_run=True, has_panic_dumped=True)
+            is True,
+        ),
+        (
+            "soft_stop_scaleout_waits_for_confirmation_when_shallow_and_flat",
+            should_delay_soft_stop_scaleout(
+                reason="stop-loss-scale-out",
+                side="UP",
+                pnl_pct=-0.08,
+                breach_age_sec=1.0,
+                secs_left=120.0,
+                ws_velocity=0.0,
+            )
+            is True,
+        ),
+        (
+            "soft_stop_scaleout_does_not_wait_when_move_is_still_adverse",
+            should_delay_soft_stop_scaleout(
+                reason="stop-loss-scale-out",
+                side="UP",
+                pnl_pct=-0.08,
+                breach_age_sec=1.0,
+                secs_left=120.0,
+                ws_velocity=-0.0010,
+            )
+            is False,
+        ),
+        (
+            "soft_stop_scaleout_does_not_wait_after_confirmation_window",
+            should_delay_soft_stop_scaleout(
+                reason="stop-loss-scale-out",
+                side="UP",
+                pnl_pct=-0.08,
+                breach_age_sec=3.0,
+                secs_left=120.0,
+                ws_velocity=0.0,
+            )
+            is False,
+        ),
+        (
+            "soft_stop_scaleout_does_not_wait_when_loss_is_too_deep",
+            should_delay_soft_stop_scaleout(
+                reason="stop-loss-scale-out",
+                side="UP",
+                pnl_pct=-0.12,
+                breach_age_sec=1.0,
+                secs_left=120.0,
+                ws_velocity=0.0,
+            )
+            is False,
+        ),
+        (
+            "binance_adverse_exit_waits_for_confirmation_window",
+            should_trigger_binance_adverse_exit(
+                has_extracted_principal=False,
+                side="UP",
+                pnl_pct=-0.03,
+                profit_pnl_pct=None,
+                hold_sec=10.0,
+                breach_age_sec=2.0,
+                secs_left=120.0,
+                ws_velocity=-0.0010,
+                current_ws_velocity=-0.0011,
+            )
+            is False,
+        ),
+        (
+            "binance_adverse_exit_triggers_after_confirmed_dual_adverse_velocity",
+            should_trigger_binance_adverse_exit(
+                has_extracted_principal=False,
+                side="UP",
+                pnl_pct=-0.03,
+                profit_pnl_pct=None,
+                hold_sec=10.0,
+                breach_age_sec=3.1,
+                secs_left=120.0,
+                ws_velocity=-0.0010,
+                current_ws_velocity=-0.0011,
+            )
+            is True,
+        ),
+        (
+            "binance_adverse_exit_skips_safe_executable_profit",
+            should_trigger_binance_adverse_exit(
+                has_extracted_principal=False,
+                side="UP",
+                pnl_pct=0.02,
+                profit_pnl_pct=0.12,
+                hold_sec=10.0,
+                breach_age_sec=3.1,
+                secs_left=120.0,
+                ws_velocity=-0.0010,
+                current_ws_velocity=-0.0011,
+            )
+            is False,
+        ),
+        (
+            "binance_adverse_exit_requires_current_confirmation_when_enabled",
+            should_trigger_binance_adverse_exit(
+                has_extracted_principal=False,
+                side="DOWN",
+                pnl_pct=-0.02,
+                profit_pnl_pct=None,
+                hold_sec=10.0,
+                breach_age_sec=3.1,
+                secs_left=120.0,
+                ws_velocity=0.0010,
+                current_ws_velocity=0.0,
+            )
+            is False,
+        ),
+        (
+            "binance_profit_protect_exit_waits_for_stall_window",
+            should_trigger_binance_profit_protect_exit(
+                has_extracted_principal=False,
+                side="UP",
+                profit_pnl_pct=0.10,
+                take_profit_soft_pct=0.18,
+                hold_sec=12.0,
+                peak_age_sec=5.0,
+                breach_age_sec=1.1,
+                secs_left=120.0,
+                ws_velocity=-0.0010,
+                current_ws_velocity=-0.0011,
+            )
+            is False,
+        ),
+        (
+            "binance_profit_protect_exit_triggers_for_stalled_small_profit",
+            should_trigger_binance_profit_protect_exit(
+                has_extracted_principal=False,
+                side="UP",
+                profit_pnl_pct=0.10,
+                take_profit_soft_pct=0.18,
+                hold_sec=12.0,
+                peak_age_sec=7.0,
+                breach_age_sec=1.1,
+                secs_left=120.0,
+                ws_velocity=-0.0010,
+                current_ws_velocity=-0.0011,
+            )
+            is True,
+        ),
+        (
+            "binance_profit_protect_exit_triggers_early_for_fast_winner",
+            should_trigger_binance_profit_protect_exit(
+                has_extracted_principal=False,
+                side="UP",
+                profit_pnl_pct=0.10,
+                take_profit_soft_pct=0.18,
+                hold_sec=8.5,
+                peak_age_sec=6.1,
+                breach_age_sec=1.1,
+                secs_left=120.0,
+                ws_velocity=-0.0010,
+                current_ws_velocity=-0.0011,
+            )
+            is True,
+        ),
+        (
+            "binance_profit_protect_exit_skips_big_profit_reserved_for_take_profit",
+            should_trigger_binance_profit_protect_exit(
+                has_extracted_principal=False,
+                side="UP",
+                profit_pnl_pct=0.19,
+                take_profit_soft_pct=0.18,
+                hold_sec=12.0,
+                peak_age_sec=7.0,
+                breach_age_sec=1.1,
+                secs_left=120.0,
+                ws_velocity=-0.0010,
+                current_ws_velocity=-0.0011,
+            )
+            is False,
+        ),
+        (
+            "binance_profit_protect_exit_can_fire_without_current_confirmation",
+            should_trigger_binance_profit_protect_exit(
+                has_extracted_principal=False,
+                side="DOWN",
+                profit_pnl_pct=0.10,
+                take_profit_soft_pct=0.18,
+                hold_sec=12.0,
+                peak_age_sec=7.0,
+                breach_age_sec=1.1,
+                secs_left=120.0,
+                ws_velocity=0.0010,
+                current_ws_velocity=0.0,
+            )
+            is True,
+        ),
+        (
+            "binance_profit_protect_prefers_taker_live",
+            should_force_taker_profit_protection(
+                reason="binance-profit-protect-exit", dry_run=False
+            )
+            is True,
+        ),
+        (
+            "dry_run_stop_loss_partial_fraction_unchanged",
+            abs(effective_stop_loss_partial_fraction(dry_run=True) - 0.50) < 1e-9,
+        ),
+        (
+            "live_stop_loss_partial_fraction_leaves_small_recovery_runner",
+            abs(effective_stop_loss_partial_fraction(dry_run=False) - 0.80) < 1e-9,
+        ),
+        (
+            "close_fill_ratio_caps_to_requested_clip",
+            abs(
+                close_fill_ratio(requested_close_shares=1.68, sold_shares=0.20)
+                - (0.20 / 1.68)
+            )
+            < 1e-9,
+        ),
+        (
+            "runner_exports_exit_decision_for_force_close_branch",
+            RunnerExitDecision(True, "residual-force-close").reason
+            == "residual-force-close",
+        ),
+        (
+            "limit_order_type_prefers_post_only_when_available",
+            _limit_order_type(LegacyOrderType) == "POST_ONLY",
+        ),
+        (
+            "limit_order_type_falls_back_to_gtc",
+            _limit_order_type(ModernOrderType) == "GTC",
+        ),
+        (
+            "minimum_order_usd_for_five_shares",
+            abs(minimum_order_usd(0.535, 5.0) - 2.675) < 1e-9,
+        ),
+        (
+            "order_below_minimum_detects_small_live_order",
+            order_below_minimum_shares(1.0, 0.535, 5.0) == (True, 1.87, 2.675),
+        ),
+        (
+            "order_below_minimum_allows_exact_five_shares",
+            order_below_minimum_shares(1.0, 0.2, 5.0) == (False, 5.0, 1.0),
+        ),
+        (
+            "plan_live_order_rounds_up_small_notional_gap",
+            plan_live_order(1.0, 0.4945, 0.0, 1.0) == (2.03, 1.0038),
+        ),
+        (
+            "plan_live_order_respects_five_share_minimum",
+            plan_live_order(1.0, 0.535, 5.0, 1.0) == (5.0, 2.675),
+        ),
+        (
+            "plan_live_order_keeps_one_dollar_when_already_valid",
+            plan_live_order(1.0, 0.2, 0.0, 1.0) == (5.0, 1.0),
+        ),
+        (
+            "estimate_book_exit_value_sweeps_bid_depth",
+            abs((depth_value or 0.0) - 0.595) < 1e-9
+            and abs(depth_fill_ratio - 1.0) < 1e-9,
+        ),
+        (
+            "estimate_book_exit_floor_price_uses_lowest_bid_needed_for_full_fill",
+            abs((depth_floor_price or 0.0) - 0.12) < 1e-9,
+        ),
+        (
+            "estimate_book_exit_value_is_conservative_when_depth_is_thin",
+            abs((thin_value or 0.0) - 0.2) < 1e-9 and abs(thin_fill_ratio - 0.5) < 1e-9,
+        ),
+        (
+            "estimate_book_exit_floor_price_requires_full_depth",
+            thin_floor_price is None,
+        ),
+        (
+            "realistic_exit_value_uses_depth_aware_bids",
+            abs((realistic_value or 0.0) - 0.595) < 1e-9,
+        ),
+        (
+            "executable_take_profit_value_uses_orderbook_only",
+            abs((executable_profit_value or 0.0) - 0.595) < 1e-9
+            and executable_profit_without_book is None,
+        ),
+        (
+            "conservative_exit_decision_value_caps_unbacked_profit_to_cost",
+            abs(conservative_profitless_value - 1.0) < 1e-9,
+        ),
+        (
+            "conservative_exit_decision_value_keeps_mark_for_losses",
+            abs(conservative_loss_value - 0.62) < 1e-9,
+        ),
+        (
+            "market_limit_counts_normal_and_pending_entries",
+            counted_normal_entry is True and counted_pending_entry is True,
+        ),
+        (
+            "market_limit_skips_entry_slippage_guard_retries",
+            counted_slippage_breach is False,
+        ),
+        (
+            "live_entry_blocks_when_orderbook_is_unavailable",
+            block_missing_live_book is True
+            and missing_live_book_reason == "book-unavailable",
+        ),
+        (
+            "live_entry_allows_usable_orderbook",
+            allow_available_live_book is False
+            and allow_available_live_book_reason == "",
+        ),
+        (
+            "observed_exit_value_uses_sold_shares_times_mark",
+            abs(observed_partial_value - 0.58765) < 1e-9,
+        ),
+        (
+            "observed_exit_value_matches_partial_principal_history_case",
+            abs(historical_partial_observed_up - 0.505) < 1e-9,
+        ),
+        (
+            "observed_exit_value_matches_late_spike_partial_principal_case",
+            abs(historical_partial_observed_spike - 0.515) < 1e-9,
+        ),
+        (
+            "runner_principal_event_uses_observed_mark_times_sold_shares",
+            abs(float(principal_partial_event["observed_exit_value_usd"]) - 0.505)
+            < 1e-9,
+        ),
+        (
+            "runner_principal_event_keeps_actual_and_observed_values_distinct",
+            abs(float(principal_partial_event["actual_exit_value_usd"]) - 0.48) < 1e-9
+            and abs(
+                float(principal_partial_event["observed_exit_value_usd"])
+                - float(principal_partial_event["actual_exit_value_usd"])
+                - 0.025
+            )
+            < 1e-9,
+        ),
+        (
+            "runner_principal_event_marks_incomplete_recovery_as_partial",
+            principal_partial_event["reason"] == "take-profit-principal-partial"
+            and principal_partial_event["status"] == "partial",
+        ),
+        (
+            "runner_principal_event_preserves_taker_execution_style",
+            principal_partial_event["exit_execution_style"] == "taker",
+        ),
+        (
+            "emergency_taker_floor_is_more_executable_than_seventy_percent",
+            abs(emergency_taker_floor - 0.358) < 1e-9,
+        ),
+        (
+            "normal_taker_floor_keeps_some_price_protection",
+            abs(normal_taker_floor - 0.465) < 1e-9,
+        ),
+        (
+            "routine_normal_taker_fallback_blocks_weak_post_cost_edge",
+            should_allow_normal_taker_fallback(
+                raw_edge=0.012,
+                required_edge=0.020,
+                emergency=False,
+            )
+            is False,
+        ),
+        (
+            "routine_normal_taker_fallback_blocks_mid_post_cost_edge",
+            should_allow_normal_taker_fallback(
+                raw_edge=0.025,
+                required_edge=0.020,
+                emergency=False,
+            )
+            is False,
+        ),
+        (
+            "routine_normal_taker_fallback_allows_strong_post_cost_edge",
+            should_allow_normal_taker_fallback(
+                raw_edge=0.031,
+                required_edge=0.020,
+                emergency=False,
+            )
+            is True,
+        ),
+        (
+            "routine_normal_taker_fallback_keeps_emergency_override",
+            should_allow_normal_taker_fallback(
+                raw_edge=0.0,
+                required_edge=0.200,
+                emergency=True,
+            )
+            is True,
+        ),
+        (
+            "pending_order_fallback_blocks_weak_edge",
+            pending_order_allows_taker_fallback(weak_edge_pending_order) is False,
+        ),
+        (
+            "pending_order_fallback_allows_strong_edge",
+            pending_order_allows_taker_fallback(strong_edge_pending_order) is True,
+        ),
+        (
+            "maker_entry_timeout_uses_configured_setting",
+            abs(maker_entry_timeout_seconds() - 11.0) < 1e-9,
+        ),
+        (
+            "force_taker_retry_uses_emergency_floor_price",
+            bool(live_taker_retry_prices)
+            and abs(live_taker_retry_prices[0] - fast_retry_emergency_taker_floor)
+            < 1e-9,
+        ),
+        (
+            "force_taker_dust_retry_uses_emergency_floor_price",
+            bool(live_dust_retry_prices)
+            and abs(live_dust_retry_prices[0] - emergency_taker_floor) < 1e-9,
+        ),
+        (
+            "normal_taker_fallback_becomes_executable_after_maker_retries",
+            normal_taker_fallback_close.get("ok") is True
+            and float(normal_taker_fallback_close.get("closed_shares", 0.0)) > 0.0
+            and normal_taker_fallback_close.get("execution_style") == "taker"
+            and normal_taker_fallback_client.taker_attempts >= 1
+            and normal_taker_fallback_client.fill_count >= 1,
+        ),
+        (
+            "sanitize_live_actual_exit_value_rejects_improbable_fill",
+            sane_actual_value is None
+            and sane_actual_source.startswith("sanity-rejected-"),
+        ),
+        (
+            "sanitize_live_actual_exit_value_accepts_close_to_mark_fill",
+            abs((accepted_actual_value or 0.0) - 0.5877) < 1e-9
+            and accepted_actual_source == "close_response_takingAmount",
+        ),
+        (
+            "rejected_actual_fill_falls_back_to_observed_mark_value",
+            abs(principal_recovery_from_rejected_actual - observed_partial_value)
+            < 1e-9,
+        ),
+        (
+            "live_close_exit_value_keeps_cash_delta_when_it_agrees",
+            abs((live_close_value_close_match or 0.0) - 0.5877) < 1e-9
+            and live_close_source_close_match == "cash_balance_delta",
+        ),
+        (
+            "live_close_exit_value_prefers_response_when_cash_delta_lags",
+            abs((live_close_value_mismatched or 0.0) - 1.3846) < 1e-9
+            and live_close_source_mismatched == "close_response_takingAmount",
+        ),
+        (
+            "parse_balance_allowance_available_shares_handles_live_error",
+            abs((parsed_balance_shares or 0.0) - 1.198827) < 1e-9,
+        ),
+        (
+            "balance_allowance_dust_stops_retrying_once_sub_minimum_shares_remain",
+            live_dust_retry_close["attempts"] == 1
+            and abs(live_dust_retry_close["remaining_shares"] - 0.00756) < 1e-9,
+        ),
+        (
+            "balance_allowance_dust_skips_extra_sleep_loops",
+            live_dust_retry_sleep_calls == [],
+        ),
+        (
+            "stop_loss_scaleout_arms_live_tail_cleanup_when_fill_is_too_small",
+            residual_force_close_armed is True,
+        ),
+        (
+            "stop_loss_scaleout_tail_cleanup_skips_dry_run",
+            residual_force_close_not_armed_dry_run is False,
+        ),
+        (
+            "stop_loss_scaleout_allows_recovery_window_after_healthy_fill",
+            residual_force_close_not_armed_for_healthy_scaleout is False,
+        ),
+        (
+            "stop_loss_scaleout_tail_cleanup_skips_dust",
+            residual_force_close_not_armed_for_dust is False,
+        ),
+        (
+            "live_account_cache_reuses_recent_snapshot",
+            cash_calls["count"] == 2
+            and value_calls["count"] == 2
+            and acct_first.cash == acct_second.cash == acct_third.cash == 7.0
+            and acct_first.equity == acct_second.equity == acct_third.equity == 10.0,
+        ),
+        (
+            "get_full_orderbook_accepts_object_style_orderbook",
+            object_book.get("best_bid") == 0.48
+            and object_book.get("best_ask") == 0.49
+            and object_book.get("bids_volume") == 21.5
+            and object_book.get("asks_volume") == 18.0,
+        ),
+        (
+            "has_exit_liquidity_accepts_object_style_levels",
+            object_book_liquidity is True,
+        ),
+        (
+            "close_remaining_shares_trusts_exchange_dust_hint",
+            abs(resolved_close_remaining_dust - 0.0) < 1e-9,
+        ),
+        (
+            "close_remaining_shares_ignores_zero_hint_for_partial_clip",
+            abs(resolved_close_remaining_partial_clip - 0.640382) < 1e-9,
+        ),
+        (
+            "close_remaining_shares_preserves_non_dust_hint",
+            abs(resolved_close_remaining_live_hint - 0.498613) < 1e-9,
+        ),
+        (
+            "effective_closed_shares_uses_zero_remaining_hint_as_full_close",
+            abs(effective_closed_from_zero_remaining_hint - 1.587300) < 1e-9,
+        ),
+        (
+            "effective_closed_shares_preserves_partial_when_residual_remains",
+            abs(effective_closed_with_live_residual_hint - 1.3793088) < 1e-9,
+        ),
+        (
+            "preserve_partial_close_residual_recovers_expected_runner",
+            abs(preserved_partial_residual - (1.960783 - 1.274509)) < 1e-9,
+        ),
+        (
+            "preserve_partial_close_residual_keeps_true_full_close_at_zero",
+            abs(preserved_full_close_residual - 0.0) < 1e-9,
+        ),
+        (
+            "take_profit_soft_pct_uses_eighteen_percent_default",
+            abs(float(getattr(SETTINGS, "take_profit_soft_pct", 0.0)) - 0.18) < 1e-9,
+        ),
+        (
+            "take_profit_partial_fraction_uses_forty_percent_default",
+            abs(float(getattr(SETTINGS, "take_profit_partial_fraction", 0.0)) - 0.40)
+            < 1e-9,
+        ),
+        (
+            "take_profit_hard_pct_uses_twenty_six_percent_default",
+            abs(float(getattr(SETTINGS, "take_profit_hard_pct", 0.0)) - 0.26) < 1e-9,
+        ),
+        (
+            "take_profit_partial_runner_principal_min_mfe_uses_twenty_four_percent_default",
+            abs(
+                float(
+                    getattr(
+                        SETTINGS, "take_profit_principal_after_partial_min_mfe_pct", 0.0
+                    )
+                )
+                - 0.24
+            )
+            < 1e-9,
+        ),
+        (
+            "breakeven_giveback_floor_uses_three_percent_default",
+            abs(float(getattr(SETTINGS, "breakeven_giveback_floor_pct", 0.0)) - 0.03)
+            < 1e-9,
+        ),
+        (
+            "take_profit_runner_fraction_uses_ten_percent_default",
+            abs(float(getattr(SETTINGS, "take_profit_runner_fraction", 0.0)) - 0.10)
+            < 1e-9,
+        ),
+        (
+            "paper_entry_is_taker_simulated",
+            entry.get("execution_style") == "taker-simulated",
+        ),
+        (
+            "paper_partial_close_value",
+            abs(float(partial["actual_exit_value_usd"]) - 0.6) < 1e-9,
+        ),
+        (
+            "paper_partial_close_remaining_shares",
+            abs(float(partial["remaining_shares"]) - 1.0) < 1e-9,
+        ),
         ("paper_partial_close_preserves_cost", abs(cost_after_partial - 0.5) < 1e-9),
-        ("paper_partial_close_preserves_exposure", abs(exposure_after_partial - 0.5) < 1e-9),
-        ("paper_partial_close_is_taker_simulated", partial.get("execution_style") == "taker-simulated"),
-        ("paper_zero_settlement_allowed", abs(float(settle["actual_exit_value_usd"]) - 0.0) < 1e-9),
-        ("paper_zero_settlement_clears_position", "tok1" not in ex._position_cost and "tok1" not in ex._position_shares),
-        ("paper_zero_settlement_source", settle.get("close_response_value_source") == "paper_trade_simulation"),
-        ("reconcile_dry_run_positions_clears_ghost_exposure", reconciled is True and acct.cash == 100.0 and acct.equity == 100.0 and acct.open_exposure == 0.0),
-        ("force_taker_retry_skips_repeated_open_order_fetches", live_taker_retry_open_order_calls["count"] == 1),
-        ("force_taker_retry_skips_post_fill_sleep", live_taker_retry_sleep_calls == [0.25, 0.25]),
-        ("force_taker_retry_eventually_closes_full_size", live_taker_retry_close.get("ok") is True and abs(float(live_taker_retry_close.get("closed_shares", 0.0)) - 1.0) < 1e-9 and int(live_taker_retry_close.get("attempts", 0) or 0) == 3),
+        (
+            "paper_partial_close_preserves_exposure",
+            abs(exposure_after_partial - 0.5) < 1e-9,
+        ),
+        (
+            "paper_partial_close_is_taker_simulated",
+            partial.get("execution_style") == "taker-simulated",
+        ),
+        (
+            "paper_zero_settlement_allowed",
+            abs(float(settle["actual_exit_value_usd"]) - 0.0) < 1e-9,
+        ),
+        (
+            "paper_zero_settlement_clears_position",
+            "tok1" not in ex._position_cost and "tok1" not in ex._position_shares,
+        ),
+        (
+            "paper_zero_settlement_source",
+            settle.get("close_response_value_source") == "paper_trade_simulation",
+        ),
+        (
+            "reconcile_dry_run_positions_clears_ghost_exposure",
+            reconciled is True
+            and acct.cash == 100.0
+            and acct.equity == 100.0
+            and acct.open_exposure == 0.0,
+        ),
+        (
+            "force_taker_retry_skips_repeated_open_order_fetches",
+            live_taker_retry_open_order_calls["count"] == 1,
+        ),
+        (
+            "force_taker_retry_skips_post_fill_sleep",
+            live_taker_retry_sleep_calls == [0.25, 0.25],
+        ),
+        (
+            "force_taker_retry_eventually_closes_full_size",
+            live_taker_retry_close.get("ok") is True
+            and abs(float(live_taker_retry_close.get("closed_shares", 0.0)) - 1.0)
+            < 1e-9
+            and int(live_taker_retry_close.get("attempts", 0) or 0) == 3,
+        ),
     ]
 
     failed = [name for name, ok in cases if not ok]

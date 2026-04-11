@@ -1,11 +1,14 @@
 import os
 from dataclasses import dataclass
 import warnings
+
 try:
     from dotenv import load_dotenv
 except Exception:
+
     def load_dotenv(*args, **kwargs):
         return False
+
 
 from pathlib import Path
 
@@ -48,17 +51,31 @@ class Settings:
     max_exposure_usd: float = _f("MAX_EXPOSURE_USD", 1.0)
     max_orders_per_5min: int = _i("MAX_ORDERS_PER_5MIN", 3)
     max_consec_loss: int = _i("MAX_CONSEC_LOSS", 3)
-    clean_start_loss_streak_reset_sec: float = _f("CLEAN_START_LOSS_STREAK_RESET_SEC", 14400.0)
+    clean_start_loss_streak_reset_sec: float = _f(
+        "CLEAN_START_LOSS_STREAK_RESET_SEC", 14400.0
+    )
     daily_max_loss: float = _f("DAILY_MAX_LOSS", 3.0)
-    manual_reset_daily_max_loss_on_start: bool = _b("MANUAL_RESET_DAILY_MAX_LOSS_ON_START", False)
+    manual_reset_daily_max_loss_on_start: bool = _b(
+        "MANUAL_RESET_DAILY_MAX_LOSS_ON_START", False
+    )
     conservative_mode_enabled: bool = _b("CONSERVATIVE_MODE_ENABLED", False)
+    profitability_conservative_mode_enabled: bool = _b(
+        "PROFITABILITY_CONSERVATIVE_MODE_ENABLED", True
+    )
+    recent_active_close_summary: dict | None = None
     conservative_extra_edge: float = _f("CONSERVATIVE_EXTRA_EDGE", 0.015)
     conservative_max_open_positions: int = _i("CONSERVATIVE_MAX_OPEN_POSITIONS", 1)
     conservative_max_orders_per_5min: int = _i("CONSERVATIVE_MAX_ORDERS_PER_5MIN", 2)
     conservative_sync_miss_limit: int = _i("CONSERVATIVE_SYNC_MISS_LIMIT", 1)
-    conservative_block_pending_orders: bool = _b("CONSERVATIVE_BLOCK_PENDING_ORDERS", True)
-    conservative_block_pending_confirmation: bool = _b("CONSERVATIVE_BLOCK_PENDING_CONFIRMATION", True)
-    conservative_block_live_sync_protect: bool = _b("CONSERVATIVE_BLOCK_LIVE_SYNC_PROTECT", True)
+    conservative_block_pending_orders: bool = _b(
+        "CONSERVATIVE_BLOCK_PENDING_ORDERS", True
+    )
+    conservative_block_pending_confirmation: bool = _b(
+        "CONSERVATIVE_BLOCK_PENDING_CONFIRMATION", True
+    )
+    conservative_block_live_sync_protect: bool = _b(
+        "CONSERVATIVE_BLOCK_LIVE_SYNC_PROTECT", True
+    )
     ofi_bypass_threshold: float = _f("OFI_BYPASS_THRESHOLD", 0.65)
 
     poll_seconds: int = _i("POLL_SECONDS", 15)
@@ -100,11 +117,29 @@ class Settings:
     fee_buffer: float = _f("FEE_BUFFER", 0.01)
     report_assumed_taker_fee_rate: float = _f("REPORT_ASSUMED_TAKER_FEE_RATE", 0.0156)
     scoreboard_neutral_pnl_pct: float = _f("SCOREBOARD_NEUTRAL_PNL_PCT", 0.001)
-    scoreboard_entry_gate_min_decisive_trades: int = _i("SCOREBOARD_ENTRY_GATE_MIN_DECISIVE_TRADES", 5)
+    scoreboard_entry_gate_min_decisive_trades: int = _i(
+        "SCOREBOARD_ENTRY_GATE_MIN_DECISIVE_TRADES", 5
+    )
     scoreboard_aux_weight: float = _f("SCOREBOARD_AUX_WEIGHT", 0.10)
-    scoreboard_min_win_rate: float = _f("SCOREBOARD_MIN_WIN_RATE", 0.40)  # hard-block gate: block entry if auxWR < this and enough history
+    scoreboard_min_win_rate: float = _f(
+        "SCOREBOARD_MIN_WIN_RATE", 0.40
+    )  # hard-block gate: block entry if auxWR < this and enough history
     scoreboard_decay_factor: float = _f("SCOREBOARD_DECAY_FACTOR", 0.95)
-    entry_fee_floor_buffer: float = _f("ENTRY_FEE_FLOOR_BUFFER", 1.0)  # multiplier on 2x taker fee floor for required_edge
+    entry_fee_floor_buffer: float = _f(
+        "ENTRY_FEE_FLOOR_BUFFER", 1.0
+    )  # multiplier on 2x taker fee floor for required_edge
+    entry_neutral_hard_block_half_width: float = _f(
+        "ENTRY_NEUTRAL_HARD_BLOCK_HALF_WIDTH", 0.02
+    )
+    entry_execution_cost_buffer: float = _f("ENTRY_EXECUTION_COST_BUFFER", 0.015)
+    entry_require_maker_edge_buffer: float = _f("ENTRY_REQUIRE_MAKER_EDGE_BUFFER", 0.01)
+    conservative_active_close_loss_streak: int = _i(
+        "CONSERVATIVE_ACTIVE_CLOSE_LOSS_STREAK", 3
+    )
+    conservative_active_close_fee_pnl_floor: float = _f(
+        "CONSERVATIVE_ACTIVE_CLOSE_FEE_PNL_FLOOR", -0.05
+    )
+    conservative_skip_windows: int = _i("CONSERVATIVE_SKIP_WINDOWS", 2)
     zscore_window: int = _i("ZSCORE_WINDOW", 20)
     zscore_threshold: float = _f("ZSCORE_THRESHOLD", 2.0)
     entry_window_min_sec: float = _f("ENTRY_WINDOW_MIN_SEC", 120.0)
@@ -120,8 +155,12 @@ class Settings:
     entry_micro_band_half_width: float = _f("ENTRY_MICRO_BAND_HALF_WIDTH", 0.01)
     entry_micro_edge_penalty: float = _f("ENTRY_MICRO_EDGE_PENALTY", 0.02)
     entry_side_conflict_enabled: bool = _b("ENTRY_SIDE_CONFLICT_ENABLED", True)
-    entry_side_conflict_min_edge_gap: float = _f("ENTRY_SIDE_CONFLICT_MIN_EDGE_GAP", 0.025)
-    entry_side_conflict_min_prob_gap: float = _f("ENTRY_SIDE_CONFLICT_MIN_PROB_GAP", 0.03)
+    entry_side_conflict_min_edge_gap: float = _f(
+        "ENTRY_SIDE_CONFLICT_MIN_EDGE_GAP", 0.025
+    )
+    entry_side_conflict_min_prob_gap: float = _f(
+        "ENTRY_SIDE_CONFLICT_MIN_PROB_GAP", 0.03
+    )
     entry_max_spread: float = _f("ENTRY_MAX_SPREAD", 0.03)
     entry_min_best_ask_multiple: float = _f("ENTRY_MIN_BEST_ASK_MULTIPLE", 2.0)
     entry_min_total_ask_multiple: float = _f("ENTRY_MIN_TOTAL_ASK_MULTIPLE", 6.0)
@@ -143,7 +182,9 @@ class Settings:
     early_underdog_max_price: float = _f("EARLY_UNDERDOG_MAX_PRICE", 0.35)
     early_underdog_min_time: float = _f("EARLY_UNDERDOG_MIN_TIME", 220.0)
     early_underdog_exit_lock_time: float = _f("EARLY_UNDERDOG_EXIT_LOCK_TIME", 150.0)
-    early_underdog_let_ride_loss_pct: float = _f("EARLY_UNDERDOG_LET_RIDE_LOSS_PCT", 0.35)
+    early_underdog_let_ride_loss_pct: float = _f(
+        "EARLY_UNDERDOG_LET_RIDE_LOSS_PCT", 0.35
+    )
     early_underdog_take_profit_pct: float = _f("EARLY_UNDERDOG_TAKE_PROFIT_PCT", 1.50)
     # 樂透爆發模式：在此時間窗口內出現此漲幅才觸發樂透鎖定，否則視為一般單
     lottery_burst_window_sec: float = _f("LOTTERY_BURST_WINDOW_SEC", 60.0)
@@ -151,7 +192,9 @@ class Settings:
     # 樂透高原停利：在 +plateau_min_pct ~ +hard_pct 區間，若停止創高超過 stall_sec 且 Binance 速度弱，停利
     lottery_plateau_min_pct: float = _f("LOTTERY_PLATEAU_MIN_PCT", 0.75)
     lottery_plateau_stall_sec: float = _f("LOTTERY_PLATEAU_STALL_SEC", 15.0)
-    lottery_plateau_velocity_threshold: float = _f("LOTTERY_PLATEAU_VELOCITY_THRESHOLD", 0.0003)
+    lottery_plateau_velocity_threshold: float = _f(
+        "LOTTERY_PLATEAU_VELOCITY_THRESHOLD", 0.0003
+    )
     hedge_max_wait_sec: int = _i("HEDGE_MAX_WAIT_SEC", 90)
     stop_loss_min_hold_sec: float = _f("STOP_LOSS_MIN_HOLD_SEC", 30.0)
     stop_loss_pct: float = _f("STOP_LOSS_PCT", 0.18)
@@ -161,15 +204,27 @@ class Settings:
     live_stop_loss_partial_fraction: float = _f("LIVE_STOP_LOSS_PARTIAL_FRACTION", 0.80)
     max_hold_seconds: int = _i("MAX_HOLD_SECONDS", 180)
     take_profit_scaleout_pct: float = _f("TAKE_PROFIT_SCALEOUT_PCT", 0.03)
-    take_profit_soft_pct: float = _f("TAKE_PROFIT_SOFT_PCT", 0.18)   # Stage 1: start locking profit at +18%
+    take_profit_soft_pct: float = _f(
+        "TAKE_PROFIT_SOFT_PCT", 0.18
+    )  # Stage 1: start locking profit at +18%
     # bid 可成交報酬因流動性打折時，mark 報酬需超過 soft_pct + 此緩衝才觸發 fallback 停利
     take_profit_bid_discount_buffer: float = _f("TAKE_PROFIT_BID_DISCOUNT_BUFFER", 0.08)
     take_profit_partial_fraction: float = _f("TAKE_PROFIT_PARTIAL_FRACTION", 0.40)
-    take_profit_hard_pct: float = _f("TAKE_PROFIT_HARD_PCT", 0.26)   # Stage 2: extract principal at +26%
-    take_profit_principal_after_partial_enabled: bool = _b("TAKE_PROFIT_PRINCIPAL_AFTER_PARTIAL_ENABLED", True)
-    take_profit_principal_after_partial_min_mfe_pct: float = _f("TAKE_PROFIT_PRINCIPAL_AFTER_PARTIAL_MIN_MFE_PCT", 0.24)
-    take_profit_principal_after_partial_drawdown_pct: float = _f("TAKE_PROFIT_PRINCIPAL_AFTER_PARTIAL_DRAWDOWN_PCT", 0.08)
-    take_profit_principal_after_partial_min_current_pct: float = _f("TAKE_PROFIT_PRINCIPAL_AFTER_PARTIAL_MIN_CURRENT_PCT", 0.14)
+    take_profit_hard_pct: float = _f(
+        "TAKE_PROFIT_HARD_PCT", 0.26
+    )  # Stage 2: extract principal at +26%
+    take_profit_principal_after_partial_enabled: bool = _b(
+        "TAKE_PROFIT_PRINCIPAL_AFTER_PARTIAL_ENABLED", True
+    )
+    take_profit_principal_after_partial_min_mfe_pct: float = _f(
+        "TAKE_PROFIT_PRINCIPAL_AFTER_PARTIAL_MIN_MFE_PCT", 0.24
+    )
+    take_profit_principal_after_partial_drawdown_pct: float = _f(
+        "TAKE_PROFIT_PRINCIPAL_AFTER_PARTIAL_DRAWDOWN_PCT", 0.08
+    )
+    take_profit_principal_after_partial_min_current_pct: float = _f(
+        "TAKE_PROFIT_PRINCIPAL_AFTER_PARTIAL_MIN_CURRENT_PCT", 0.14
+    )
     take_profit_runner_fraction: float = _f("TAKE_PROFIT_RUNNER_FRACTION", 0.10)
     moonbag_drawdown_pct: float = _f("MOONBAG_DRAWDOWN_PCT", 0.35)
     moonbag_drawdown_window_sec: int = _i("MOONBAG_DRAWDOWN_WINDOW_SEC", 45)
@@ -184,8 +239,12 @@ class Settings:
     loss_exit_max_attempts: int = _i("LOSS_EXIT_MAX_ATTEMPTS", 4)
     emergency_exit_retry_delay_sec: float = _f("EMERGENCY_EXIT_RETRY_DELAY_SEC", 1.0)
     emergency_exit_max_attempts: int = _i("EMERGENCY_EXIT_MAX_ATTEMPTS", 8)
-    stop_loss_scaleout_emergency_fill_ratio: float = _f("STOP_LOSS_SCALEOUT_EMERGENCY_FILL_RATIO", 0.60)
-    stop_loss_scaleout_emergency_remaining_cost_pct: float = _f("STOP_LOSS_SCALEOUT_EMERGENCY_REMAINING_COST_PCT", 0.45)
+    stop_loss_scaleout_emergency_fill_ratio: float = _f(
+        "STOP_LOSS_SCALEOUT_EMERGENCY_FILL_RATIO", 0.60
+    )
+    stop_loss_scaleout_emergency_remaining_cost_pct: float = _f(
+        "STOP_LOSS_SCALEOUT_EMERGENCY_REMAINING_COST_PCT", 0.45
+    )
     stop_loss_warn_pct: float = _f("STOP_LOSS_WARN_PCT", 0.08)
 
     hedge_exit_enabled: bool = _b("HEDGE_EXIT_ENABLED", True)
@@ -236,40 +295,74 @@ class Settings:
     live_take_profit_fee_rate: float = _f("LIVE_TAKE_PROFIT_FEE_RATE", 0.0)
     leave_moonbag_pct: float = _f("LEAVE_MOONBAG_PCT", 0.05)
     leave_loss_tail_pct: float = _f("LEAVE_LOSS_TAIL_PCT", 0.0)
-    force_full_exit_on_stop_loss_scaleout: bool = _b("FORCE_FULL_EXIT_ON_STOP_LOSS_SCALEOUT", False)
+    force_full_exit_on_stop_loss_scaleout: bool = _b(
+        "FORCE_FULL_EXIT_ON_STOP_LOSS_SCALEOUT", False
+    )
     live_force_full_loss_exit: bool = _b("LIVE_FORCE_FULL_LOSS_EXIT", True)
     live_loss_exit_force_taker: bool = _b("LIVE_LOSS_EXIT_FORCE_TAKER", False)
     breakeven_giveback_enabled: bool = _b("BREAKEVEN_GIVEBACK_ENABLED", True)
     breakeven_giveback_min_mfe_pct: float = _f("BREAKEVEN_GIVEBACK_MIN_MFE_PCT", 0.10)
     breakeven_giveback_floor_pct: float = _f("BREAKEVEN_GIVEBACK_FLOOR_PCT", 0.03)
     breakeven_giveback_min_hold_sec: float = _f("BREAKEVEN_GIVEBACK_MIN_HOLD_SEC", 12.0)
-    breakeven_giveback_min_secs_left: float = _f("BREAKEVEN_GIVEBACK_MIN_SECS_LEFT", 45.0)
+    breakeven_giveback_min_secs_left: float = _f(
+        "BREAKEVEN_GIVEBACK_MIN_SECS_LEFT", 45.0
+    )
     profit_reversal_enabled: bool = _b("PROFIT_REVERSAL_ENABLED", True)
     profit_reversal_min_mfe_pct: float = _f("PROFIT_REVERSAL_MIN_MFE_PCT", 0.50)
-    profit_reversal_min_current_profit_pct: float = _f("PROFIT_REVERSAL_MIN_CURRENT_PROFIT_PCT", 0.12)
+    profit_reversal_min_current_profit_pct: float = _f(
+        "PROFIT_REVERSAL_MIN_CURRENT_PROFIT_PCT", 0.12
+    )
     profit_reversal_drawdown_pct: float = _f("PROFIT_REVERSAL_DRAWDOWN_PCT", 0.18)
-    profit_reversal_adverse_velocity: float = _f("PROFIT_REVERSAL_ADVERSE_VELOCITY", 0.0003)
+    profit_reversal_adverse_velocity: float = _f(
+        "PROFIT_REVERSAL_ADVERSE_VELOCITY", 0.0003
+    )
     binance_adverse_exit_enabled: bool = _b("BINANCE_ADVERSE_EXIT_ENABLED", True)
-    binance_adverse_exit_confirm_sec: float = _f("BINANCE_ADVERSE_EXIT_CONFIRM_SEC", 3.0)
+    binance_adverse_exit_confirm_sec: float = _f(
+        "BINANCE_ADVERSE_EXIT_CONFIRM_SEC", 3.0
+    )
     binance_adverse_exit_velocity: float = _f("BINANCE_ADVERSE_EXIT_VELOCITY", 0.00035)
-    binance_adverse_exit_max_profit_pct: float = _f("BINANCE_ADVERSE_EXIT_MAX_PROFIT_PCT", 0.08)
-    binance_adverse_exit_min_hold_sec: float = _f("BINANCE_ADVERSE_EXIT_MIN_HOLD_SEC", 4.0)
-    binance_adverse_exit_require_current_confirm: bool = _b("BINANCE_ADVERSE_EXIT_REQUIRE_CURRENT_CONFIRM", True)
+    binance_adverse_exit_max_profit_pct: float = _f(
+        "BINANCE_ADVERSE_EXIT_MAX_PROFIT_PCT", 0.08
+    )
+    binance_adverse_exit_min_hold_sec: float = _f(
+        "BINANCE_ADVERSE_EXIT_MIN_HOLD_SEC", 4.0
+    )
+    binance_adverse_exit_require_current_confirm: bool = _b(
+        "BINANCE_ADVERSE_EXIT_REQUIRE_CURRENT_CONFIRM", True
+    )
     binance_profit_protect_enabled: bool = _b("BINANCE_PROFIT_PROTECT_ENABLED", True)
-    binance_profit_protect_min_profit_pct: float = _f("BINANCE_PROFIT_PROTECT_MIN_PROFIT_PCT", 0.08)
-    binance_profit_protect_max_profit_pct: float = _f("BINANCE_PROFIT_PROTECT_MAX_PROFIT_PCT", 0.17)
-    binance_profit_protect_stall_sec: float = _f("BINANCE_PROFIT_PROTECT_STALL_SEC", 30.0)
-    binance_profit_protect_confirm_sec: float = _f("BINANCE_PROFIT_PROTECT_CONFIRM_SEC", 1.0)
-    binance_profit_protect_velocity: float = _f("BINANCE_PROFIT_PROTECT_VELOCITY", 0.00012)
-    binance_profit_protect_min_hold_sec: float = _f("BINANCE_PROFIT_PROTECT_MIN_HOLD_SEC", 10.0)
-    binance_profit_protect_require_current_confirm: bool = _b("BINANCE_PROFIT_PROTECT_REQUIRE_CURRENT_CONFIRM", False)
+    binance_profit_protect_min_profit_pct: float = _f(
+        "BINANCE_PROFIT_PROTECT_MIN_PROFIT_PCT", 0.08
+    )
+    binance_profit_protect_max_profit_pct: float = _f(
+        "BINANCE_PROFIT_PROTECT_MAX_PROFIT_PCT", 0.17
+    )
+    binance_profit_protect_stall_sec: float = _f(
+        "BINANCE_PROFIT_PROTECT_STALL_SEC", 30.0
+    )
+    binance_profit_protect_confirm_sec: float = _f(
+        "BINANCE_PROFIT_PROTECT_CONFIRM_SEC", 1.0
+    )
+    binance_profit_protect_velocity: float = _f(
+        "BINANCE_PROFIT_PROTECT_VELOCITY", 0.00012
+    )
+    binance_profit_protect_min_hold_sec: float = _f(
+        "BINANCE_PROFIT_PROTECT_MIN_HOLD_SEC", 10.0
+    )
+    binance_profit_protect_require_current_confirm: bool = _b(
+        "BINANCE_PROFIT_PROTECT_REQUIRE_CURRENT_CONFIRM", False
+    )
     soft_stop_confirm_sec: float = _f("SOFT_STOP_CONFIRM_SEC", 2.5)
     soft_stop_confirm_buffer_pct: float = _f("SOFT_STOP_CONFIRM_BUFFER_PCT", 0.015)
     soft_stop_adverse_velocity: float = _f("SOFT_STOP_ADVERSE_VELOCITY", 0.00018)
     failed_follow_through_window_sec: int = _i("FAILED_FOLLOW_THROUGH_WINDOW_SEC", 25)
     failed_follow_through_loss_pct: float = _f("FAILED_FOLLOW_THROUGH_LOSS_PCT", 0.02)
-    failed_follow_through_max_mfe_pct: float = _f("FAILED_FOLLOW_THROUGH_MAX_MFE_PCT", 0.015)
-    failed_follow_through_min_secs_left: int = _i("FAILED_FOLLOW_THROUGH_MIN_SECS_LEFT", 120)
+    failed_follow_through_max_mfe_pct: float = _f(
+        "FAILED_FOLLOW_THROUGH_MAX_MFE_PCT", 0.015
+    )
+    failed_follow_through_min_secs_left: int = _i(
+        "FAILED_FOLLOW_THROUGH_MIN_SECS_LEFT", 120
+    )
     stalled_exit_window_sec: int = _i("STALLED_EXIT_WINDOW_SEC", 35)
     stalled_exit_min_loss_pct: float = _f("STALLED_EXIT_MIN_LOSS_PCT", 0.01)
     stalled_exit_max_abs_pnl_pct: float = _f("STALLED_EXIT_MAX_ABS_PNL_PCT", 0.02)
@@ -281,7 +374,7 @@ class Settings:
     binance_signal_lag_sec: float = _f("BINANCE_SIGNAL_LAG_SEC", 0.5)
     entry_dual_velocity_confirm: bool = _b("ENTRY_DUAL_VELOCITY_CONFIRM", True)
     ws_stale_max_age_sec: float = _f("WS_STALE_MAX_AGE_SEC", 5.0)
-    
+
     # Advanced Options Strategies (Theta Bleed & Strike Cross Front-run)
     theta_bleed_enabled: bool = _b("THETA_BLEED_ENABLED", True)
     theta_bleed_min_sec: float = _f("THETA_BLEED_MIN_SEC", 60.0)
@@ -297,7 +390,9 @@ class Settings:
     # Only blocks adverse moves; flat/zero velocity still allows entry. Set 0.0 to disable.
     entry_velocity_min: float = _f("ENTRY_VELOCITY_MIN", 0.0002)
     # 同方向進場冷卻：已有同方向倉位時，N 秒內不重複進場。設 0 停用。
-    same_direction_entry_cooldown_sec: float = _f("SAME_DIRECTION_ENTRY_COOLDOWN_SEC", 60.0)
+    same_direction_entry_cooldown_sec: float = _f(
+        "SAME_DIRECTION_ENTRY_COOLDOWN_SEC", 60.0
+    )
 
     def __post_init__(self) -> None:
         if self.take_profit_hard_pct <= self.take_profit_soft_pct:
@@ -316,8 +411,16 @@ class Settings:
                 stacklevel=2,
             )
             self.take_profit_soft_pct = normalized_soft
-        normalized_partial_fraction = min(0.95, max(0.05, float(self.take_profit_partial_fraction or 0.30)))
-        if abs(normalized_partial_fraction - float(self.take_profit_partial_fraction or 0.30)) > 1e-9:
+        normalized_partial_fraction = min(
+            0.95, max(0.05, float(self.take_profit_partial_fraction or 0.30))
+        )
+        if (
+            abs(
+                normalized_partial_fraction
+                - float(self.take_profit_partial_fraction or 0.30)
+            )
+            > 1e-9
+        ):
             warnings.warn(
                 "TAKE_PROFIT_PARTIAL_FRACTION must be between 0.05 and 0.95; "
                 f"normalizing from {self.take_profit_partial_fraction:.2f} "
@@ -326,8 +429,16 @@ class Settings:
                 stacklevel=2,
             )
             self.take_profit_partial_fraction = normalized_partial_fraction
-        normalized_runner_fraction = min(0.95, max(0.0, float(self.take_profit_runner_fraction or 0.10)))
-        if abs(normalized_runner_fraction - float(self.take_profit_runner_fraction or 0.10)) > 1e-9:
+        normalized_runner_fraction = min(
+            0.95, max(0.0, float(self.take_profit_runner_fraction or 0.10))
+        )
+        if (
+            abs(
+                normalized_runner_fraction
+                - float(self.take_profit_runner_fraction or 0.10)
+            )
+            > 1e-9
+        ):
             warnings.warn(
                 "TAKE_PROFIT_RUNNER_FRACTION must be between 0.00 and 0.95; "
                 f"normalizing from {self.take_profit_runner_fraction:.2f} "

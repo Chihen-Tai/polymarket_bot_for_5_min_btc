@@ -38,18 +38,9 @@ def decide_exit(
 ) -> ExitDecision:
     take_profit_pnl_pct = None if profit_pnl_pct is None else float(profit_pnl_pct)
     ghost_town_sec = float(getattr(SETTINGS, "exit_ghost_town_sec", 30) or 0.0)
-    profit_deadline_sec = float(getattr(SETTINGS, "exit_deadline_profit_sec", 45) or 0.0)
-    inside_ghost_town_window = (
-        secs_left is not None
-        and ghost_town_sec > 0.0
-        and secs_left <= ghost_town_sec
+    profit_deadline_sec = float(
+        getattr(SETTINGS, "exit_deadline_profit_sec", 45) or 0.0
     )
-
-    # LAST 30 SECONDS LOCK:
-    # 一旦進到最後 30 秒內（<=30），不管賺錢、虧錢、平盤都 let ride。
-    # 45~30 秒之間若有獲利，再交給後面的 deadline take-profit 規則處理。
-    if inside_ghost_town_window:
-        return ExitDecision(False, "ghost-town-let-ride", pnl_pct, hold_sec)
 
     # Mark-price fallback take-profit:
     # 當 bid 可成交報酬 (profit_pnl_pct) 因流動性折扣略低於停利門檻，
@@ -59,7 +50,9 @@ def decide_exit(
     # 不能在完全沒有 executable profit signal 時就直接停利。
     _soft_tp = float(SETTINGS.take_profit_soft_pct)
     _bid_discount_buffer = float(SETTINGS.take_profit_bid_discount_buffer)
-    _mark_tp_threshold = _soft_tp + _bid_discount_buffer  # 例如 30% + 8% = mark 要達到 38% 才觸發 fallback
+    _mark_tp_threshold = (
+        _soft_tp + _bid_discount_buffer
+    )  # 例如 30% + 8% = mark 要達到 38% 才觸發 fallback
     _min_exec_fallback_pct = max(0.0, _soft_tp - _bid_discount_buffer)
     _fallback_eps = 1e-9
     if (
@@ -83,7 +76,9 @@ def decide_exit(
         if getattr(SETTINGS, "force_full_exit_on_take_profit", False):
             return ExitDecision(True, "take-profit-full", take_profit_pnl_pct, hold_sec)
         # Sell enough to recover principal -> guaranteed risk-free
-        return ExitDecision(True, "take-profit-principal", take_profit_pnl_pct, hold_sec)
+        return ExitDecision(
+            True, "take-profit-principal", take_profit_pnl_pct, hold_sec
+        )
 
     if (
         bool(getattr(SETTINGS, "take_profit_principal_after_partial_enabled", True))
@@ -92,13 +87,18 @@ def decide_exit(
         and take_profit_pnl_pct is not None
     ):
         partial_runner_min_mfe_pct = float(
-            getattr(SETTINGS, "take_profit_principal_after_partial_min_mfe_pct", 0.24) or 0.24
+            getattr(SETTINGS, "take_profit_principal_after_partial_min_mfe_pct", 0.24)
+            or 0.24
         )
         partial_runner_drawdown_pct = float(
-            getattr(SETTINGS, "take_profit_principal_after_partial_drawdown_pct", 0.08) or 0.08
+            getattr(SETTINGS, "take_profit_principal_after_partial_drawdown_pct", 0.08)
+            or 0.08
         )
         partial_runner_min_current_pct = float(
-            getattr(SETTINGS, "take_profit_principal_after_partial_min_current_pct", 0.14) or 0.14
+            getattr(
+                SETTINGS, "take_profit_principal_after_partial_min_current_pct", 0.14
+            )
+            or 0.14
         )
         partial_runner_giveback_trigger_pct = max(
             partial_runner_min_current_pct,
@@ -110,11 +110,15 @@ def decide_exit(
             and take_profit_pnl_pct >= partial_runner_min_current_pct
         ):
             if getattr(SETTINGS, "force_full_exit_on_take_profit", False):
-                return ExitDecision(True, "take-profit-full", take_profit_pnl_pct, hold_sec)
+                return ExitDecision(
+                    True, "take-profit-full", take_profit_pnl_pct, hold_sec
+                )
             # After a partial clip, a runner that has already shown real life should not
             # be allowed to give back most of its gains before principal is secured.
-            return ExitDecision(True, "take-profit-principal", take_profit_pnl_pct, hold_sec)
-        
+            return ExitDecision(
+                True, "take-profit-principal", take_profit_pnl_pct, hold_sec
+            )
+
     if (
         take_profit_pnl_pct is not None
         and not has_taken_partial
@@ -128,9 +132,11 @@ def decide_exit(
 
     if has_extracted_principal:
         if (
-            runner_peak_value_usd >= getattr(SETTINGS, "moonbag_min_peak_value_usd", 0.10)
+            runner_peak_value_usd
+            >= getattr(SETTINGS, "moonbag_min_peak_value_usd", 0.10)
             and runner_peak_age_sec is not None
-            and runner_peak_age_sec <= getattr(SETTINGS, "moonbag_drawdown_window_sec", 30)
+            and runner_peak_age_sec
+            <= getattr(SETTINGS, "moonbag_drawdown_window_sec", 30)
             and runner_drawdown_pct <= -getattr(SETTINGS, "moonbag_drawdown_pct", 0.30)
         ):
             return ExitDecision(True, "moonbag-drawdown-stop", pnl_pct, hold_sec)
@@ -142,12 +148,18 @@ def decide_exit(
         bool(getattr(SETTINGS, "breakeven_giveback_enabled", True))
         and not has_taken_partial
         and not has_extracted_principal
-        and mfe_pnl_pct >= float(getattr(SETTINGS, "breakeven_giveback_min_mfe_pct", 0.10) or 0.10)
-        and pnl_pct <= float(getattr(SETTINGS, "breakeven_giveback_floor_pct", 0.0) or 0.0)
-        and hold_sec >= float(getattr(SETTINGS, "breakeven_giveback_min_hold_sec", 12.0) or 12.0)
+        and mfe_pnl_pct
+        >= float(getattr(SETTINGS, "breakeven_giveback_min_mfe_pct", 0.10) or 0.10)
+        and pnl_pct
+        <= float(getattr(SETTINGS, "breakeven_giveback_floor_pct", 0.0) or 0.0)
+        and hold_sec
+        >= float(getattr(SETTINGS, "breakeven_giveback_min_hold_sec", 12.0) or 12.0)
         and (
             secs_left is None
-            or secs_left >= float(getattr(SETTINGS, "breakeven_giveback_min_secs_left", 45.0) or 45.0)
+            or secs_left
+            >= float(
+                getattr(SETTINGS, "breakeven_giveback_min_secs_left", 45.0) or 45.0
+            )
         )
     ):
         return ExitDecision(True, "break-even-giveback", pnl_pct, hold_sec)
@@ -171,6 +183,8 @@ def decide_exit(
         and secs_left is not None
         and secs_left >= getattr(SETTINGS, "stalled_exit_min_secs_left", 45)
         and not has_extracted_principal
+        and not has_taken_partial
+        and not has_scaled_out_loss
         and pnl_pct <= -getattr(SETTINGS, "stalled_exit_min_loss_pct", 0.01)
         and pnl_pct >= -getattr(SETTINGS, "stalled_exit_max_abs_pnl_pct", 0.02)
         and mfe_pnl_pct <= getattr(SETTINGS, "stalled_exit_max_mfe_pct", 0.02)
@@ -180,7 +194,8 @@ def decide_exit(
     if (
         has_scaled_out_loss
         and hold_sec >= getattr(SETTINGS, "post_scaleout_loss_exit_delay_sec", 20)
-        and pnl_pct <= -getattr(
+        and pnl_pct
+        <= -getattr(
             SETTINGS,
             "post_scaleout_loss_exit_pct",
             getattr(SETTINGS, "stop_loss_warn_pct", 0.08),
@@ -198,42 +213,56 @@ def decide_exit(
     if getattr(SETTINGS, "smart_stop_loss_enabled", False):
         if _stop_loss_armed and pnl_pct <= -SETTINGS.stop_loss_pct:
             return ExitDecision(True, "hard-stop-loss", pnl_pct, hold_sec)
-        if _stop_loss_armed and pnl_pct <= -getattr(SETTINGS, "stop_loss_warn_pct", 0.08) and recovery_chance_low:
+        if (
+            _stop_loss_armed
+            and pnl_pct <= -getattr(SETTINGS, "stop_loss_warn_pct", 0.08)
+            and recovery_chance_low
+        ):
             return ExitDecision(True, "smart-stop-loss", pnl_pct, hold_sec)
-        if _stop_loss_armed and not has_scaled_out_loss and pnl_pct <= -getattr(SETTINGS, "stop_loss_partial_pct", 0.05):
+        if (
+            _stop_loss_armed
+            and not has_scaled_out_loss
+            and pnl_pct <= -getattr(SETTINGS, "stop_loss_partial_pct", 0.05)
+        ):
             if getattr(SETTINGS, "force_full_exit_on_stop_loss_scaleout", False):
                 return ExitDecision(True, "stop-loss-full", pnl_pct, hold_sec)
             return ExitDecision(True, "stop-loss-scale-out", pnl_pct, hold_sec)
     else:
         if _stop_loss_armed and pnl_pct <= -SETTINGS.stop_loss_pct:
             return ExitDecision(True, "stop-loss", pnl_pct, hold_sec)
-        if _stop_loss_armed and not has_scaled_out_loss and pnl_pct <= -getattr(SETTINGS, "stop_loss_partial_pct", 0.05):
+        if (
+            _stop_loss_armed
+            and not has_scaled_out_loss
+            and pnl_pct <= -getattr(SETTINGS, "stop_loss_partial_pct", 0.05)
+        ):
             if getattr(SETTINGS, "force_full_exit_on_stop_loss_scaleout", False):
                 return ExitDecision(True, "stop-loss-full", pnl_pct, hold_sec)
             return ExitDecision(True, "stop-loss-scale-out", pnl_pct, hold_sec)
-    if secs_left is not None and profit_deadline_sec > 0.0 and secs_left <= profit_deadline_sec:
+    if (
+        secs_left is not None
+        and profit_deadline_sec > 0.0
+        and secs_left <= profit_deadline_sec
+    ):
         if pnl_pct > 0:
             return ExitDecision(True, "deadline-take-profit-full", pnl_pct, hold_sec)
 
-    if secs_left is not None and secs_left <= getattr(SETTINGS, "exit_deadline_sec", 20):
+    if secs_left is not None and secs_left <= getattr(
+        SETTINGS, "exit_deadline_sec", 20
+    ):
         if pnl_pct < 0:
             return ExitDecision(True, "deadline-exit-loss", pnl_pct, hold_sec)
-        if (
-            not has_extracted_principal
-            and pnl_pct <= getattr(SETTINGS, "exit_deadline_flat_pnl_pct", 0.0)
+        if not has_extracted_principal and pnl_pct <= getattr(
+            SETTINGS, "exit_deadline_flat_pnl_pct", 0.0
         ):
             if profit_pnl_pct is not None and profit_pnl_pct < 0:
                 return ExitDecision(False, "", pnl_pct, hold_sec)
             # If the trade never became meaningfully profitable, don't let a near-expiry
             # binary position drift into a full settlement loss just because the mark stayed flat.
             return ExitDecision(True, "deadline-exit-flat", pnl_pct, hold_sec)
-        if (
-            not has_extracted_principal
-            and pnl_pct < getattr(
-                SETTINGS,
-                "exit_deadline_min_safe_profit_pct",
-                getattr(SETTINGS, "take_profit_soft_pct", 0.30),
-            )
+        if not has_extracted_principal and pnl_pct < getattr(
+            SETTINGS,
+            "exit_deadline_min_safe_profit_pct",
+            getattr(SETTINGS, "take_profit_soft_pct", 0.30),
         ):
             if profit_pnl_pct is not None and profit_pnl_pct < 0:
                 return ExitDecision(False, "", pnl_pct, hold_sec)
@@ -242,7 +271,10 @@ def decide_exit(
             return ExitDecision(True, "deadline-exit-weak-win", pnl_pct, hold_sec)
 
     if hold_sec >= SETTINGS.max_hold_seconds and pnl_pct < 0:
-        if getattr(SETTINGS, "smart_stop_loss_enabled", False) and not recovery_chance_low:
+        if (
+            getattr(SETTINGS, "smart_stop_loss_enabled", False)
+            and not recovery_chance_low
+        ):
             if hold_sec >= SETTINGS.max_hold_seconds * 2:
                 return ExitDecision(True, "max-hold-loss-extended", pnl_pct, hold_sec)
         else:
@@ -251,8 +283,14 @@ def decide_exit(
     return ExitDecision(False, "", pnl_pct, hold_sec)
 
 
-def maybe_reverse_entry(*, signal_side: Optional[str], live_consec_losses: int, last_loss_side: str) -> EntryDecision:
-    if signal_side in {"UP", "DOWN"} and live_consec_losses >= 2 and last_loss_side == signal_side:
+def maybe_reverse_entry(
+    *, signal_side: Optional[str], live_consec_losses: int, last_loss_side: str
+) -> EntryDecision:
+    if (
+        signal_side in {"UP", "DOWN"}
+        and live_consec_losses >= 2
+        and last_loss_side == signal_side
+    ):
         return EntryDecision("DOWN" if signal_side == "UP" else "UP", "loss-reversal")
     return EntryDecision(signal_side, "")
 
@@ -313,6 +351,10 @@ def can_reenter_same_market(
         return False
     normalized_current_slug = str(current_market_slug or "").strip()
     normalized_blocked_slug = str(blocked_market_slug or "").strip()
-    if normalized_current_slug and normalized_blocked_slug and normalized_current_slug == normalized_blocked_slug:
+    if (
+        normalized_current_slug
+        and normalized_blocked_slug
+        and normalized_current_slug == normalized_blocked_slug
+    ):
         return False
     return bool(closed_any or not normalized_blocked_slug)

@@ -61,13 +61,17 @@ def minimum_order_usd(price: float, min_shares: float) -> float:
     return round(float(price) * float(min_shares), 4)
 
 
-def order_below_minimum_shares(amount_usd: float, price: float, min_shares: float) -> tuple[bool, float, float]:
+def order_below_minimum_shares(
+    amount_usd: float, price: float, min_shares: float
+) -> tuple[bool, float, float]:
     est_shares = estimate_order_shares(amount_usd, price)
     required_usd = minimum_order_usd(price, min_shares)
     return est_shares + 1e-9 < float(min_shares), est_shares, required_usd
 
 
-def plan_live_order(amount_usd: float, price: float, min_shares: float, min_order_usd: float) -> tuple[float, float]:
+def plan_live_order(
+    amount_usd: float, price: float, min_shares: float, min_order_usd: float
+) -> tuple[float, float]:
     if price <= 0:
         return 0.0, 0.0
     required_shares = max(
@@ -78,6 +82,15 @@ def plan_live_order(amount_usd: float, price: float, min_shares: float, min_orde
     rounded_shares = round(_round_up_to_step(required_shares, 0.01), 2)
     actual_usd = round(rounded_shares * float(price), 4)
     return rounded_shares, actual_usd
+
+
+def taker_sell_worst_price(*, simulated_price: float | None, emergency: bool) -> float:
+    price = float(simulated_price or 0.0)
+    if price <= 0.01:
+        return 0.01
+    floor_factor = 0.50 if emergency else 0.65
+    rounded_floor = math.floor((price * floor_factor * 1000.0) + 0.5) / 1000.0
+    return max(0.01, rounded_floor)
 
 
 _BALANCE_ALLOWANCE_RE = re.compile(
@@ -107,7 +120,9 @@ def select_live_close_exit_value(
     cash_delta_source: str,
 ) -> tuple[float | None, str]:
     cash_value = float(cash_delta) if cash_delta is not None else 0.0
-    response_value = float(usdc_received_total) if usdc_received_total is not None else 0.0
+    response_value = (
+        float(usdc_received_total) if usdc_received_total is not None else 0.0
+    )
     if cash_value > 0.0 and response_value > 0.0:
         # Balance refresh can lag on live partial exits; when the wallet delta and
         # matched-order proceeds disagree materially, trust the order response.
@@ -120,13 +135,17 @@ def select_live_close_exit_value(
     if response_value > 0.0:
         return response_value, (usdc_received_source or "close_response_takingAmount")
     return (cash_delta if cash_delta is not None else usdc_received_total), (
-        cash_delta_source if cash_delta is not None else (usdc_received_source or "close_response_unavailable")
+        cash_delta_source
+        if cash_delta is not None
+        else (usdc_received_source or "close_response_unavailable")
     )
 
 
-def _normalize_book_levels(raw_levels: Any, *, reverse: bool) -> list[tuple[float, float]]:
+def _normalize_book_levels(
+    raw_levels: Any, *, reverse: bool
+) -> list[tuple[float, float]]:
     levels: list[tuple[float, float]] = []
-    for lv in (raw_levels if isinstance(raw_levels, list) else []):
+    for lv in raw_levels if isinstance(raw_levels, list) else []:
         if isinstance(lv, dict):
             price = _to_float(lv.get("price"), 0.0)
             size = _to_float(lv.get("size", lv.get("amount", 0.0)), 0.0)
@@ -172,7 +191,9 @@ def _normalize_orderbook_summary(raw_book: Any) -> dict:
         "last_trade_price",
         "hash",
     )
-    normalized = {field: getattr(raw_book, field) for field in fields if hasattr(raw_book, field)}
+    normalized = {
+        field: getattr(raw_book, field) for field in fields if hasattr(raw_book, field)
+    }
     if normalized:
         return normalized
 
@@ -181,11 +202,17 @@ def _normalize_orderbook_summary(raw_book: Any) -> dict:
     except Exception:
         raw_dict = None
     if isinstance(raw_dict, dict):
-        return {str(key): value for key, value in raw_dict.items() if not str(key).startswith("_")}
+        return {
+            str(key): value
+            for key, value in raw_dict.items()
+            if not str(key).startswith("_")
+        }
     return {}
 
 
-def estimate_book_exit_value(book: dict | None, shares: float) -> tuple[float | None, float]:
+def estimate_book_exit_value(
+    book: dict | None, shares: float
+) -> tuple[float | None, float]:
     target_shares = max(0.0, float(shares or 0.0))
     if target_shares <= 0.0:
         return 0.0, 1.0
@@ -255,7 +282,9 @@ def estimate_book_exit_floor_price(book: dict | None, shares: float) -> float | 
     return float(best_bid)
 
 
-def estimate_hedge_exit_value(book_opposite: dict | None, shares: float) -> tuple[float | None, float]:
+def estimate_hedge_exit_value(
+    book_opposite: dict | None, shares: float
+) -> tuple[float | None, float]:
     """Estimate the equivalent exit value by taking the ASK liquidity of the opposite token."""
     target_shares = max(0.0, float(shares or 0.0))
     if target_shares <= 0.0:
@@ -311,8 +340,12 @@ class PolymarketExchange:
 
         self._open_exposure = 0.0
         self._last_price = 73933.39
-        self._position_cost: dict[str, float] = {}  # token_id -> cost_usd (for exposure accounting)
-        self._position_shares: dict[str, float] = {}  # token_id -> shares (for dry-run cost-basis accounting)
+        self._position_cost: dict[
+            str, float
+        ] = {}  # token_id -> cost_usd (for exposure accounting)
+        self._position_shares: dict[
+            str, float
+        ] = {}  # token_id -> shares (for dry-run cost-basis accounting)
         self._live_account_cache: Account | None = None
         self._live_account_cache_ts: float = 0.0
 
@@ -344,13 +377,19 @@ class PolymarketExchange:
                     self._equity = self._cash
                     self._position_cost = {
                         str(token_id): _to_float(cost, 0.0)
-                        for token_id, cost in (data.get("position_cost", {}) or {}).items()
+                        for token_id, cost in (
+                            data.get("position_cost", {}) or {}
+                        ).items()
                     }
                     self._position_shares = {
                         str(token_id): _to_float(shares, 0.0)
-                        for token_id, shares in (data.get("position_shares", {}) or {}).items()
+                        for token_id, shares in (
+                            data.get("position_shares", {}) or {}
+                        ).items()
                     }
-                    self._open_exposure = sum(max(0.0, cost) for cost in self._position_cost.values())
+                    self._open_exposure = sum(
+                        max(0.0, cost) for cost in self._position_cost.values()
+                    )
             except Exception:
                 pass
 
@@ -381,8 +420,12 @@ class PolymarketExchange:
             token_id = str(getattr(pos, "token_id", "") or "")
             if not token_id:
                 continue
-            expected_cost[token_id] = expected_cost.get(token_id, 0.0) + max(0.0, _to_float(getattr(pos, "cost_usd", 0.0), 0.0))
-            expected_shares[token_id] = expected_shares.get(token_id, 0.0) + max(0.0, _to_float(getattr(pos, "shares", 0.0), 0.0))
+            expected_cost[token_id] = expected_cost.get(token_id, 0.0) + max(
+                0.0, _to_float(getattr(pos, "cost_usd", 0.0), 0.0)
+            )
+            expected_shares[token_id] = expected_shares.get(token_id, 0.0) + max(
+                0.0, _to_float(getattr(pos, "shares", 0.0), 0.0)
+            )
 
         expected_exposure = sum(expected_cost.values())
         changed = (
@@ -414,7 +457,11 @@ class PolymarketExchange:
         if not self._funder:
             raise ValueError("FUNDER_ADDRESS is required when DRY_RUN=false")
 
-        if SETTINGS.clob_api_key and SETTINGS.clob_api_secret and SETTINGS.clob_api_passphrase:
+        if (
+            SETTINGS.clob_api_key
+            and SETTINGS.clob_api_secret
+            and SETTINGS.clob_api_passphrase
+        ):
             creds = ApiCreds(
                 api_key=SETTINGS.clob_api_key,
                 api_secret=SETTINGS.clob_api_secret,
@@ -470,6 +517,8 @@ class PolymarketExchange:
             return 0.0
 
     def _get_cash_balance(self) -> float:
+        if self.dry_run:
+            return float(self._cash)
         try:
             from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
 
@@ -517,7 +566,14 @@ class PolymarketExchange:
         if not isinstance(payload, dict):
             return None, "close_response_unavailable"
         # makingAmount = shares sold in a SELL order, fallback to size/filledSize
-        for key in ("makingAmount", "size", "filledSize", "filled_size", "matchedSize", "matched_size"):
+        for key in (
+            "makingAmount",
+            "size",
+            "filledSize",
+            "filled_size",
+            "matchedSize",
+            "matched_size",
+        ):
             value = _to_float(payload.get(key), -1.0)
             if value > 0:
                 return value, f"close_response_{key}"
@@ -532,19 +588,22 @@ class PolymarketExchange:
             return making, "entry_response_makingAmount"
         return None, "entry_response_missing_makingAmount"
 
-
     def get_account(self) -> Account:
         if self.dry_run:
             self._load_paper_balance()
             # Include mark-to-market value of open positions so equity reflects unrealized P&L
-            positions_value = sum(self._position_cost.values())  # conservative: use cost basis (no live price here)
+            positions_value = sum(
+                self._position_cost.values()
+            )  # conservative: use cost basis (no live price here)
             return Account(
                 equity=self._cash + positions_value,
                 cash=self._cash,
                 open_exposure=self._open_exposure,
             )
 
-        cache_ttl_sec = max(0.0, float(getattr(SETTINGS, "live_account_cache_ttl_sec", 0.0) or 0.0))
+        cache_ttl_sec = max(
+            0.0, float(getattr(SETTINGS, "live_account_cache_ttl_sec", 0.0) or 0.0)
+        )
         now_ts = time.time()
         if (
             cache_ttl_sec > 0.0
@@ -567,7 +626,9 @@ class PolymarketExchange:
         if cache_ttl_sec > 0.0:
             self._live_account_cache = acct
             self._live_account_cache_ts = now_ts
-        return Account(equity=acct.equity, cash=acct.cash, open_exposure=acct.open_exposure)
+        return Account(
+            equity=acct.equity, cash=acct.cash, open_exposure=acct.open_exposure
+        )
 
     def get_positions(self) -> list[Position]:
         if self.dry_run or not self._funder:
@@ -585,15 +646,17 @@ class PolymarketExchange:
                 size = _to_float(row.get("size", 0.0), 0.0)
                 if size <= 0:
                     continue
-                out.append(Position(
-                    token_id=str(row.get("asset") or ""),
-                    size=size,
-                    avg_price=_to_float(row.get("avgPrice", 0.0), 0.0),
-                    initial_value=_to_float(row.get("initialValue", 0.0), 0.0),
-                    current_value=_to_float(row.get("currentValue", 0.0), 0.0),
-                    cash_pnl=_to_float(row.get("cashPnl", 0.0), 0.0),
-                    percent_pnl=_to_float(row.get("percentPnl", 0.0), 0.0),
-                ))
+                out.append(
+                    Position(
+                        token_id=str(row.get("asset") or ""),
+                        size=size,
+                        avg_price=_to_float(row.get("avgPrice", 0.0), 0.0),
+                        initial_value=_to_float(row.get("initialValue", 0.0), 0.0),
+                        current_value=_to_float(row.get("currentValue", 0.0), 0.0),
+                        cash_pnl=_to_float(row.get("cashPnl", 0.0), 0.0),
+                        percent_pnl=_to_float(row.get("percentPnl", 0.0), 0.0),
+                    )
+                )
             return out
         except Exception:
             return []
@@ -647,7 +710,7 @@ class PolymarketExchange:
                     "close": _to_float(current[4]),
                     "volume": _to_float(current[5]),
                     "prev_close": _to_float(prev[4]),
-                    "change": _to_float(current[4]) - _to_float(prev[4])
+                    "change": _to_float(current[4]) - _to_float(prev[4]),
                 }
         except Exception:
             return {}
@@ -665,21 +728,34 @@ class PolymarketExchange:
             data = r.json()
             results = []
             for i, candle in enumerate(data):
-                prev_close = _to_float(data[i-1][4]) if i > 0 else _to_float(candle[1])
-                results.append({
-                    "open": _to_float(candle[1]),
-                    "high": _to_float(candle[2]),
-                    "low": _to_float(candle[3]),
-                    "close": _to_float(candle[4]),
-                    "volume": _to_float(candle[5]),
-                    "prev_close": prev_close
-                })
+                prev_close = (
+                    _to_float(data[i - 1][4]) if i > 0 else _to_float(candle[1])
+                )
+                results.append(
+                    {
+                        "open": _to_float(candle[1]),
+                        "high": _to_float(candle[2]),
+                        "low": _to_float(candle[3]),
+                        "close": _to_float(candle[4]),
+                        "volume": _to_float(candle[5]),
+                        "prev_close": prev_close,
+                    }
+                )
             return results
         except Exception:
             return []
 
-    def place_order(self, side: str, amount_usd: float, token_id_override: str | None = None, simulated_price: float | None = None, force_taker: bool = False) -> dict:
-        token_id = token_id_override or (SETTINGS.token_id_up if side == "UP" else SETTINGS.token_id_down)
+    def place_order(
+        self,
+        side: str,
+        amount_usd: float,
+        token_id_override: str | None = None,
+        simulated_price: float | None = None,
+        force_taker: bool = False,
+    ) -> dict:
+        token_id = token_id_override or (
+            SETTINGS.token_id_up if side == "UP" else SETTINGS.token_id_down
+        )
         if not token_id:
             raise ValueError("TOKEN_ID_UP / TOKEN_ID_DOWN is required")
 
@@ -691,21 +767,25 @@ class PolymarketExchange:
                 if not book or book.get("best_ask", 0.0) == 0.0:
                     book = {"best_ask": 0.5}
                 best_ask = book.get("best_ask", 0.5)
-                
+
             filled_shares = amount_usd / best_ask
-            
+
             self._cash -= amount_usd
             self._open_exposure += amount_usd
-            self._position_cost[token_id] = self._position_cost.get(token_id, 0.0) + amount_usd
-            self._position_shares[token_id] = self._position_shares.get(token_id, 0.0) + filled_shares
+            self._position_cost[token_id] = (
+                self._position_cost.get(token_id, 0.0) + amount_usd
+            )
+            self._position_shares[token_id] = (
+                self._position_shares.get(token_id, 0.0) + filled_shares
+            )
             self._save_paper_balance()
-            
+
             mock_resp = {
                 "orderID": "paper-order-" + str(int(time.time())),
                 "originalQuantity": str(filled_shares),
                 "fillAmount": str(filled_shares),
-                "takingAmount": str(filled_shares), # 讓 runner 能計算到 shares
-                "makingAmount": str(amount_usd),    # 模擬買單支出
+                "takingAmount": str(filled_shares),  # 讓 runner 能計算到 shares
+                "makingAmount": str(amount_usd),  # 模擬買單支出
                 "status": "MATCHED",
             }
             return {
@@ -722,20 +802,30 @@ class PolymarketExchange:
 
         # Use simulated_price (which refers to the real observed price passed from runner)
         price = simulated_price if simulated_price and simulated_price > 0 else 0.5
-        price_rounded = round(price, 3) 
-        min_live_order_shares = float(getattr(SETTINGS, "min_live_order_shares", 5.0) or 0.0)
+        price_rounded = round(price, 3)
+        min_live_order_shares = float(
+            getattr(SETTINGS, "min_live_order_shares", 5.0) or 0.0
+        )
         min_live_order_usd = float(getattr(SETTINGS, "min_live_order_usd", 1.0) or 0.0)
-        live_order_hard_cap_usd = float(getattr(SETTINGS, "live_order_hard_cap_usd", 0.0) or 0.0)
-        use_market_entry = force_taker or bool(getattr(SETTINGS, "live_entry_use_market_orders", True))
+        live_order_hard_cap_usd = float(
+            getattr(SETTINGS, "live_order_hard_cap_usd", 0.0) or 0.0
+        )
+        use_market_entry = force_taker or bool(
+            getattr(SETTINGS, "live_entry_use_market_orders", True)
+        )
 
         if use_market_entry:
             actual_order_usd = round(max(float(amount_usd), min_live_order_usd), 4)
-            if live_order_hard_cap_usd > 0.0 and actual_order_usd > live_order_hard_cap_usd + 1e-9:
+            if (
+                live_order_hard_cap_usd > 0.0
+                and actual_order_usd > live_order_hard_cap_usd + 1e-9
+            ):
                 raise ValueError(
                     f"order notional exceeds live cap: requested=${amount_usd:.2f} "
                     f"actual=${actual_order_usd:.4f} cap=${live_order_hard_cap_usd:.2f}"
                 )
             from py_clob_client.clob_types import MarketOrderArgs, OrderType
+
             order = self.client.create_market_order(
                 MarketOrderArgs(
                     token_id=token_id,
@@ -745,6 +835,7 @@ class PolymarketExchange:
                 )
             )
             from py_clob_client.clob_types import OrderType
+
             resp = self.client.post_order(order, OrderType.FAK)
 
         else:
@@ -754,8 +845,15 @@ class PolymarketExchange:
                 min_live_order_shares,
                 min_live_order_usd,
             )
-            expected_cost_usd = size_rounded * (simulated_price if simulated_price and simulated_price > 0 else price_rounded)
-            if live_order_hard_cap_usd > 0.0 and expected_cost_usd > live_order_hard_cap_usd + 1e-9:
+            expected_cost_usd = size_rounded * (
+                simulated_price
+                if simulated_price and simulated_price > 0
+                else price_rounded
+            )
+            if (
+                live_order_hard_cap_usd > 0.0
+                and expected_cost_usd > live_order_hard_cap_usd + 1e-9
+            ):
                 raise ValueError(
                     f"order notional exceeds live cap: requested=${amount_usd:.2f} "
                     f"actual=${expected_cost_usd:.4f} cap=${live_order_hard_cap_usd:.2f}"
@@ -775,8 +873,15 @@ class PolymarketExchange:
                     min_live_order_shares,
                     min_live_order_usd,
                 )
-                expected_cost_usd = size_rounded * (simulated_price if simulated_price and simulated_price > 0 else price_rounded)
-                if live_order_hard_cap_usd > 0.0 and expected_cost_usd > live_order_hard_cap_usd + 1e-9:
+                expected_cost_usd = size_rounded * (
+                    simulated_price
+                    if simulated_price and simulated_price > 0
+                    else price_rounded
+                )
+                if (
+                    live_order_hard_cap_usd > 0.0
+                    and expected_cost_usd > live_order_hard_cap_usd + 1e-9
+                ):
                     raise ValueError(
                         f"order notional exceeds live cap: requested=${amount_usd:.2f} "
                         f"actual=${expected_cost_usd:.4f} cap=${live_order_hard_cap_usd:.2f}"
@@ -792,7 +897,9 @@ class PolymarketExchange:
             )
             limit_order_type = _limit_order_type(OrderType)
             if limit_order_type is None:
-                raise AttributeError("py_clob_client OrderType missing both POST_ONLY and GTC")
+                raise AttributeError(
+                    "py_clob_client OrderType missing both POST_ONLY and GTC"
+                )
             resp = self.client.post_order(order, limit_order_type)
 
         filled_cost_usd, filled_cost_source = self._extract_entry_cost_usd(resp)
@@ -890,8 +997,11 @@ class PolymarketExchange:
             return []
         try:
             from py_clob_client.clob_types import OpenOrderParams
+
             params = {"token_id": token_id} if token_id else {}
-            resp = getattr(self.client, "get_orders", lambda x: [])(OpenOrderParams(**params))
+            resp = getattr(self.client, "get_orders", lambda x: [])(
+                OpenOrderParams(**params)
+            )
             if isinstance(resp, list):
                 return resp
             return []
@@ -906,7 +1016,6 @@ class PolymarketExchange:
         force_taker: bool = False,
         max_attempts: int | None = None,
         retry_delay_sec: float | None = None,
-        is_hard_stop: bool = False,
         hedge_mode: bool = False,
         opposite_token_id: str | None = None,
     ) -> dict:
@@ -919,9 +1028,16 @@ class PolymarketExchange:
                     book = {"best_bid": 0.5}
                 best_bid = book.get("best_bid", 0.5)
 
-            current_shares = max(0.0, _to_float(self._position_shares.get(token_id, 0.0), 0.0))
-            current_cost = max(0.0, _to_float(self._position_cost.get(token_id, 0.0), 0.0))
-            closed_shares = min(max(0.0, shares), current_shares if current_shares > 0 else max(0.0, shares))
+            current_shares = max(
+                0.0, _to_float(self._position_shares.get(token_id, 0.0), 0.0)
+            )
+            current_cost = max(
+                0.0, _to_float(self._position_cost.get(token_id, 0.0), 0.0)
+            )
+            closed_shares = min(
+                max(0.0, shares),
+                current_shares if current_shares > 0 else max(0.0, shares),
+            )
             avg_cost = (current_cost / current_shares) if current_shares > 0 else 0.0
             realized_cost = min(current_cost, avg_cost * closed_shares)
             remaining_shares = max(0.0, current_shares - closed_shares)
@@ -946,10 +1062,10 @@ class PolymarketExchange:
                     self._position_cost.pop(token_id, None)
                     self._position_shares.pop(token_id, None)
                 self._save_paper_balance()
-                
+
                 return {
-                    "ok": True, 
-                    "mode": "dry-run", 
+                    "ok": True,
+                    "mode": "dry-run",
                     "closed_shares": closed_shares,
                     "actual_exit_value_usd": closed_shares - hedge_cost,
                     "actual_exit_value_source": "paper_trade_simulation_hedge",
@@ -970,8 +1086,8 @@ class PolymarketExchange:
             self._save_paper_balance()
 
             return {
-                "ok": True, 
-                "mode": "dry-run", 
+                "ok": True,
+                "mode": "dry-run",
                 "closed_shares": closed_shares,
                 "actual_exit_value_usd": value_received,
                 "actual_exit_value_source": "paper_trade_simulation",
@@ -989,23 +1105,29 @@ class PolymarketExchange:
         remaining = float(shares)
         attempts = 0
         attempt_limit = max(1, int(max_attempts or 8))
-        retry_sleep = max(0.0, float(2.0 if retry_delay_sec is None else retry_delay_sec))
+        retry_sleep = max(
+            0.0, float(2.0 if retry_delay_sec is None else retry_delay_sec)
+        )
         last_resp = None
         last_error = None
         sold_total = 0.0
-        usdc_received_total: float | None = None  # Strictly USDC received (takingAmount sum)
+        usdc_received_total: float | None = (
+            None  # Strictly USDC received (takingAmount sum)
+        )
         usdc_received_source = "close_response_unavailable"
-        shares_sold_per_attempt: list[float] = []  # Shares filled per attempt (for debug)
+        shares_sold_per_attempt: list[
+            float
+        ] = []  # Shares filled per attempt (for debug)
         maker_filled = False
         taker_filled = False
-        
+
         while remaining > 0.0001 and attempts < attempt_limit:
             if remaining + 1e-9 < MIN_LIVE_CLOSE_SHARES:
                 break
             attempts += 1
             # For aggressive taker exits, keep sweeping the full residual size.
             # Shrinking chunks creates dust-like leftovers that are hard to clear.
-            if force_taker or is_hard_stop:
+            if force_taker:
                 chunk = remaining
             else:
                 # progressively smaller chunks on retries
@@ -1021,23 +1143,29 @@ class PolymarketExchange:
                     chunk = max(remaining * 0.35, MIN_LIVE_CLOSE_SHARES)
 
             try:
-                should_clear_open_orders = attempts == 1 or not (force_taker or is_hard_stop)
+                should_clear_open_orders = attempts == 1 or not (force_taker)
                 if should_clear_open_orders:
                     open_ords = self.get_open_orders(token_id)
                     for o in open_ords:
                         oid = o.get("id") or o.get("orderID")
                         if oid:
                             self.cancel_order(oid)
-                
+
                 # Maker Exits for first 2 attempts only, then switch to Taker (was 5, too slow for short-lived markets)
-                if not force_taker and attempts <= 2 and not (hedge_mode and opposite_token_id):
+                if (
+                    not force_taker
+                    and attempts <= 2
+                    and not (hedge_mode and opposite_token_id)
+                ):
                     book = self.get_full_orderbook(token_id)
                     best_bid = float(book.get("best_bid", 0.01)) if book else 0.01
                     best_ask = float(book.get("best_ask", 1.00)) if book else 1.00
-                    
-                    target_price = max(best_bid + 0.001, best_ask - (attempts - 1) * 0.005)
+
+                    target_price = max(
+                        best_bid + 0.001, best_ask - (attempts - 1) * 0.005
+                    )
                     target_price = round(target_price, 3)
-                    
+
                     order = self.client.create_order(
                         OrderArgs(
                             token_id=token_id,
@@ -1048,23 +1176,27 @@ class PolymarketExchange:
                     )
                     limit_order_type = _limit_order_type(OrderType)
                     if limit_order_type is None:
-                        raise AttributeError("py_clob_client OrderType missing both POST_ONLY and GTC")
+                        raise AttributeError(
+                            "py_clob_client OrderType missing both POST_ONLY and GTC"
+                        )
                     last_resp = self.client.post_order(order, limit_order_type)
-                    
+
                     # If this is a limit order, it won't fill immediately.
                     # Sleep 1 second (was 3s) — shorter window reduces risk of market expiring
                     # before taker fallback can execute in the remaining attempts.
                     time.sleep(1.0)
-                    
+
                     # Check USDC Delta to see if the market bought our Limit Ask!
                     current_cash = self._get_cash_balance()
                     usdc_gained = current_cash - cash_before
                     # Previous loop iterations might have gained USDC, so we subtract what we already tracked
                     new_usdc_this_round = usdc_gained - (usdc_received_total or 0.0)
-                    
+
                     if new_usdc_this_round > 0.05:
                         # We got a fill! Estimate shares based on target price
-                        filled_shares = min(remaining, new_usdc_this_round / target_price)
+                        filled_shares = min(
+                            remaining, new_usdc_this_round / target_price
+                        )
                         usdc_this = new_usdc_this_round
                         usdc_src = "maker-balance-delta"
                         maker_filled = True
@@ -1072,17 +1204,21 @@ class PolymarketExchange:
                         filled_shares = 0.0
                         usdc_this = 0.0
                         usdc_src = "maker-no-fill"
-                        
+
                 else:
                     # Taker Fallback (Attempts 6-8) or Hedge Mode
                     if hedge_mode and opposite_token_id:
                         target_token = opposite_token_id
                         target_side = BUY
-                        worst_price = 0.99  # Cross the whole spread for hedge BUY
+                        worst_price = 0.99
                     else:
                         target_token = token_id
                         target_side = SELL
-                        worst_price = 0.01
+                        worst_price = taker_sell_worst_price(
+                            simulated_price=simulated_price,
+                            emergency=bool(force_taker),
+                        )
+
                     order = self.client.create_order(
                         OrderArgs(
                             token_id=target_token,
@@ -1092,8 +1228,9 @@ class PolymarketExchange:
                         )
                     )
                     from py_clob_client.clob_types import OrderType
+
                     last_resp = self.client.post_order(order, OrderType.FAK)
-                    
+
                     if hedge_mode and opposite_token_id:
                         # It was a BUY, so we look at makingAmount for cost
                         filled_cost, _ = self._extract_entry_cost_usd(last_resp)
@@ -1108,18 +1245,28 @@ class PolymarketExchange:
                             usdc_this = None
                             usdc_src = "taker-buy-hedge-failed"
                     else:
-                        usdc_this, usdc_src = self._extract_close_usdc_received(last_resp)
+                        usdc_this, usdc_src = self._extract_close_usdc_received(
+                            last_resp
+                        )
                         filled_shares, _ = self._extract_close_shares_sold(last_resp)
                         if filled_shares and filled_shares > 0:
                             taker_filled = True
 
-                if usdc_this is not None and usdc_this > 0 or (hedge_mode and usdc_this is not None):
+                if (
+                    usdc_this is not None
+                    and usdc_this > 0
+                    or (hedge_mode and usdc_this is not None)
+                ):
                     usdc_received_total = (usdc_received_total or 0.0) + usdc_this
                     usdc_received_source = usdc_src
 
                 effective_filled = min(chunk, max(0.0, float(filled_shares or 0.0)))
                 if effective_filled <= 0:
-                    if remaining > 0.0001 and attempts < attempt_limit and retry_sleep > 0:
+                    if (
+                        remaining > 0.0001
+                        and attempts < attempt_limit
+                        and retry_sleep > 0
+                    ):
                         time.sleep(retry_sleep)
                     continue
 
@@ -1128,7 +1275,9 @@ class PolymarketExchange:
                 sold_total += effective_filled
             except Exception as e:
                 last_error = str(e)
-                adjusted_remaining = parse_balance_allowance_available_shares(last_error)
+                adjusted_remaining = parse_balance_allowance_available_shares(
+                    last_error
+                )
                 if adjusted_remaining is not None:
                     adjusted_remaining = max(0.0, round(adjusted_remaining - 0.0005, 6))
                     if 0.0 < adjusted_remaining + 1e-9 < remaining:
@@ -1181,7 +1330,9 @@ class PolymarketExchange:
             "actual_exit_value_source": best_exit_source,
             "close_response_value": usdc_received_total,
             "close_response_value_source": usdc_received_source,
-            "close_response_amount_fields": {"shares_sold_per_attempt": str(shares_sold_per_attempt)},
+            "close_response_amount_fields": {
+                "shares_sold_per_attempt": str(shares_sold_per_attempt)
+            },
             "execution_style": execution_style,
         }
 
@@ -1189,5 +1340,5 @@ class PolymarketExchange:
         if not self.dry_run:
             return
         self._open_exposure = max(0.0, self._open_exposure - 1.0)
-        self._cash += (1.0 + pnl)
+        self._cash += 1.0 + pnl
         self._equity += pnl
