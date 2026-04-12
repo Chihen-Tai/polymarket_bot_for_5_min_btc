@@ -47,9 +47,9 @@ class Settings:
     min_live_order_shares: float = _f("MIN_LIVE_ORDER_SHARES", 5.0)
     min_live_order_usd: float = _f("MIN_LIVE_ORDER_USD", 1.0)
     live_order_hard_cap_usd: float = _f("LIVE_ORDER_HARD_CAP_USD", 3.0)
-    live_entry_use_market_orders: bool = _b("LIVE_ENTRY_USE_MARKET_ORDERS", True)
+    live_entry_use_market_orders: bool = _b("LIVE_ENTRY_USE_MARKET_ORDERS", False)
     max_exposure_usd: float = _f("MAX_EXPOSURE_USD", 1.0)
-    max_orders_per_5min: int = _i("MAX_ORDERS_PER_5MIN", 3)
+    max_orders_per_5min: int = _i("MAX_ORDERS_PER_5MIN", 1)
     max_consec_loss: int = _i("MAX_CONSEC_LOSS", 3)
     clean_start_loss_streak_reset_sec: float = _f(
         "CLEAN_START_LOSS_STREAK_RESET_SEC", 14400.0
@@ -58,14 +58,14 @@ class Settings:
     manual_reset_daily_max_loss_on_start: bool = _b(
         "MANUAL_RESET_DAILY_MAX_LOSS_ON_START", False
     )
-    conservative_mode_enabled: bool = _b("CONSERVATIVE_MODE_ENABLED", False)
+    conservative_mode_enabled: bool = _b("CONSERVATIVE_MODE_ENABLED", True)
     profitability_conservative_mode_enabled: bool = _b(
         "PROFITABILITY_CONSERVATIVE_MODE_ENABLED", True
     )
     recent_active_close_summary: dict | None = None
-    conservative_extra_edge: float = _f("CONSERVATIVE_EXTRA_EDGE", 0.015)
+    conservative_extra_edge: float = _f("CONSERVATIVE_EXTRA_EDGE", 0.02)
     conservative_max_open_positions: int = _i("CONSERVATIVE_MAX_OPEN_POSITIONS", 1)
-    conservative_max_orders_per_5min: int = _i("CONSERVATIVE_MAX_ORDERS_PER_5MIN", 2)
+    conservative_max_orders_per_5min: int = _i("CONSERVATIVE_MAX_ORDERS_PER_5MIN", 1)
     conservative_sync_miss_limit: int = _i("CONSERVATIVE_SYNC_MISS_LIMIT", 1)
     conservative_block_pending_orders: bool = _b(
         "CONSERVATIVE_BLOCK_PENDING_ORDERS", True
@@ -145,7 +145,7 @@ class Settings:
     conservative_skip_windows: int = _i("CONSERVATIVE_SKIP_WINDOWS", 2)
     zscore_window: int = _i("ZSCORE_WINDOW", 20)
     zscore_threshold: float = _f("ZSCORE_THRESHOLD", 2.0)
-    entry_window_min_sec: float = _f("ENTRY_WINDOW_MIN_SEC", 120.0)
+    entry_window_min_sec: float = _f("ENTRY_WINDOW_MIN_SEC", 150.0)
     entry_window_max_sec: float = _f("ENTRY_WINDOW_MAX_SEC", 999999.0)
     min_entry_price: float = _f("MIN_ENTRY_PRICE", 0.35)
     snipe_min_entry_price: float = _f("SNIPE_MIN_ENTRY_PRICE", 0.05)
@@ -274,10 +274,10 @@ class Settings:
     mm_safety_halt: float = _f("MM_SAFETY_HALT", 30.0)
 
     # Maker/Limit Latency Execution Settings
-    maker_order_timeout_sec: int = _i("MAKER_ORDER_TIMEOUT_SEC", 15)
-    maker_timeout_fallback_taker: bool = _b("MAKER_TIMEOUT_FALLBACK_TAKER", True)
+    maker_order_timeout_sec: int = _i("MAKER_ORDER_TIMEOUT_SEC", 5)
+    maker_timeout_fallback_taker: bool = _b("MAKER_TIMEOUT_FALLBACK_TAKER", False)
     cancel_on_reversal_velocity: float = _f("CANCEL_ON_REVERSAL_VELOCITY", 0.003)
-    entry_retry_attempts: int = _i("ENTRY_RETRY_ATTEMPTS", 3)
+    entry_retry_attempts: int = _i("ENTRY_RETRY_ATTEMPTS", 1)
     entry_retry_backoff_sec: float = _f("ENTRY_RETRY_BACKOFF_SEC", 2.0)
 
     # Phase 2: Advanced Loophole Exploitation
@@ -294,24 +294,24 @@ class Settings:
     rich_price_edge_penalty: float = _f("RICH_PRICE_EDGE_PENALTY", 0.015)
     heuristic_probability_weight: float = _f("HEURISTIC_PROBABILITY_WEIGHT", 0.35)
     binary_kelly_divisor: float = _f("BINARY_KELLY_DIVISOR", 4.0)
-    force_full_exit_on_take_profit: bool = _b("FORCE_FULL_EXIT_ON_TAKE_PROFIT", False)
+    force_full_exit_on_take_profit: bool = _b("FORCE_FULL_EXIT_ON_TAKE_PROFIT", True)
     live_take_profit_force_taker: bool = _b("LIVE_TAKE_PROFIT_FORCE_TAKER", False)
     live_take_profit_fee_rate: float = _f("LIVE_TAKE_PROFIT_FEE_RATE", 0.0)
-    leave_moonbag_pct: float = _f("LEAVE_MOONBAG_PCT", 0.05)
+    leave_moonbag_pct: float = _f("LEAVE_MOONBAG_PCT", 0.0)
     leave_loss_tail_pct: float = _f("LEAVE_LOSS_TAIL_PCT", 0.0)
     force_full_exit_on_stop_loss_scaleout: bool = _b(
-        "FORCE_FULL_EXIT_ON_STOP_LOSS_SCALEOUT", False
+        "FORCE_FULL_EXIT_ON_STOP_LOSS_SCALEOUT", True
     )
     live_force_full_loss_exit: bool = _b("LIVE_FORCE_FULL_LOSS_EXIT", True)
     live_loss_exit_force_taker: bool = _b("LIVE_LOSS_EXIT_FORCE_TAKER", False)
-    breakeven_giveback_enabled: bool = _b("BREAKEVEN_GIVEBACK_ENABLED", True)
+    breakeven_giveback_enabled: bool = _b("BREAKEVEN_GIVEBACK_ENABLED", False)
     breakeven_giveback_min_mfe_pct: float = _f("BREAKEVEN_GIVEBACK_MIN_MFE_PCT", 0.10)
     breakeven_giveback_floor_pct: float = _f("BREAKEVEN_GIVEBACK_FLOOR_PCT", 0.03)
     breakeven_giveback_min_hold_sec: float = _f("BREAKEVEN_GIVEBACK_MIN_HOLD_SEC", 12.0)
     breakeven_giveback_min_secs_left: float = _f(
         "BREAKEVEN_GIVEBACK_MIN_SECS_LEFT", 45.0
     )
-    profit_reversal_enabled: bool = _b("PROFIT_REVERSAL_ENABLED", True)
+    profit_reversal_enabled: bool = _b("PROFIT_REVERSAL_ENABLED", False)
     profit_reversal_min_mfe_pct: float = _f("PROFIT_REVERSAL_MIN_MFE_PCT", 0.50)
     profit_reversal_min_current_profit_pct: float = _f(
         "PROFIT_REVERSAL_MIN_CURRENT_PROFIT_PCT", 0.12
@@ -320,7 +320,7 @@ class Settings:
     profit_reversal_adverse_velocity: float = _f(
         "PROFIT_REVERSAL_ADVERSE_VELOCITY", 0.0003
     )
-    binance_adverse_exit_enabled: bool = _b("BINANCE_ADVERSE_EXIT_ENABLED", True)
+    binance_adverse_exit_enabled: bool = _b("BINANCE_ADVERSE_EXIT_ENABLED", False)
     binance_adverse_exit_confirm_sec: float = _f(
         "BINANCE_ADVERSE_EXIT_CONFIRM_SEC", 3.0
     )
@@ -334,7 +334,7 @@ class Settings:
     binance_adverse_exit_require_current_confirm: bool = _b(
         "BINANCE_ADVERSE_EXIT_REQUIRE_CURRENT_CONFIRM", True
     )
-    binance_profit_protect_enabled: bool = _b("BINANCE_PROFIT_PROTECT_ENABLED", True)
+    binance_profit_protect_enabled: bool = _b("BINANCE_PROFIT_PROTECT_ENABLED", False)
     binance_profit_protect_min_profit_pct: float = _f(
         "BINANCE_PROFIT_PROTECT_MIN_PROFIT_PCT", 0.08
     )
@@ -384,10 +384,30 @@ class Settings:
 
     # VPN-aware trading settings
     vpn_safe_mode: bool = _b("VPN_SAFE_MODE", True)
+    vpn_disable_flash_snipe: bool = _b("VPN_DISABLE_FLASH_SNIPE", True)
+    vpn_disable_strike_cross: bool = _b("VPN_DISABLE_STRIKE_CROSS", True)
+    vpn_disable_theta_bleed: bool = _b("VPN_DISABLE_THETA_BLEED", True)
+    vpn_disable_liquidation_fade: bool = _b("VPN_DISABLE_LIQUIDATION_FADE", True)
+    vpn_disable_early_underdog_live: bool = _b("VPN_DISABLE_EARLY_UNDERDOG_LIVE", True)
+    vpn_entry_max_secs_left: float = _f("VPN_ENTRY_MAX_SECS_LEFT", 300.0)
+    vpn_entry_min_secs_left: float = _f("VPN_ENTRY_MIN_SECS_LEFT", 150.0)
+    vpn_maker_only: bool = _b("VPN_MAKER_ONLY", True)
+    vpn_maker_timeout_sec: float = _f("VPN_MAKER_TIMEOUT_SEC", 5.0)
+    vpn_disable_taker_fallback: bool = _b("VPN_DISABLE_TAKER_FALLBACK", True)
+    vpn_expiry_first: bool = _b("VPN_EXPIRY_FIRST", True)
+    vpn_disable_active_tp: bool = _b("VPN_DISABLE_ACTIVE_TP", True)
+    vpn_max_open_positions: int = _i("VPN_MAX_OPEN_POSITIONS", 1)
+    vpn_max_orders_per_5min: int = _i("VPN_MAX_ORDERS_PER_5MIN", 1)
+    vpn_min_executable_edge: float = _f("VPN_MIN_EXECUTABLE_EDGE", 0.06)
+    vpn_max_ws_age_sec: float = _f("VPN_MAX_WS_AGE_SEC", 1.0)
+    vpn_e2e_p50_block_ms: float = _f("VPN_E2E_P50_BLOCK_MS", 250.0)
+    vpn_e2e_p95_block_ms: float = _f("VPN_E2E_P95_BLOCK_MS", 600.0)
+    vpn_e2e_jitter_block_ms: float = _f("VPN_E2E_JITTER_BLOCK_MS", 250.0)
+
     max_vpn_latency_ms: float = _f("MAX_VPN_LATENCY_MS", 600.0)
-    aggressive_volume_mode: bool = _b("AGGRESSIVE_VOLUME_MODE", True)
-    max_concurrent_trades: int = _i("MAX_CONCURRENT_TRADES", 3)
-    latency_edge_buffer: float = _f("LATENCY_EDGE_BUFFER", 0.015)
+    aggressive_volume_mode: bool = _b("AGGRESSIVE_VOLUME_MODE", False)
+    max_concurrent_trades: int = _i("MAX_CONCURRENT_TRADES", 1)
+    latency_edge_buffer: float = _f("LATENCY_EDGE_BUFFER", 0.02)
 
     # Advanced Options Strategies (Theta Bleed & Strike Cross Front-run)
     theta_bleed_enabled: bool = _b("THETA_BLEED_ENABLED", True)

@@ -282,115 +282,123 @@ def explain_choose_side(
 
     # Advanced Strategy 1: Theta Bleed Arbitrage
     if getattr(SETTINGS, "theta_bleed_enabled", True) and strike_price is not None:
-        try:
-            from core.ws_binance import BINANCE_WS
-
-            if secs_left is not None and secs_left <= float(
-                getattr(SETTINGS, "theta_bleed_min_sec", 60.0)
-            ):
-                if BINANCE_WS.get_last_update_age() < 5.0:
-                    binance_bba = BINANCE_WS.get_bba()
-                    binance_mid = (
-                        binance_bba.get("b", 0.0) + binance_bba.get("a", 0.0)
-                    ) / 2.0
-                    if binance_mid > 0:
-                        dist = binance_mid - strike_price
-                        theta_dist = float(
-                            getattr(SETTINGS, "theta_bleed_distance", 120.0)
-                        )
-
-                        # If Binance is > 120 dist ABOVE strike, UP is highly certain
-                        if dist > theta_dist and snipe_valid_up:
-                            r = _build_candidate(
-                                base_result,
-                                side="UP",
-                                strategy_key="theta_bleed_up",
-                                entry_price=float(up),
-                                model_probability=0.99,  # Extremely high probability
-                                signal_confidence=1.0,
-                                extras={
-                                    "binance_mid": binance_mid,
-                                    "strike_price": strike_price,
-                                    "dist": dist,
-                                },
-                            )
-                            candidates["theta_bleed_up"] = r
-
-                        # If Binance is < 120 dist BELOW strike, DOWN is highly certain
-                        elif dist < -theta_dist and snipe_valid_down:
-                            r = _build_candidate(
-                                base_result,
-                                side="DOWN",
-                                strategy_key="theta_bleed_down",
-                                entry_price=float(down),
-                                model_probability=0.99,
-                                signal_confidence=1.0,
-                                extras={
-                                    "binance_mid": binance_mid,
-                                    "strike_price": strike_price,
-                                    "dist": dist,
-                                },
-                            )
-                            candidates["theta_bleed_down"] = r
-        except Exception:
+        # VPN Safe Mode: Disable Theta Bleed (high latency dependency)
+        if SETTINGS.vpn_safe_mode and SETTINGS.vpn_disable_theta_bleed:
             pass
+        else:
+            try:
+                from core.ws_binance import BINANCE_WS
+
+                if secs_left is not None and secs_left <= float(
+                    getattr(SETTINGS, "theta_bleed_min_sec", 60.0)
+                ):
+                    if BINANCE_WS.get_last_update_age() < 5.0:
+                        binance_bba = BINANCE_WS.get_bba()
+                        binance_mid = (
+                            binance_bba.get("b", 0.0) + binance_bba.get("a", 0.0)
+                        ) / 2.0
+                        if binance_mid > 0:
+                            dist = binance_mid - strike_price
+                            theta_dist = float(
+                                getattr(SETTINGS, "theta_bleed_distance", 120.0)
+                            )
+
+                            # If Binance is > 120 dist ABOVE strike, UP is highly certain
+                            if dist > theta_dist and snipe_valid_up:
+                                r = _build_candidate(
+                                    base_result,
+                                    side="UP",
+                                    strategy_key="theta_bleed_up",
+                                    entry_price=float(up),
+                                    model_probability=0.99,  # Extremely high probability
+                                    signal_confidence=1.0,
+                                    extras={
+                                        "binance_mid": binance_mid,
+                                        "strike_price": strike_price,
+                                        "dist": dist,
+                                    },
+                                )
+                                candidates["theta_bleed_up"] = r
+
+                            # If Binance is < 120 dist BELOW strike, DOWN is highly certain
+                            elif dist < -theta_dist and snipe_valid_down:
+                                r = _build_candidate(
+                                    base_result,
+                                    side="DOWN",
+                                    strategy_key="theta_bleed_down",
+                                    entry_price=float(down),
+                                    model_probability=0.99,
+                                    signal_confidence=1.0,
+                                    extras={
+                                        "binance_mid": binance_mid,
+                                        "strike_price": strike_price,
+                                        "dist": dist,
+                                    },
+                                )
+                                candidates["theta_bleed_down"] = r
+            except Exception:
+                pass
 
     # Advanced Strategy 3: Strike Cross Front-run Snipe
     if (
         getattr(SETTINGS, "strike_cross_snipe_enabled", True)
         and strike_price is not None
     ):
-        try:
-            from core.ws_binance import BINANCE_WS
-
-            if BINANCE_WS.get_last_update_age() < 5.0:
-                oldest, newest = BINANCE_WS.get_recent_prices_window(seconds=5.0)
-                if oldest is not None and newest is not None:
-                    gap = float(getattr(SETTINGS, "strike_cross_gap", 20.0))
-
-                    # Crossed UP securely
-                    if (
-                        oldest < strike_price
-                        and newest > (strike_price + gap)
-                        and snipe_valid_up
-                    ):
-                        r = _build_candidate(
-                            base_result,
-                            side="UP",
-                            strategy_key="strike_cross_snipe_up",
-                            entry_price=float(up),
-                            model_probability=0.99,  # High, exempts from stabilization
-                            signal_confidence=0.95,
-                            extras={
-                                "oldest": oldest,
-                                "newest": newest,
-                                "strike_price": strike_price,
-                            },
-                        )
-                        candidates["strike_cross_snipe_up"] = r
-
-                    # Crossed DOWN securely
-                    elif (
-                        oldest > strike_price
-                        and newest < (strike_price - gap)
-                        and snipe_valid_down
-                    ):
-                        r = _build_candidate(
-                            base_result,
-                            side="DOWN",
-                            strategy_key="strike_cross_snipe_down",
-                            entry_price=float(down),
-                            model_probability=0.99,  # High, exempts from stabilization
-                            signal_confidence=0.95,
-                            extras={
-                                "oldest": oldest,
-                                "newest": newest,
-                                "strike_price": strike_price,
-                            },
-                        )
-                        candidates["strike_cross_snipe_down"] = r
-        except Exception:
+        # VPN Safe Mode: Disable Strike Cross Snipe
+        if SETTINGS.vpn_safe_mode and SETTINGS.vpn_disable_strike_cross:
             pass
+        else:
+            try:
+                from core.ws_binance import BINANCE_WS
+
+                if BINANCE_WS.get_last_update_age() < 5.0:
+                    oldest, newest = BINANCE_WS.get_recent_prices_window(seconds=5.0)
+                    if oldest is not None and newest is not None:
+                        gap = float(getattr(SETTINGS, "strike_cross_gap", 20.0))
+
+                        # Crossed UP securely
+                        if (
+                            oldest < strike_price
+                            and newest > (strike_price + gap)
+                            and snipe_valid_up
+                        ):
+                            r = _build_candidate(
+                                base_result,
+                                side="UP",
+                                strategy_key="strike_cross_snipe_up",
+                                entry_price=float(up),
+                                model_probability=0.99,  # High, exempts from stabilization
+                                signal_confidence=0.95,
+                                extras={
+                                    "oldest": oldest,
+                                    "newest": newest,
+                                    "strike_price": strike_price,
+                                },
+                            )
+                            candidates["strike_cross_snipe_up"] = r
+
+                        # Crossed DOWN securely
+                        elif (
+                            oldest > strike_price
+                            and newest < (strike_price - gap)
+                            and snipe_valid_down
+                        ):
+                            r = _build_candidate(
+                                base_result,
+                                side="DOWN",
+                                strategy_key="strike_cross_snipe_down",
+                                entry_price=float(down),
+                                model_probability=0.99,  # High, exempts from stabilization
+                                signal_confidence=0.95,
+                                extras={
+                                    "oldest": oldest,
+                                    "newest": newest,
+                                    "strike_price": strike_price,
+                                },
+                            )
+                            candidates["strike_cross_snipe_down"] = r
+            except Exception:
+                pass
 
     # Strategy 1: Binance Oracle Front-running (Disabled)
     # ... (omitted) ...
@@ -405,7 +413,10 @@ def explain_choose_side(
     # Strategy 7: WS Flash Snipe (WebSocket 閃電狙擊 0.3%)
     try:
         from core.ws_binance import BINANCE_WS
-        if BINANCE_WS.get_last_update_age() < 5.0:
+        # VPN Safe Mode: Disable Flash Snipe
+        if SETTINGS.vpn_safe_mode and SETTINGS.vpn_disable_flash_snipe:
+            pass
+        elif BINANCE_WS.get_last_update_age() < 5.0:
             vel = BINANCE_WS.get_price_velocity(
                 seconds=3.0,
                 lag_sec=float(getattr(SETTINGS, "binance_signal_lag_sec", 0.0)),
@@ -466,41 +477,45 @@ def explain_choose_side(
             getattr(SETTINGS, "liquidation_fade_min_usd", 0.0) > 0
             and BINANCE_WS.get_last_update_age() < 5.0
         ):
-            window = float(getattr(SETTINGS, "liquidation_fade_window_sec", 20.0))
-            lqs = BINANCE_WS.get_recent_liquidations(seconds=window)
-            if lqs:
-                long_liq_usd = sum(lq["usd_size"] for lq in lqs if lq["side"] == "SELL")
-                short_liq_usd = sum(lq["usd_size"] for lq in lqs if lq["side"] == "BUY")
-                min_thresh = float(SETTINGS.liquidation_fade_min_usd)
+            # VPN Safe Mode: Disable Liquidation Fade
+            if SETTINGS.vpn_safe_mode and SETTINGS.vpn_disable_liquidation_fade:
+                pass
+            else:
+                window = float(getattr(SETTINGS, "liquidation_fade_window_sec", 20.0))
+                lqs = BINANCE_WS.get_recent_liquidations(seconds=window)
+                if lqs:
+                    long_liq_usd = sum(lq["usd_size"] for lq in lqs if lq["side"] == "SELL")
+                    short_liq_usd = sum(lq["usd_size"] for lq in lqs if lq["side"] == "BUY")
+                    min_thresh = float(SETTINGS.liquidation_fade_min_usd)
 
-                if long_liq_usd >= min_thresh and regular_valid_up:
-                    fade_confidence = _clamp(
-                        long_liq_usd / (min_thresh * 3.0), 0.6, 1.0
-                    )
-                    r = _build_candidate(
-                        base_result,
-                        side="UP",
-                        strategy_key="liquidation_fade_up",
-                        entry_price=float(up),
-                        model_probability=0.75,
-                        signal_confidence=fade_confidence,
-                        extras={"long_liq_usd": long_liq_usd},
-                    )
-                    candidates["liquidation_fade_up"] = r
-                elif short_liq_usd >= min_thresh and regular_valid_down:
-                    fade_confidence = _clamp(
-                        short_liq_usd / (min_thresh * 3.0), 0.6, 1.0
-                    )
-                    r = _build_candidate(
-                        base_result,
-                        side="DOWN",
-                        strategy_key="liquidation_fade_down",
-                        entry_price=float(down),
-                        model_probability=0.75,
-                        signal_confidence=fade_confidence,
-                        extras={"short_liq_usd": short_liq_usd},
-                    )
-                    candidates["liquidation_fade_down"] = r
+                    if long_liq_usd >= min_thresh and regular_valid_up:
+                        fade_confidence = _clamp(
+                            long_liq_usd / (min_thresh * 3.0), 0.6, 1.0
+                        )
+                        r = _build_candidate(
+                            base_result,
+                            side="UP",
+                            strategy_key="liquidation_fade_up",
+                            entry_price=float(up),
+                            model_probability=0.75,
+                            signal_confidence=fade_confidence,
+                            extras={"long_liq_usd": long_liq_usd},
+                        )
+                        candidates["liquidation_fade_up"] = r
+                    elif short_liq_usd >= min_thresh and regular_valid_down:
+                        fade_confidence = _clamp(
+                            short_liq_usd / (min_thresh * 3.0), 0.6, 1.0
+                        )
+                        r = _build_candidate(
+                            base_result,
+                            side="DOWN",
+                            strategy_key="liquidation_fade_down",
+                            entry_price=float(down),
+                            model_probability=0.75,
+                            signal_confidence=fade_confidence,
+                            extras={"short_liq_usd": short_liq_usd},
+                        )
+                        candidates["liquidation_fade_down"] = r
     except Exception:
         pass
 
@@ -509,37 +524,41 @@ def explain_choose_side(
         if secs_left is not None:
             min_time = float(getattr(SETTINGS, "early_underdog_min_time", 220.0))
             if secs_left >= min_time:
-                max_price = float(getattr(SETTINGS, "early_underdog_max_price", 0.35))
-                from core.ws_binance import BINANCE_WS
+                # VPN Safe Mode: Disable Early Underdog in Live
+                if not SETTINGS.dry_run and SETTINGS.vpn_safe_mode and SETTINGS.vpn_disable_early_underdog_live:
+                    pass
+                else:
+                    max_price = float(getattr(SETTINGS, "early_underdog_max_price", 0.35))
+                    from core.ws_binance import BINANCE_WS
 
-                if BINANCE_WS.get_last_update_age() < 5.0:
-                    vel = BINANCE_WS.get_price_velocity(seconds=3.0)
-                    if up is not None and 0.0 < float(up) <= max_price and vel > 0.0003:
-                        r = _build_candidate(
-                            base_result,
-                            side="UP",
-                            strategy_key="early_underdog_up",
-                            entry_price=float(up),
-                            model_probability=0.76,
-                            signal_confidence=0.8,
-                            extras={"secs_left": secs_left, "vel": vel},
-                        )
-                        candidates["early_underdog_up"] = r
-                    elif (
-                        down is not None
-                        and 0.0 < float(down) <= max_price
-                        and vel < -0.0003
-                    ):
-                        r = _build_candidate(
-                            base_result,
-                            side="DOWN",
-                            strategy_key="early_underdog_down",
-                            entry_price=float(down),
-                            model_probability=0.76,
-                            signal_confidence=0.8,
-                            extras={"secs_left": secs_left, "vel": vel},
-                        )
-                        candidates["early_underdog_down"] = r
+                    if BINANCE_WS.get_last_update_age() < 5.0:
+                        vel = BINANCE_WS.get_price_velocity(seconds=3.0)
+                        if up is not None and 0.0 < float(up) <= max_price and vel > 0.0003:
+                            r = _build_candidate(
+                                base_result,
+                                side="UP",
+                                strategy_key="early_underdog_up",
+                                entry_price=float(up),
+                                model_probability=0.76,
+                                signal_confidence=0.8,
+                                extras={"secs_left": secs_left, "vel": vel},
+                            )
+                            candidates["early_underdog_up"] = r
+                        elif (
+                            down is not None
+                            and 0.0 < float(down) <= max_price
+                            and vel < -0.0003
+                        ):
+                            r = _build_candidate(
+                                base_result,
+                                side="DOWN",
+                                strategy_key="early_underdog_down",
+                                entry_price=float(down),
+                                model_probability=0.76,
+                                signal_confidence=0.8,
+                                extras={"secs_left": secs_left, "vel": vel},
+                            )
+                            candidates["early_underdog_down"] = r
     except Exception:
         pass
 
@@ -555,6 +574,10 @@ def explain_choose_side(
     for name, s_result in candidates.items():
         if not time_valid:
             continue
+        
+        # VPN Safe Mode: Block if secs_left < 150
+        if SETTINGS.vpn_safe_mode and secs_left is not None and secs_left < SETTINGS.vpn_entry_min_secs_left:
+            continue
 
         side = s_result.side if hasattr(s_result, "side") else s_result.get("side")
         raw_edge = getattr(s_result, "raw_edge", None)
@@ -562,6 +585,11 @@ def explain_choose_side(
             raw_edge = s_result.get("model_edge", 0.0)
             
         required_edge = getattr(s_result, "required_edge", 0.05)
+        
+        # VPN Safe Mode: Hard floor for required edge
+        if SETTINGS.vpn_safe_mode:
+            required_edge = max(required_edge, SETTINGS.vpn_min_executable_edge)
+            
         effective_required_edge = required_edge + latency_penalty
 
         # 1. Price Bounds Filter

@@ -295,6 +295,30 @@ def decide_exit(
     runner_peak_age_sec: Optional[float] = None,
     runner_peak_value_usd: float = 0.0,
 ) -> ExitDecision:
+    # 0. VPN_EXPIRY_FIRST Short-circuit
+    if SETTINGS.vpn_safe_mode and SETTINGS.vpn_expiry_first:
+        # Only allow emergency or absolute deadline exits
+        res_expiry = _check_expiry_hold_state(
+            pnl_pct, hold_sec, secs_left, has_extracted_principal, profit_pnl_pct
+        )
+        if res_expiry:
+            # In vpn mode, we only allow deadline exits if very close to end
+            if "deadline" in res_expiry.reason:
+                if secs_left is not None and secs_left <= 45.0:
+                    return res_expiry
+            else:
+                return res_expiry
+
+        # Allow hard stop loss only
+        if pnl_pct <= -SETTINGS.stop_loss_pct:
+            return ExitDecision(True, "hard-stop-loss", pnl_pct, hold_sec)
+        
+        # Allow max hold as a failsafe
+        if hold_sec >= SETTINGS.max_hold_seconds and pnl_pct < 0:
+            return ExitDecision(True, "max-hold-loss", pnl_pct, hold_sec)
+
+        return ExitDecision(False, "", pnl_pct, hold_sec)
+
     # 1. EXPIRY_HOLD (Precedence)
     res_expiry = _check_expiry_hold_state(
         pnl_pct, hold_sec, secs_left, has_extracted_principal, profit_pnl_pct

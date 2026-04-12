@@ -2123,7 +2123,13 @@ def place_entry_order_with_retry(
     force_taker: bool,
     max_attempts: int,
     backoff_sec: float,
+    decision_started_at: float | None = None,
 ) -> tuple[dict, list[float], int]:
+    # VPN Safe Mode: Override force_taker if maker-only is required
+    if SETTINGS.vpn_safe_mode and SETTINGS.vpn_maker_only:
+        force_taker = False
+        max_attempts = 1 # No retries for maker-only in VPN mode
+
     attempts = max(1, int(max_attempts))
     backoff = max(0.0, float(backoff_sec))
     latencies_ms: list[float] = []
@@ -2140,7 +2146,15 @@ def place_entry_order_with_retry(
                 simulated_price=simulated_price,
                 force_taker=force_taker,
             )
-            latencies_ms.append((time.perf_counter() - started) * 1000.0)
+            rtt = (time.perf_counter() - started) * 1000.0
+            latencies_ms.append(rtt)
+            LATENCY_MONITOR.add_rtt(rtt)
+            
+            # Record Decision-to-Order E2E
+            if decision_started_at:
+                e2e_ms = (time.perf_counter() - decision_started_at) * 1000.0
+                LATENCY_MONITOR.record_decision_to_order(e2e_ms)
+
             last_resp = resp
             if entry_response_has_actionable_state(resp):
                 return resp, latencies_ms, attempt
@@ -2725,6 +2739,16 @@ def select_ranked_entry_candidate(
     secs_left: float | None,
     scoreboard=None,
 ) -> tuple[dict | None, list[str]]:
+    # 0. VPN Safe Mode: Hard latency block
+    if SETTINGS.vpn_safe_mode:
+        is_lat_blocked, lat_reason = LATENCY_MONITOR.is_blocked()
+        if is_lat_blocked:
+            return None, [f"VPN_LATENCY_BLOCK({lat_reason})"]
+        
+        ws_age = BINANCE_WS.get_last_update_age()
+        if ws_age > SETTINGS.vpn_max_ws_age_sec:
+            return None, [f"VPN_WS_STALE_BLOCK({ws_age:.2f}s > {SETTINGS.vpn_max_ws_age_sec}s)"]
+
     eligible_candidates, rejection_notes = collect_ranked_entry_candidates(
         model_decision,
         ws_velocity=ws_velocity,
@@ -4310,6 +4334,7 @@ def main():
                                     f"no entry | slug={market['slug']} reason={_vol_block} secs_left={secs_left}"
                                 )
                             else:
+                                decision_started_at = time.perf_counter()
                                 model_decision = explain_choose_side(
                                     market,
                                     yes_price_window,
@@ -7554,6 +7579,7 @@ def main():
                             force_taker=False,  # GTC/POST_ONLY maker
                             max_attempts=1,
                             backoff_sec=0.0,
+                            decision_started_at=decision_started_at,
                         )
                         for idx, latency_ms in enumerate(maker_latencies, start=1):
                             cycle_had_slow_api = (
@@ -7622,6 +7648,7 @@ def main():
                                                 SETTINGS, "entry_retry_backoff_sec", 2.0
                                             )
                                         ),
+                                        decision_started_at=decision_started_at,
                                     )
                                 )
                     except Exception as _me:
@@ -7646,6 +7673,7 @@ def main():
                                 backoff_sec=float(
                                     getattr(SETTINGS, "entry_retry_backoff_sec", 2.0)
                                 ),
+                                decision_started_at=decision_started_at,
                             )
                         )
                 else:
@@ -7663,8 +7691,10 @@ def main():
                             backoff_sec=float(
                                 getattr(SETTINGS, "entry_retry_backoff_sec", 2.0)
                             ),
+                            decision_started_at=decision_started_at,
                         )
                     )
+
                 for idx, latency_ms in enumerate(order_latencies, start=1):
                     cycle_had_slow_api = (
                         observe_api_latency(flags, f"place_order#{idx}", latency_ms)

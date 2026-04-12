@@ -439,6 +439,7 @@ class TradePairRow:
     status: str
     opened_ts: str
     closed_ts: str
+    entry_secs_left: float | None
     entry_cost_usd: float
     entry_shares: float
     matched_cost_usd: float
@@ -1355,6 +1356,7 @@ def _finalize_pair_row(
         flags.append("open-remainder")
     if not lot.get("exit_count") and not settlement_applied:
         flags.append("no-exit")
+    entry_secs_left = _maybe_float(entry_ev.get("secs_left"))
     return TradePairRow(
         position_id=str(entry_ev.get("position_id") or key),
         token_id=token_id,
@@ -1370,6 +1372,7 @@ def _finalize_pair_row(
         ),
         opened_ts=str(entry_ev.get("ts") or ""),
         closed_ts=settlement_closed_ts or str(lot.get("closed_ts") or ""),
+        entry_secs_left=entry_secs_left,
         entry_cost_usd=entry_cost,
         entry_shares=entry_shares,
         matched_cost_usd=matched_cost,
@@ -1500,6 +1503,40 @@ def summarize_trade_pairs(rows: list[TradePairRow]) -> dict[str, Any]:
             "average": average,
         }
 
+    # New timing and execution style buckets
+    timing_summary: dict[str, Any] = {}
+    timing_buckets = [
+        ("240-300s", lambda sl: sl is not None and 240 <= sl <= 300),
+        ("180-240s", lambda sl: sl is not None and 180 <= sl < 240),
+        ("150-180s", lambda sl: sl is not None and 150 <= sl < 180),
+        ("<150s", lambda sl: sl is not None and sl < 150),
+        ("unknown", lambda sl: sl is None),
+    ]
+    for label, checker in timing_buckets:
+        bucket_rows = [row for row in rows if checker(row.entry_secs_left)]
+        if bucket_rows:
+            timing_summary[label] = {
+                "count": len(bucket_rows),
+                "actual_pnl": _summarize_values(bucket_rows, "actual_pnl_usd"),
+                "fee_adj_actual_pnl": _summarize_values(bucket_rows, "fee_adjusted_actual_pnl_usd"),
+            }
+
+    execution_summary: dict[str, Any] = {}
+    execution_styles = ["maker", "taker", "expiry-settlement", "mixed", "unknown"]
+    for style in execution_styles:
+        # Group by entry style or exit style for special buckets
+        if style == "expiry-settlement":
+            style_rows = [row for row in rows if row.close_bucket == "expiry-settlement"]
+        else:
+            style_rows = [row for row in rows if normalize_execution_style(row.entry_execution_style) == style]
+            
+        if style_rows:
+            execution_summary[style] = {
+                "count": len(style_rows),
+                "actual_pnl": _summarize_values(style_rows, "actual_pnl_usd"),
+                "fee_adj_actual_pnl": _summarize_values(style_rows, "fee_adjusted_actual_pnl_usd"),
+            }
+
     scratch_rows = [row for row in rows if _scratch_like(row)]
     scratch_reasons = Counter(
         row.close_reason for row in scratch_rows if row.close_reason
@@ -1541,6 +1578,8 @@ def summarize_trade_pairs(rows: list[TradePairRow]) -> dict[str, Any]:
         "entry_quality_counts": dict(sorted(by_quality.items())),
         "close_reason_counts": dict(sorted(by_reason.items())),
         "close_bucket_counts": dict(sorted(by_bucket.items())),
+        "entry_timing_summary": timing_summary,
+        "execution_style_summary": execution_summary,
         "close_bucket_pnl": bucket_summary,
         "close_bucket_actual_vs_observed": bucket_gap_summary,
         "actual_source_tier_counts": dict(sorted(by_tier.items())),

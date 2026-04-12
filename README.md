@@ -4,109 +4,64 @@ A high-frequency, event-driven trading bot designed specifically for **Polymarke
 
 ---
 
-## 🇹🇼 中文說明 (Chinese Documentation)
+## 🛡️ VPN-Safe Conservative Mode (Recommended for Live)
 
-這個機器人專注於高頻率的 5 分鐘二元期權市場，藉由同步與 **幣安 (Binance) WebSocket** 的訂單流數據，進行極短線的動能預測與套利。請把目前版本視為**持續硬化中的策略研究系統**，不是已被證明穩定正收益的成品；任何改善都必須以 `actual`、`fee-adjusted` 與 `observed` 差異一起驗證，而不是只看表面勝率或 mark-to-market 報酬。
+本機器人現在預設啟動 **VPN-safe, maker-first, expiry-first** 模式。這是專為從亞洲透過 VPN 交易美國 CLOB 等高延遲環境所設計的。
 
-### 🚀 核心殺手鐧 (Core Strategies)
-
-*   **WS Flash Snipe (常規動能狙擊)**：監控幣安的資金流與報價陡升，配合計分板 (Scoreboard) 動態評估勝率，自動進場勝率 > 60% 的標的。
-*   **Early Underdog Sniper (開局逆勢樂透)**：專注於開局 4 分鐘內的市場，當 Polymarket 報價滯後且低於 $0.35 時，若幣安出現強烈反轉動能 (Velocity Spike)，直接買入便宜的「樂透單」並啟動 3 分鐘死區鎖定 (Lock Mode)，只接受高度不對稱的報酬。
-
-### 🛡️ 極致風控與結算 (Risk & Ev-Optimization)
-
-為了避免在薄弱流動性中被造市商扒皮，我們的風控捨棄了傳統的「分批停損利」，改採**偏保守的一波流策略**：
-1.  **100% 全壘打 (Force Full Exit)**：廢除提早賣一半保本的舊機制。一旦達到 40% 或 50% 獲利目標，機器人直接 100% 倉位套現，把手續費與滑價磨損降到最低。
-2.  **大逃殺獲利線 (45s Profit Deadline)**：倒數 45 秒時，只要帳面獲利，無條件市價全砸，避免最後關頭的洗盤。
-3.  **空城死守機制 (30s Ghost Town Lock)**：倒數 30 秒時如果帳面虧損或打平，避免把單子強行丟進幾乎沒有流動性的訂單簿，保留結算前少量修正空間。
-4.  **65% 霸王停損 (Wide Stop Loss)**：容忍高達 65% 的洗盤震幅，只在方向明顯失效時才斷頭。
-
-### 📦 安裝與啟動
-
-建議使用 Conda 建立純淨環境：
-```bash
-git clone https://github.com/Chihen-Tai/polymarket_bot_for_5_min_btc.git
-cd polymarket_bot_for_5_min_btc
-conda env create -f environment.yml
-conda activate polymarket-bot
-```
-
-**一鍵啟動（自動背景抓取市場快照資料 + 啟動交易機器人）**：
-```bash
-bash scripts/start_bot_with_market_data.sh
-```
-純啟動機器人：`python main.py`
-
-### ⚙️ 設定檔與私鑰 (.env)
-
-*   請複製 `.env.secrets.example` 命名為 `.env.local` 或 `.env.secrets` 來存放私鑰，**切勿將真實私鑰 commit 到 Git！**
-*   實盤交易前，請確保：
-    *   `DRY_RUN=false`
-    *   `SIGNATURE_TYPE` 設定正確 (EOA 填 0，Smart Wallet 填 2)
-    *   備有正確的 Polymarket `CLOB_API_KEY` 與 `FUNDER_ADDRESS`。
-
-### 📊 產出與報表
-
-每次執行後，所有日誌與自動生成的摘要報表會存在 `data/` 目錄：
-*   最新報表：`data/latest_run_report.txt`
-*   完整交易對帳單：執行 `python scripts/trade_pair_ledger.py --limit 30 --summary`
-*   驗證重點不是只有 `observed pnl`，還要一起看：
-    * `actual_minus_observed_gap`
-    * `close_bucket_actual_vs_observed`
-    * `fee_adjusted_actual_pnl`
-    * `active-close` bucket 是否持續為負
-*   若 `observed` 看起來賺、但 `actual` / `fee-adjusted` 仍差，請把它視為 execution / accounting 問題尚未解決，而不是策略已經成功。
+### 核心原則 (Core Principles)
+- **Maker-First (掛單優先)**：預設僅使用掛單 (Limit Order)，不主動追價。`VPN_MAKER_ONLY=True` 會禁用所有 Taker 備案。
+- **Expiry-First (持有至結算)**：大部分倉位將持有至 5 分鐘結束自動結算，以賺取完整的 Time Decay 並避免在流動性不足時主動出場帶來的滑價與手續費。
+- **Entry Window Guard (進場窗口保護)**：嚴格禁止在 `secs_left < 150` 時進場，避免後段波動與執行風險。
+- **Latency Monitoring (延遲監控)**：持續追蹤 E2E 延遲 (p50, p95, Jitter)。若網路環境惡化，機器人會自動暫停新進場。
+- **Executable Edge (實際期望值)**：進場要求至少 0.06 的預期報酬率 (Edge Floor)，已涵蓋手續費、價差與延遲緩衝。
 
 ---
 
-## 🇬🇧 English Documentation
+## 🇹🇼 中文說明 (Chinese Documentation)
 
-This bot specializes in high-frequency trading for Polymarket's 5-minute binary options, leveraging **Binance WebSocket** order flow data for ultra-short-term momentum prediction. Treat the current version as an **actively hardened research system**, not a proven positive-EV production strategy; improvements must be judged against `actual`, `fee-adjusted`, and `observed` outcome gaps rather than headline win rate or mark-based PnL alone.
+這個機器人專注於高頻率的 5 分鐘二元期權市場。請注意，在 **VPN Safe Mode** 下，許多高頻狙擊策略（如 `ws_flash_snipe`, `strike_cross_snipe`）會被自動禁用，改以穩健的中長線預測為主。
 
-### 🚀 Advanced Strategies
+### 🚀 核心策略 (Core Strategies)
+*   **WS Flash Snipe (常規動能狙擊)**：監控幣安的資金流與報價陡升。 (VPN 模式下預設禁用)
+*   **Early Underdog Sniper (開局逆勢樂透)**：專注於開局 4 分鐘內的市場。 (VPN Live 模式下預設禁用)
+*   **Conservative Structural Entry**：在 VPN 模式下，機器人僅保留較慢、信度較高的結構性策略。
 
-*   **WS Flash Snipe**: Monitors Binance order flow and velocity to execute dynamic entries on high-probability setups (>60% model confidence), guided by a real-time strategy scoreboard.
-*   **Early Underdog Sniper**: Operates in the early part of the market. It buys deeply underpriced options (<= $0.35) when Binance spikes aggressively. These "lottery tickets" are locked briefly to ride out volatility and are only used when the setup is sufficiently asymmetric.
+### 🛡️ 極致風控與結算 (Risk & Ev-Optimization)
+為了在 VPN 環境下生存，風控逻辑已大幅簡化：
+1.  **Expiry First (預設持有至結算)**：除非觸發硬停損 (Hard Stop)，否則預設持有至 5 分鐘結束，不進行中途主動停利。
+2.  **Maker Only (掛單進場)**：僅在訂單簿有足夠深度且能以 Maker 價格成交時進場。
+3.  **Latency Block (延遲阻斷)**：若網路抖動 (Jitter) 超過 250ms 或平均延遲超過 600ms，自動停止交易。
 
-### 🛡️ EV-Optimized Risk Management
-
-To prevent being bled dry by LP fees and slippage in low-liquidity 5-minute markets, we abandoned traditional scaling methods in favor of a conservative, execution-aware approach:
-1.  **Force Full Exits**: Disables partial scaling. Once the 40% or 50% profit target is hit, the bot dumps 100% of the position via market taker orders to minimize fee drag and eliminate unfillable dust/residuals.
-2.  **45s Profit Deadline**: Automatically closes profitable positions late in the window to reduce end-of-market liquidity risk.
-3.  **30s Ghost Town Lock**: Avoids forcing losing positions into an almost empty order book in the final 30 seconds.
-4.  **65% Wide Stop-Loss**: Tolerates ordinary volatility and only exits when the market has clearly failed.
-
-### 📦 Installation & Execution
-
-Use Conda for a clean environment:
+### 📦 安裝與啟動
+建議使用 Conda 建立純淨環境：
 ```bash
-git clone https://github.com/Chihen-Tai/polymarket_bot_for_5_min_btc.git
-cd polymarket_bot_for_5_min_btc
 conda env create -f environment.yml
 conda activate polymarket-bot
 ```
 
-**Run everything (starts market data collector + bot):**
-```bash
-bash scripts/start_bot_with_market_data.sh
-```
+**啟動 VPN-Safe 模式（預設）**：
+確保 `.env` 中 `VPN_SAFE_MODE=True`。
 
-### ⚙️ Configuration & Secrets
+### 📊 設定與報表
+執行 `python scripts/journal_analysis.py` 查看詳細報表，重點關注：
+- **Actual vs Observed Gap**：實際成交與模型理論值的差距。
+- **Timing Buckets**：不同時段進場的表現（240s+, 180s+, <150s）。
+- **Fee-Adjusted Actual PnL**：扣除所有手續費後的真實淨利。
 
-*   Copy `.env.secrets.example` to `.env.local` to securely store your private keys. **Never commit your keys to Git.**
-*   For live trading, ensure:
-    *   `DRY_RUN=false`
-    *   `SIGNATURE_TYPE` is correctly set (2 for Proxy/Smart Wallets, 0 for EOA).
-    *   Valid Polymarket `CLOB_API_KEY` configurations.
+---
 
-### 📊 Reporting
+## 🇬🇧 English Documentation (Simplified)
 
-All logs and auto-generated run reports are saved to the `data/` directory:
-*   Quick summary: `data/latest_run_report.txt`
-*   Full PNL & Ledger: Run `python scripts/trade_pair_ledger.py --summary`
-*   Verification should emphasize:
-    * `actual_minus_observed_gap`
-    * `close_bucket_actual_vs_observed`
-    * `fee_adjusted_actual_pnl`
-    * whether the `active-close` bucket remains negative after costs
-*   If `observed` looks profitable while `actual` or `fee-adjusted` results do not, treat that as unresolved execution/accounting drift rather than strategy success.
+This bot is now optimized for **VPN-safe** environments. It prioritizes limit orders (Maker-first) and holding until market expiry (Expiry-first).
+
+### 🚀 Key Features
+- **Latency Guard**: Blocks trades if E2E jitter > 250ms or p95 > 600ms.
+- **Strict Entry Window**: No new entries allowed in the final 150 seconds of the 5m window.
+- **Maker-Only Execution**: Reduces fee drag and slippage by avoiding market orders.
+- **Actual-Aware PnL**: Reports focus on real, fee-adjusted USDC returns, not theoretical prices.
+
+### 📊 Performance Analysis
+Run `python scripts/journal_analysis.py` to get a breakdown by:
+- **Timing Buckets**: (240-300s, 180-240s, 150-180s, <150s).
+- **Execution Style**: (Maker vs Taker vs Expiry).
+- **Actual PnL**: Real USDC growth after all execution costs.
