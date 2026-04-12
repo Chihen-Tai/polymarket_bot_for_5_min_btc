@@ -60,15 +60,16 @@ class TestBTC15mRefactor(unittest.TestCase):
             self.assertTrue(res.should_close)
             self.assertEqual(res.reason, "deadline-exit-win")
 
-            # Profit deadline (near expiry)
+            # Profit deadline (DISABLED in Phase-1: Pure Hold to Expiry)
             res = decide_exit(pnl_pct=0.05, hold_sec=100, secs_left=40)
-            self.assertTrue(res.should_close)
-            self.assertEqual(res.reason, "deadline-take-profit-full")
+            self.assertFalse(res.should_close)
+            self.assertEqual(res.reason, "hold")
 
-            # 3. Simple Profit Protect (Partial)
-            res = decide_exit(pnl_pct=0.15, hold_sec=100, secs_left=400, has_taken_partial=False)
-            self.assertTrue(res.should_close)
-            self.assertEqual(res.reason, "take-profit-partial")
+            # 3. Simple Profit Protect (DISABLED in Phase-1)
+            # We now hold to expiry to preserve edge.
+            res = decide_exit(pnl_pct=0.15, hold_sec=100, secs_left=400)
+            self.assertFalse(res.should_close)
+            self.assertEqual(res.reason, "hold")
 
             # 4. Hold if no condition met
             res = decide_exit(pnl_pct=0.02, hold_sec=100, secs_left=400)

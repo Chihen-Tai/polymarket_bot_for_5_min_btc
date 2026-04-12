@@ -79,10 +79,10 @@ class Settings:
     )
     ofi_bypass_threshold: float = _f("OFI_BYPASS_THRESHOLD", 0.65)
 
-    poll_seconds: int = _i("POLL_SECONDS", 15)
-    live_account_cache_ttl_sec: float = _f("LIVE_ACCOUNT_CACHE_TTL_SEC", 10.0)
-    pending_order_poll_seconds: float = _f("PENDING_ORDER_POLL_SECONDS", 1.0)
-    open_position_poll_seconds: float = _f("OPEN_POSITION_POLL_SECONDS", 1.0)
+    poll_seconds: int = _i("POLL_SECONDS", 5)
+    live_account_cache_ttl_sec: float = _f("LIVE_ACCOUNT_CACHE_TTL_SEC", 5.0)
+    pending_order_poll_seconds: float = _f("PENDING_ORDER_POLL_SECONDS", 0.5)
+    open_position_poll_seconds: float = _f("OPEN_POSITION_POLL_SECONDS", 0.5)
     near_stop_poll_seconds: float = _f("NEAR_STOP_POLL_SECONDS", 0.5)
     near_stop_poll_hold_sec: float = _f("NEAR_STOP_POLL_HOLD_SEC", 15.0)
     position_watch_debug_enabled: bool = _b("POSITION_WATCH_DEBUG_ENABLED", True)
@@ -169,8 +169,8 @@ class Settings:
     enable_shadow_journal: bool = _b("ENABLE_SHADOW_JOURNAL", True)
 
     # Integrated decision rules (from prior paper simulations)
-    edge_threshold: float = _f("EDGE_THRESHOLD", 0.02)
-    fee_buffer: float = _f("FEE_BUFFER", 0.01)
+    edge_threshold: float = _f("EDGE_THRESHOLD", 0.03)
+    fee_buffer: float = _f("FEE_BUFFER", 0.015)
     report_assumed_taker_fee_rate: float = _f("REPORT_ASSUMED_TAKER_FEE_RATE", 0.0156)
     scoreboard_neutral_pnl_pct: float = _f("SCOREBOARD_NEUTRAL_PNL_PCT", 0.001)
     scoreboard_entry_gate_min_decisive_trades: int = _i(
@@ -256,12 +256,12 @@ class Settings:
     )
     hedge_max_wait_sec: int = _i("HEDGE_MAX_WAIT_SEC", 90)
     stop_loss_min_hold_sec: float = _f("STOP_LOSS_MIN_HOLD_SEC", 30.0)
-    stop_loss_pct: float = _f("STOP_LOSS_PCT", 0.18)
+    stop_loss_pct: float = _f("STOP_LOSS_PCT", 0.20)
     smart_stop_loss_enabled: bool = _b("SMART_STOP_LOSS_ENABLED", True)
     stop_loss_partial_pct: float = _f("STOP_LOSS_PARTIAL_PCT", 0.08)
     stop_loss_partial_fraction: float = _f("STOP_LOSS_PARTIAL_FRACTION", 0.50)
     live_stop_loss_partial_fraction: float = _f("LIVE_STOP_LOSS_PARTIAL_FRACTION", 0.80)
-    max_hold_seconds: int = _i("MAX_HOLD_SECONDS", 180)
+    max_hold_seconds: int = _i("MAX_HOLD_SECONDS", 1800)
     take_profit_scaleout_pct: float = _f("TAKE_PROFIT_SCALEOUT_PCT", 0.03)
     take_profit_soft_pct: float = _f(
         "TAKE_PROFIT_SOFT_PCT", 0.18

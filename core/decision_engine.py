@@ -13,6 +13,7 @@ from core.latency_monitor import LATENCY_MONITOR
 
 
 from core.strategies.base import StrategyResult
+from core.fair_value_model import get_fair_value
 
 
 def _sf(x: Any) -> Optional[float]:
@@ -335,8 +336,38 @@ def explain_choose_side(
     if strike_price is None:
         strike_price = _extract_strike_price(market.get("question", ""))
 
-    # Advanced Strategy 1: Theta Bleed Arbitrage
-    if getattr(SETTINGS, "theta_bleed_enabled", True) and strike_price is not None:
+    # --- Unified Fair Value Strategy (Phase-2 Primary) ---
+    if strike_price is not None and secs_left is not None and binance_1m:
+        btc_price = float(binance_1m.get("c") or binance_1m.get("close") or 0.0)
+        if btc_price > 0:
+            # We use a unified fair value model based on price and time-to-expiry
+            fair_val_yes = get_fair_value(btc_price, strike_price, secs_left)
+            fair_val_no = 1.0 - fair_val_yes
+            
+            # Record candidates for both sides
+            if snipe_valid_up:
+                candidates["unified_fair_value_up"] = _build_candidate(
+                    base_result,
+                    side="UP",
+                    strategy_key="unified_fair_value_up",
+                    entry_price=float(up),
+                    signal_score=fair_val_yes,
+                    signal_confidence=1.0,
+                    extras={"btc_price": btc_price, "strike_price": strike_price, "fair_value": fair_val_yes}
+                )
+            if snipe_valid_down:
+                candidates["unified_fair_value_down"] = _build_candidate(
+                    base_result,
+                    side="DOWN",
+                    strategy_key="unified_fair_value_down",
+                    entry_price=float(down),
+                    signal_score=fair_val_no,
+                    signal_confidence=1.0,
+                    extras={"btc_price": btc_price, "strike_price": strike_price, "fair_value": fair_val_no}
+                )
+
+    # Advanced Strategy 1: Theta Bleed Arbitrage (DEPRECATED in Phase-2)
+    if False and getattr(SETTINGS, "theta_bleed_enabled", True) and strike_price is not None:
         # VPN Safe Mode: Disable Theta Bleed (high latency dependency)
         if SETTINGS.vpn_safe_mode and SETTINGS.vpn_disable_theta_bleed:
             pass
@@ -394,9 +425,9 @@ def explain_choose_side(
             except Exception:
                 pass
 
-    # Advanced Strategy 3: Strike Cross Front-run Snipe
+    # Advanced Strategy 3: Strike Cross Front-run Snipe (DEPRECATED in Phase-2)
     if (
-        getattr(SETTINGS, "strike_cross_snipe_enabled", True)
+        False and getattr(SETTINGS, "strike_cross_snipe_enabled", True)
         and strike_price is not None
     ):
         # VPN Safe Mode: Disable Strike Cross Snipe
@@ -461,190 +492,44 @@ def explain_choose_side(
     # Strategy 5: Zhihu ZLSMA + ATR Scalper (Disabled)
     # ... (omitted) ...
 
-    # Strategy 6: WebSocket Order Flow Imbalance (OFI)
-    for res in get_ofi_signal(ws_trades, up, down, poly_ob_up, poly_ob_down, SETTINGS):
-        candidates[res.strategy_name.replace("model-", "")] = res
+    # Strategy 6: WebSocket Order Flow Imbalance (OFI) (DEPRECATED in Phase-2)
+    # for res in get_ofi_signal(ws_trades, up, down, poly_ob_up, poly_ob_down, SETTINGS):
+    #    candidates[res.strategy_name.replace("model-", "")] = res
 
-    # Strategy 7: WS Flash Snipe (WebSocket 閃電狙擊 0.3%)
-    try:
-        from core.ws_binance import BINANCE_WS
-        # VPN Safe Mode: Disable Flash Snipe
-        if SETTINGS.vpn_safe_mode and SETTINGS.vpn_disable_flash_snipe:
-            pass
-        elif BINANCE_WS.get_last_update_age() < 5.0:
-            vel = BINANCE_WS.get_price_velocity(
-                seconds=3.0,
-                lag_sec=float(getattr(SETTINGS, "binance_signal_lag_sec", 0.0)),
-            )
-            for res in get_flash_snipe_signal(vel, up, down, snipe_valid_up, snipe_valid_down, SETTINGS):
-                candidates[res.strategy_name.replace("model-", "")] = res
-    except Exception:
-        pass
+    # Strategy 7: WS Flash Snipe (WebSocket 閃電狙擊 0.3%) (DEPRECATED in Phase-2)
+    # ... (code commented out) ...
 
-    # Strategy 8: Polymarket Orderbook Imbalance
-    if poly_ob_up and poly_ob_down:
+    # Strategy 8: Polymarket Orderbook Imbalance (DEPRECATED in Phase-2)
+    if False and poly_ob_up and poly_ob_down:
         imbalance_up = _check_imbalance(poly_ob_up)
         imbalance_down = _check_imbalance(poly_ob_down)
+        # ... (rest of strategy 8)
 
-        if imbalance_up > 0.78 and regular_valid_up:
-            imbalance_confidence = _confidence_from_signal(
-                imbalance_up - 0.5, 0.28, 0.5
-            )
-            imbalance_probability = _probability_from_confidence(
-                imbalance_confidence, floor=0.53, ceiling=0.72
-            )
-            r = _build_candidate(
-                base_result,
-                side="UP",
-                strategy_key="poly_ob_imbalance_up",
-                entry_price=float(up),
-                signal_score=imbalance_probability,
-                signal_confidence=imbalance_confidence,
-                extras={"orderbook_imbalance": imbalance_up},
-            )
-            candidates["poly_ob_imbalance_up"] = r
-        if imbalance_down > 0.78 and regular_valid_down:
-            imbalance_confidence = _confidence_from_signal(
-                imbalance_down - 0.5, 0.28, 0.5
-            )
-            imbalance_probability = _probability_from_confidence(
-                imbalance_confidence, floor=0.53, ceiling=0.72
-            )
-            r = _build_candidate(
-                base_result,
-                side="DOWN",
-                strategy_key="poly_ob_imbalance_down",
-                entry_price=float(down),
-                signal_score=imbalance_probability,
-                signal_confidence=imbalance_confidence,
-                extras={"orderbook_imbalance": imbalance_down},
-            )
-            candidates["poly_ob_imbalance_down"] = r
-
-    # Strategy 9-10 (Disabled)
-    # ... (omitted) ...
-
-    # Strategy 11: Binance Liquidation Fader
+    # Strategy 11: Binance Liquidation Fader (DEPRECATED in Phase-2)
     try:
         from core.ws_binance import BINANCE_WS
 
         if (
-            getattr(SETTINGS, "liquidation_fade_min_usd", 0.0) > 0
+            False and getattr(SETTINGS, "liquidation_fade_min_usd", 0.0) > 0
             and BINANCE_WS.get_last_update_age() < 5.0
         ):
-            # VPN Safe Mode: Disable Liquidation Fade
-            if SETTINGS.vpn_safe_mode and SETTINGS.vpn_disable_liquidation_fade:
-                pass
-            else:
-                window = float(getattr(SETTINGS, "liquidation_fade_window_sec", 20.0))
-                lqs = BINANCE_WS.get_recent_liquidations(seconds=window)
-                if lqs:
-                    long_liq_usd = sum(lq["usd_size"] for lq in lqs if lq["side"] == "SELL")
-                    short_liq_usd = sum(lq["usd_size"] for lq in lqs if lq["side"] == "BUY")
-                    min_thresh = float(SETTINGS.liquidation_fade_min_usd)
-
-                    if long_liq_usd >= min_thresh and regular_valid_up:
-                        fade_confidence = _clamp(
-                            long_liq_usd / (min_thresh * 3.0), 0.6, 1.0
-                        )
-                        r = _build_candidate(
-                            base_result,
-                            side="UP",
-                            strategy_key="liquidation_fade_up",
-                            entry_price=float(up),
-                            signal_score=0.70,  # Strength score
-                            signal_confidence=fade_confidence,
-                            extras={"long_liq_usd": long_liq_usd},
-                        )
-                        candidates["liquidation_fade_up"] = r
-                    elif short_liq_usd >= min_thresh and regular_valid_down:
-                        fade_confidence = _clamp(
-                            short_liq_usd / (min_thresh * 3.0), 0.6, 1.0
-                        )
-                        r = _build_candidate(
-                            base_result,
-                            side="DOWN",
-                            strategy_key="liquidation_fade_down",
-                            entry_price=float(down),
-                            signal_score=0.70,  # Strength score
-                            signal_confidence=fade_confidence,
-                            extras={"short_liq_usd": short_liq_usd},
-                        )
-                        candidates["liquidation_fade_down"] = r
+            # ... (rest of strategy 11)
+            pass
     except Exception:
         pass
 
-    # Strategy 12: Early Underdog Sniper
+    # Strategy 12: Early Underdog Sniper (DEPRECATED in Phase-2)
     try:
-        if secs_left is not None:
-            min_time = float(getattr(SETTINGS, "early_underdog_min_time", 220.0))
-            if secs_left >= min_time:
-                # VPN Safe Mode: Disable Early Underdog in Live
-                if not SETTINGS.dry_run and SETTINGS.vpn_safe_mode and SETTINGS.vpn_disable_early_underdog_live:
-                    pass
-                else:
-                    max_price = float(getattr(SETTINGS, "early_underdog_max_price", 0.35))
-                    from core.ws_binance import BINANCE_WS
-
-                    if BINANCE_WS.get_last_update_age() < 5.0:
-                        vel = BINANCE_WS.get_price_velocity(seconds=3.0)
-                        if up is not None and 0.0 < float(up) <= max_price and vel > 0.0003:
-                            r = _build_candidate(
-                                base_result,
-                                side="UP",
-                                strategy_key="early_underdog_up",
-                                entry_price=float(up),
-                                signal_score=0.72, # Strength
-                                signal_confidence=0.8,
-                                extras={"secs_left": secs_left, "vel": vel},
-                            )
-                            candidates["early_underdog_up"] = r
-                        elif (
-                            down is not None
-                            and 0.0 < float(down) <= max_price
-                            and vel < -0.0003
-                        ):
-                            r = _build_candidate(
-                                base_result,
-                                side="DOWN",
-                                strategy_key="early_underdog_down",
-                                entry_price=float(down),
-                                signal_score=0.72, # Strength
-                                signal_confidence=0.8,
-                                extras={"secs_left": secs_left, "vel": vel},
-                            )
-                            candidates["early_underdog_down"] = r
+        if False and secs_left is not None:
+            # ... (rest of strategy 12)
+            pass
     except Exception:
         pass
 
-    # Strategy 13: 15m Extreme-Price Fade (Counter-trend Value Entry)
-    if SETTINGS.market_profile == "btc_15m":
-        # Fade UP (Price of UP is too high, entry DOWN is cheap)
-        if float(up) >= SETTINGS.soft_no_chase_above and float(down) <= SETTINGS.cheap_ticket_max_price:
-            if regime in ["mid", "late"]:
-                 r = _build_candidate(
-                    base_result,
-                    side="DOWN",
-                    strategy_key="extreme_price_fade_down",
-                    entry_price=float(down),
-                    signal_score=0.65, # Strength
-                    signal_confidence=0.8,
-                    extras={"fade_target": "UP", "price": up, "regime": regime}
-                )
-                 candidates["extreme_price_fade_down"] = r
-        # Fade DOWN (Price of DOWN is too high, entry UP is cheap)
-        elif float(down) >= SETTINGS.soft_no_chase_above and float(up) <= SETTINGS.cheap_ticket_max_price:
-            if regime in ["mid", "late"]:
-                 r = _build_candidate(
-                    base_result,
-                    side="UP",
-                    strategy_key="extreme_price_fade_up",
-                    entry_price=float(up),
-                    signal_score=0.65, # Strength
-                    signal_confidence=0.8,
-                    extras={"fade_target": "DOWN", "price": down, "regime": regime}
-                )
-                 candidates["extreme_price_fade_up"] = r
+    # Strategy 13: 15m Extreme-Price Fade (Counter-trend Value Entry) (DEPRECATED in Phase-2)
+    if False and SETTINGS.market_profile == "btc_15m":
+        # ... (rest of strategy 13)
+        pass
 
     # Mean Reversion
     mr_res = mean_reversion.run(up, yes_window, SETTINGS)

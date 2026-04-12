@@ -2148,13 +2148,6 @@ def place_entry_order_with_retry(
 
     for attempt in range(1, attempts + 1 + reprice_attempts):
         is_reprice = attempt > attempts
-        is_taker_fallback = False
-        
-        # Determine if we should fallback to taker
-        if not effective_force_taker and is_15m and SETTINGS.high_confidence_taker_fallback_enabled and is_high_confidence:
-            if attempt > attempts + reprice_attempts: # final fallback
-                is_taker_fallback = True
-        
         started = time.perf_counter()
         try:
             # For reprice, we slightly adjust the simulated price if available
@@ -2169,7 +2162,7 @@ def place_entry_order_with_retry(
                 amount_usd,
                 token_id,
                 simulated_price=current_sim_price,
-                force_taker=is_taker_fallback or effective_force_taker,
+                force_taker=effective_force_taker,
             )
             rtt = (time.perf_counter() - started) * 1000.0
             latencies_ms.append(rtt)
@@ -2182,18 +2175,11 @@ def place_entry_order_with_retry(
             if entry_response_has_actionable_state(resp):
                 return resp, latencies_ms, attempt
             
-            # If not actionable (e.g. POST_ONLY limit order placed but not filled)
-            if not is_taker_fallback and not effective_force_taker:
-                # Wait for timeout to see if it fills
-                wait_sec = SETTINGS.vpn_maker_timeout_sec if SETTINGS.vpn_safe_mode else 5.0
-                time.sleep(wait_sec)
-                
-                # Check if filled (Polymarket logic usually needs order-id check here, 
-                # but for this bot we simplify: if not filled, cancel and retry/reprice)
-                order_id = resp.get("response", {}).get("orderID")
-                if order_id:
-                    ex.cancel_order(order_id)
-                    log(f"hybrid-maker: order {order_id} not filled, cancelling for reprice/retry")
+            # If not filled immediately (standard for Maker POST_ONLY)
+            if not effective_force_taker:
+                # In Phase-1 Refactor, we just return the 'posted' response.
+                # The caller (main loop) handles the wait/cancel cycle.
+                return resp, latencies_ms, attempt
 
             last_error = RuntimeError("no-takingAmount-no-orderID")
         except Exception as exc:
@@ -4025,118 +4011,18 @@ def main():
                             continue
 
                         if action == "fallback-taker":
-                            if not pending_order_allows_taker_fallback(po):
-                                log(
-                                    f"MAKER TIMEOUT on {po.side} {po.order_id} -> skipping taker fallback (edge too thin)"
-                                )
-                                ex.cancel_order(po.order_id)
-                                pending_orders.remove(po)
-                                maybe_record_cycle_label(
-                                    state,
-                                    "signal-blocked",
-                                    slug=po.slug,
-                                    side=po.side,
-                                    reason="maker-timeout-weak-edge",
-                                )
-                                continue
                             log(
-                                f"MAKER TIMEOUT on {po.side} {po.order_id} -> attempting taker fallback"
+                                f"❌ MAKER TIMEOUT on {po.side} {po.order_id} -> cancelling (Phase-1: No taker fallback)"
                             )
                             ex.cancel_order(po.order_id)
-                            po.fallback_attempted = True
-                            try:
-                                fallback_resp, fallback_latencies, fallback_attempts = (
-                                    place_entry_order_with_retry(
-                                        ex,
-                                        po.side,
-                                        po.order_usd,
-                                        po.token_id,
-                                        simulated_price=None,
-                                        force_taker=True,
-                                        max_attempts=int(
-                                            getattr(SETTINGS, "entry_retry_attempts", 3)
-                                        ),
-                                        backoff_sec=float(
-                                            getattr(
-                                                SETTINGS, "entry_retry_backoff_sec", 2.0
-                                            )
-                                        ),
-                                    )
-                                )
-                                for idx, latency_ms in enumerate(
-                                    fallback_latencies, start=1
-                                ):
-                                    cycle_had_slow_api = (
-                                        observe_api_latency(
-                                            flags,
-                                            f"place_order_timeout_fallback#{idx}",
-                                            latency_ms,
-                                        )
-                                        or cycle_had_slow_api
-                                    )
-                                shares, _ = extract_entry_response_details(
-                                    fallback_resp
-                                )
-                                if shares > 0:
-                                    track_pending_fill(
-                                        open_positions,
-                                        po,
-                                        shares=shares,
-                                        cost_usd=po.order_usd,
-                                        entry_reason=f"{(po.entry_reason or 'maker-timeout')}+taker-fallback",
-                                        source="maker-timeout-fallback",
-                                        execution_style=(
-                                            fallback_resp.get("execution_style")
-                                            if isinstance(fallback_resp, dict)
-                                            else "taker"
-                                        ),
-                                    )
-                                    maybe_record_cycle_label(
-                                        state,
-                                        "maker-timeout-fallback-filled",
-                                        slug=po.slug,
-                                        side=po.side,
-                                    )
-                                    log(
-                                        f"maker timeout fallback filled | side={po.side} token={po.token_id} "
-                                        f"attempts={fallback_attempts} shares={shares:.4f}"
-                                    )
-                                else:
-                                    maybe_record_cycle_label(
-                                        state,
-                                        "signal-but-no-fill",
-                                        slug=po.slug,
-                                        side=po.side,
-                                        reason="maker-timeout-fallback-no-fill",
-                                    )
-                                    append_event(
-                                        {
-                                            "kind": "entry_attempt",
-                                            "slug": po.slug,
-                                            "side": po.side,
-                                            "token_id": po.token_id,
-                                            "status": "signal-but-no-fill",
-                                            "reason": "maker-timeout-fallback-no-fill",
-                                            "response_mode": fallback_resp.get("mode")
-                                            if isinstance(fallback_resp, dict)
-                                            else "",
-                                        }
-                                    )
-                                    log(
-                                        f"maker timeout fallback returned no fill | side={po.side} token={po.token_id}"
-                                    )
-                            except Exception as fallback_err:
-                                network_notes = update_network_guard(
-                                    flags,
-                                    ws_age=current_ws_age(),
-                                    cycle_had_slow_api=cycle_had_slow_api,
-                                    cycle_api_error=True,
-                                )
-                                for note in network_notes:
-                                    log(note)
-                                error_cooldown_until = time.time() + 20
-                                log(f"maker timeout fallback failed: {fallback_err}")
                             pending_orders.remove(po)
+                            maybe_record_cycle_label(
+                                state,
+                                "signal-blocked",
+                                slug=po.slug,
+                                side=po.side,
+                                reason="maker-timeout-no-fallback",
+                            )
                             continue
 
                         if action == "cancel-timeout":
@@ -4629,54 +4515,8 @@ def main():
                                 recovery_chance_low = True
 
                         if getattr(p, "force_close_only", False):
-                            ghost_town_sec = float(
-                                getattr(SETTINGS, "exit_ghost_town_sec", 30.0) or 0.0
-                            )
-                            profit_deadline_sec = float(
-                                getattr(SETTINGS, "exit_deadline_profit_sec", 45.0)
-                                or 0.0
-                            )
-                            inside_ghost_town_window = (
-                                secs_left is not None
-                                and ghost_town_sec > 0.0
-                                and secs_left <= ghost_town_sec
-                            )
-                            profit_deadline_window = (
-                                secs_left is not None
-                                and profit_deadline_sec > 0.0
-                                and secs_left <= profit_deadline_sec
-                                and (
-                                    ghost_town_sec <= 0.0 or secs_left > ghost_town_sec
-                                )
-                            )
-                            if inside_ghost_town_window:
-                                exit_decision = ExitDecision(
-                                    False,
-                                    "ghost-town-let-ride",
-                                    hard_stop_pnl_pct,
-                                    hold_sec,
-                                )
-                            elif profit_deadline_window and hard_stop_pnl_pct > 0:
-                                exit_decision = ExitDecision(
-                                    True,
-                                    "take-profit-full",
-                                    hard_stop_pnl_pct,
-                                    hold_sec,
-                                )
-                            elif hard_stop_pnl_pct > 0.05:
-                                exit_decision = ExitDecision(
-                                    True,
-                                    "take-profit-full",
-                                    hard_stop_pnl_pct,
-                                    hold_sec,
-                                )
-                            else:
-                                exit_decision = ExitDecision(
-                                    True,
-                                    "residual-force-close",
-                                    hard_stop_pnl_pct,
-                                    hold_sec,
-                                )
+                            # (Removed in Phase-1 Refactor: Purged Exit EV-Killers)
+                            pass
                         elif getattr(p, "is_moonbag", False) or getattr(
                             p, "is_loss_tail", False
                         ):
@@ -4685,181 +4525,9 @@ def main():
                         else:
                             exit_decision = decide_exit(
                                 pnl_pct=hard_stop_pnl_pct,
-                                profit_pnl_pct=profit_pnl_pct,
                                 hold_sec=hold_sec,
                                 secs_left=secs_left,
-                                has_scaled_out=getattr(p, "has_scaled_out", False),
-                                recovery_chance_low=recovery_chance_low,
-                                has_scaled_out_loss=getattr(
-                                    p, "has_scaled_out_loss", False
-                                ),
-                                has_taken_partial=getattr(
-                                    p, "has_taken_partial", False
-                                ),
-                                has_extracted_principal=getattr(
-                                    p, "has_extracted_principal", False
-                                ),
-                                mfe_pnl_pct=mfe_pnl_pct,
-                                runner_drawdown_pct=runner_drawdown_pct,
-                                runner_peak_age_sec=runner_peak_age_sec,
-                                runner_peak_value_usd=float(
-                                    getattr(p, "runner_peak_value_usd", 0.0) or 0.0
-                                ),
-                                entry_strategy=getattr(p, "entry_reason", ""),
                             )
-
-                            if "early_underdog" in getattr(p, "entry_reason", ""):
-                                # === 樂透爆發模式偵測 ===
-                                # 只有在「短時間內出現誇張斜率」時才啟動樂透特殊模式。
-                                # 條件：hold_sec <= lottery_burst_window_sec 且 pnl_pct >= lottery_burst_min_pct
-                                # 一旦達到條件，設 lottery_activated=True（不可逆），之後才允許特殊鎖定邏輯。
-                                burst_window = float(SETTINGS.lottery_burst_window_sec)
-                                burst_min_pct = float(SETTINGS.lottery_burst_min_pct)
-                                if not p.lottery_activated:
-                                    if (
-                                        hold_sec <= burst_window
-                                        and pnl_pct >= burst_min_pct
-                                    ):
-                                        p.lottery_activated = True
-                                        p.lottery_activated_ts = time.time()
-                                        log(
-                                            f"🎰 LOTTERY ACTIVATED | slug={p.slug} hold={hold_sec:.0f}s pnl={pnl_pct:.1%} → 樂透模式啟動"
-                                        )
-
-                                if p.lottery_activated:
-                                    # ── 樂透模式：鎖定到剩 exit_lock_time 秒，且需 150% 才停利 ──
-                                    min_sell_time = float(
-                                        getattr(
-                                            SETTINGS,
-                                            "early_underdog_exit_lock_time",
-                                            150.0,
-                                        )
-                                    )
-                                    if (
-                                        secs_left is not None
-                                        and secs_left > min_sell_time
-                                    ):
-                                        exit_decision = ExitDecision(
-                                            False,
-                                            "lottery-lock",
-                                            hard_stop_pnl_pct,
-                                            hold_sec,
-                                        )
-                                    else:
-                                        max_stop_loss = -abs(
-                                            float(
-                                                getattr(
-                                                    SETTINGS,
-                                                    "early_underdog_let_ride_loss_pct",
-                                                    0.35,
-                                                )
-                                            )
-                                        )
-                                        # 深套就躺平，不做常規止損
-                                        if (
-                                            hard_stop_pnl_pct < max_stop_loss
-                                            and exit_decision.should_close
-                                            and "stop" in exit_decision.reason
-                                        ):
-                                            exit_decision = ExitDecision(
-                                                False,
-                                                "lottery-let-ride",
-                                                hard_stop_pnl_pct,
-                                                hold_sec,
-                                            )
-                                        # 需要 150% 才停利（deadline 例外）
-                                        target_tp_pct = float(
-                                            getattr(
-                                                SETTINGS,
-                                                "early_underdog_take_profit_pct",
-                                                1.50,
-                                            )
-                                        )
-                                        if (
-                                            exit_decision.should_close
-                                            and "take-profit" in exit_decision.reason
-                                            and "deadline" not in exit_decision.reason
-                                        ):
-                                            check_pct = (
-                                                profit_pnl_pct
-                                                if profit_pnl_pct is not None
-                                                else pnl_pct
-                                            )
-                                            if check_pct < target_tp_pct:
-                                                exit_decision = ExitDecision(
-                                                    False,
-                                                    "lottery-hold-winner",
-                                                    hard_stop_pnl_pct,
-                                                    hold_sec,
-                                                )
-
-                                        # ── 樂透高原停利（Lottery Plateau Stop）──
-                                        # 在 +75% ~ +150% 的中間地帶，如果價格已停止創高且 Binance 沒有繼續推升，
-                                        # 視為「動能耗盡」，直接停利拿走；如果 Binance 仍強勢往上，讓它繼續跑。
-                                        if not exit_decision.should_close:
-                                            check_pct = (
-                                                profit_pnl_pct
-                                                if profit_pnl_pct is not None
-                                                else pnl_pct
-                                            )
-                                            plateau_min_pct = float(
-                                                SETTINGS.lottery_plateau_min_pct
-                                            )
-                                            if (
-                                                plateau_min_pct
-                                                <= check_pct
-                                                < target_tp_pct
-                                            ):
-                                                # 計算距上次創高（max_favorable_ts）的秒數
-                                                last_peak_ts = float(
-                                                    getattr(p, "max_favorable_ts", 0.0)
-                                                    or 0.0
-                                                )
-                                                peak_stall_sec = (
-                                                    max(0.0, time.time() - last_peak_ts)
-                                                    if last_peak_ts > 0.0
-                                                    else None
-                                                )
-                                                plateau_stall_sec = float(
-                                                    SETTINGS.lottery_plateau_stall_sec
-                                                )
-                                                if (
-                                                    peak_stall_sec is not None
-                                                    and peak_stall_sec
-                                                    >= plateau_stall_sec
-                                                ):
-                                                    # 已穩定（stall），再確認 Binance 速度
-                                                    try:
-                                                        _lp_vel = BINANCE_WS.get_price_velocity(
-                                                            3.0, lag_sec=0.0
-                                                        )
-                                                        _lp_vel_thresh = float(
-                                                            SETTINGS.lottery_plateau_velocity_threshold
-                                                        )
-                                                        _still_climbing = (
-                                                            p.side == "UP"
-                                                            and _lp_vel
-                                                            >= _lp_vel_thresh
-                                                        ) or (
-                                                            p.side == "DOWN"
-                                                            and _lp_vel
-                                                            <= -_lp_vel_thresh
-                                                        )
-                                                        if not _still_climbing:
-                                                            log(
-                                                                f"💰 LOTTERY PLATEAU STOP | slug={p.slug} "
-                                                                f"pnl={check_pct:.1%} stall={peak_stall_sec:.0f}s "
-                                                                f"vel={_lp_vel:.4%} → 動能耗盡，停利"
-                                                            )
-                                                            exit_decision = ExitDecision(
-                                                                True,
-                                                                "lottery-plateau-stop",
-                                                                check_pct,
-                                                                hold_sec,
-                                                            )
-                                                    except Exception:
-                                                        pass
-                                # else: lottery 尚未啟動 → 完全視為一般單，exit_decision 不做任何蓋掉
 
                         # ── Late Certainty Hold（末段確定性持倉策略）──
                         # 當剩餘時間極短且倉位幾乎確定獲勝時，放棄早出，等到期結算。
@@ -4914,1683 +4582,154 @@ def main():
                         )
 
                         # --- Phase 2: Advanced Loophole Exploitation ---
-                        try:
-                            ws_vel = BINANCE_WS.get_price_velocity(
-                                3.0,
-                                lag_sec=float(
-                                    getattr(SETTINGS, "binance_signal_lag_sec", 0.0)
-                                ),
-                            )
-                            ws_vel_now = BINANCE_WS.get_price_velocity(3.0, lag_sec=0.0)
-
-                            # 1. Panic Dump Override
-                            is_panic = (
-                                p.side == "UP"
-                                and ws_vel < -SETTINGS.panic_dump_velocity
-                            ) or (
-                                p.side == "DOWN"
-                                and ws_vel > SETTINGS.panic_dump_velocity
-                            )
-                            if is_panic and hold_sec > 2.0:
-                                log(
-                                    f"🚨 PANIC DUMP OVERRIDE! {p.side} {p.token_id[-6:]} Binance vel={ws_vel:.4%}"
-                                )
-                                exit_decision.should_close = True
-                                exit_decision.reason = "panic-dump"
-                                p.has_panic_dumped = True
-
-                            soft_stop_breach_age_sec = 0.0
-                            if getattr(p, "soft_stop_breach_ts", 0.0) > 0.0:
-                                soft_stop_breach_age_sec = max(
-                                    0.0, time.time() - float(p.soft_stop_breach_ts)
-                                )
-                            if should_delay_soft_stop_scaleout(
-                                reason=exit_decision.reason,
-                                side=p.side,
-                                pnl_pct=hard_stop_pnl_pct,
-                                breach_age_sec=soft_stop_breach_age_sec,
-                                secs_left=secs_left,
-                                ws_velocity=ws_vel,
-                            ):
-                                log(
-                                    f"SOFT STOP CONFIRMING: {p.side} {p.token_id[-6:]} "
-                                    f"pnl={hard_stop_pnl_pct:.2%} breach_age={soft_stop_breach_age_sec:.1f}s "
-                                    f"Binance vel={ws_vel:.4%}"
-                                )
-                                exit_decision.should_close = False
-                                exit_decision.reason = ""
-
-                            binance_adverse_breach_age_sec = 0.0
-                            if should_trigger_binance_adverse_exit(
-                                has_extracted_principal=getattr(
-                                    p, "has_extracted_principal", False
-                                ),
-                                side=p.side,
-                                pnl_pct=hard_stop_pnl_pct,
-                                profit_pnl_pct=profit_pnl_pct,
-                                hold_sec=hold_sec,
-                                breach_age_sec=float("inf"),
-                                secs_left=secs_left,
-                                ws_velocity=ws_vel,
-                                current_ws_velocity=ws_vel_now,
-                            ):
-                                if getattr(p, "binance_adverse_breach_ts", 0.0) <= 0.0:
-                                    p.binance_adverse_breach_ts = time.time()
-                                binance_adverse_breach_age_sec = max(
-                                    0.0,
-                                    time.time()
-                                    - float(
-                                        getattr(p, "binance_adverse_breach_ts", 0.0)
-                                        or 0.0
-                                    ),
-                                )
-                            else:
-                                p.binance_adverse_breach_ts = 0.0
-
-                            if should_trigger_binance_adverse_exit(
-                                has_extracted_principal=getattr(
-                                    p, "has_extracted_principal", False
-                                ),
-                                side=p.side,
-                                pnl_pct=hard_stop_pnl_pct,
-                                profit_pnl_pct=profit_pnl_pct,
-                                hold_sec=hold_sec,
-                                breach_age_sec=binance_adverse_breach_age_sec,
-                                secs_left=secs_left,
-                                ws_velocity=ws_vel,
-                                current_ws_velocity=ws_vel_now,
-                            ):
-                                safe_profit_text = (
-                                    "n/a"
-                                    if profit_pnl_pct is None
-                                    else f"{float(profit_pnl_pct):.2%}"
-                                )
-                                log(
-                                    f"BINANCE ADVERSE EXIT: {p.side} {p.token_id[-6:]} "
-                                    f"hold={hold_sec:.0f}s pnl={hard_stop_pnl_pct:.2%} profit={safe_profit_text} "
-                                    f"breach_age={binance_adverse_breach_age_sec:.1f}s lag_vel={ws_vel:.4%} current_vel={ws_vel_now:.4%}"
-                                )
-                                exit_decision.should_close = True
-                                exit_decision.reason = "binance-adverse-exit"
-
-                            profit_protect_breach_age_sec = 0.0
-                            if should_trigger_binance_profit_protect_exit(
-                                has_extracted_principal=getattr(
-                                    p, "has_extracted_principal", False
-                                ),
-                                side=p.side,
-                                profit_pnl_pct=profit_pnl_pct,
-                                take_profit_soft_pct=float(
-                                    getattr(SETTINGS, "take_profit_soft_pct", 0.35)
-                                    or 0.35
-                                ),
-                                hold_sec=hold_sec,
-                                peak_age_sec=profit_peak_age_sec,
-                                breach_age_sec=float("inf"),
-                                secs_left=secs_left,
-                                ws_velocity=ws_vel,
-                                current_ws_velocity=ws_vel_now,
-                            ):
-                                if (
-                                    getattr(p, "binance_profit_protect_breach_ts", 0.0)
-                                    <= 0.0
-                                ):
-                                    p.binance_profit_protect_breach_ts = time.time()
-                                profit_protect_breach_age_sec = max(
-                                    0.0,
-                                    time.time()
-                                    - float(
-                                        getattr(
-                                            p, "binance_profit_protect_breach_ts", 0.0
-                                        )
-                                        or 0.0
-                                    ),
-                                )
-                            else:
-                                p.binance_profit_protect_breach_ts = 0.0
-
-                            if should_trigger_binance_profit_protect_exit(
-                                has_extracted_principal=getattr(
-                                    p, "has_extracted_principal", False
-                                ),
-                                side=p.side,
-                                profit_pnl_pct=profit_pnl_pct,
-                                take_profit_soft_pct=float(
-                                    getattr(SETTINGS, "take_profit_soft_pct", 0.35)
-                                    or 0.35
-                                ),
-                                hold_sec=hold_sec,
-                                peak_age_sec=profit_peak_age_sec,
-                                breach_age_sec=profit_protect_breach_age_sec,
-                                secs_left=secs_left,
-                                ws_velocity=ws_vel,
-                                current_ws_velocity=ws_vel_now,
-                            ):
-                                log(
-                                    f"BINANCE PROFIT PROTECT EXIT: {p.side} {p.token_id[-6:]} "
-                                    f"profit={float(profit_pnl_pct or 0.0):.2%} peak_age={float(profit_peak_age_sec or 0.0):.1f}s "
-                                    f"breach_age={profit_protect_breach_age_sec:.1f}s lag_vel={ws_vel:.4%} current_vel={ws_vel_now:.4%}"
-                                )
-                                exit_decision.should_close = True
-                                exit_decision.reason = "binance-profit-protect-exit"
-
-                            if should_trigger_profit_reversal_exit(
-                                has_extracted_principal=getattr(
-                                    p, "has_extracted_principal", False
-                                ),
-                                side=p.side,
-                                profit_pnl_pct=profit_pnl_pct,
-                                mfe_pnl_pct=mfe_pnl_pct,
-                                current_value_usd=effective_exit_value,
-                                peak_value_usd=float(
-                                    getattr(
-                                        p,
-                                        "max_favorable_value_usd",
-                                        effective_exit_value,
-                                    )
-                                    or effective_exit_value
-                                ),
-                                ws_velocity=ws_vel,
-                                secs_left=secs_left,
-                            ):
-                                peak_value_usd = max(
-                                    float(
-                                        getattr(
-                                            p,
-                                            "max_favorable_value_usd",
-                                            effective_exit_value,
-                                        )
-                                        or effective_exit_value
-                                    ),
-                                    float(effective_exit_value or 0.0),
-                                )
-                                drawdown_pct = (
-                                    float(effective_exit_value or 0.0) - peak_value_usd
-                                ) / max(peak_value_usd, 1e-9)
-                                log(
-                                    f"PROFIT REVERSAL EXIT: {p.side} {p.token_id[-6:]} "
-                                    f"profit={profit_pnl_pct:.2%} mfe={mfe_pnl_pct:.2%} "
-                                    f"drawdown={drawdown_pct:.2%} Binance vel={ws_vel:.4%}"
-                                )
-                                exit_decision.should_close = True
-                                exit_decision.reason = "profit-reversal-stop"
-
-                            # 2. Let Profits Run
-                            if getattr(
-                                exit_decision, "should_close", False
-                            ) and exit_decision.reason in (
-                                "take-profit-partial",
-                                "take-profit-principal",
-                                "take-profit-full",
-                            ):
-                                is_pump = (
-                                    p.side == "UP"
-                                    and ws_vel > SETTINGS.tp_hold_velocity
-                                ) or (
-                                    p.side == "DOWN"
-                                    and ws_vel < -SETTINGS.tp_hold_velocity
-                                )
-                                if is_pump:
-                                    log(
-                                        f"📈 LET PROFITS RUN! Delaying TP for {p.side}. Binance vel={ws_vel:.4%}"
-                                    )
-                                    exit_decision.should_close = False
-                        except Exception:
-                            pass
-                        # --- Hard Stop Velocity Shield ---
-                        # If Binance price is still moving with the position, delay hard-stop for one cycle.
-                        # Panic-dump override (above) fires first and is unaffected.
-                        if (
-                            getattr(SETTINGS, "enable_hard_stop_shield", False)
-                            and exit_decision.should_close
-                            and exit_decision.reason == "hard-stop-loss"
-                        ):
-                            _shield_vel = getattr(
-                                SETTINGS, "hard_stop_shield_velocity", 0.0
-                            )
-                            if _shield_vel > 0.0:
-                                _hs_ws_vel = 0.0
-                                try:
-                                    _hs_ws_vel = BINANCE_WS.get_price_velocity(
-                                        3.0,
-                                        lag_sec=float(
-                                            getattr(
-                                                SETTINGS, "binance_signal_lag_sec", 0.0
-                                            )
-                                        ),
-                                    )
-                                except Exception:
-                                    pass
-                                _same_dir = (
-                                    p.side == "UP" and _hs_ws_vel > _shield_vel
-                                ) or (p.side == "DOWN" and _hs_ws_vel < -_shield_vel)
-                                if _same_dir:
-                                    log(
-                                        f"HARD STOP SHIELDED: {p.side} {p.token_id[-6:]} "
-                                        f"Binance vel={_hs_ws_vel:.4%} — skipping this cycle"
-                                    )
-                                    exit_decision.should_close = False
-                                    exit_decision.reason = ""
-                        # ---------------------------------
-                        # ----------------------------------------------
-                        stop_warn = hard_stop_pnl_pct <= -SETTINGS.stop_loss_warn_pct
-                        urgent_exit = hard_stop_pnl_pct <= -SETTINGS.stop_loss_pct
-
-                        if stop_warn and not urgent_exit:
-                            arm_near_stop_poll(p)
-                            append_event(
-                                {
-                                    "kind": "risk_warning",
-                                    "slug": p.slug,
-                                    "side": p.side,
-                                    "token_id": p.token_id,
-                                    "position_id": p.position_id,
-                                    "warning": "stop-loss-warning",
-                                    "observed_return_pct": pnl_pct,
-                                    "hold_sec": hold_sec,
-                                }
-                            )
-                            log(
-                                f"stop-loss warning | side={p.side} observed_return={pnl_pct:.2%} hold={hold_sec:.0f}s"
-                            )
-
-                        if is_loss_exit_reason(exit_decision.reason):
-                            arm_near_stop_poll(p)
+                        # (Removed in Phase-1 Refactor: Purged Exit EV-Killers)
 
                         if exit_decision.should_close:
-                            if exit_decision.reason == "scale-out":
-                                sell_fraction = min(
-                                    0.99, p.cost_usd / max(observed_value, 1e-9)
-                                )
-                                sell_shares = p.shares * sell_fraction
-
-                                try:
-                                    close_resp = ex.close_position(
-                                        p.token_id,
-                                        sell_shares,
-                                        simulated_price=float(mark)
-                                        if mark is not None
-                                        else None,
-                                    )
-                                    if (
-                                        close_resp.get("ok")
-                                        or float(
-                                            close_resp.get("closed_shares", 0.0) or 0.0
-                                        )
-                                        > 0.0
-                                    ):
-                                        starting_shares = float(p.shares)
-                                        starting_cost = float(p.cost_usd)
-                                        sold_shares = min(
-                                            float(
-                                                close_resp.get("closed_shares", 0.0)
-                                                or 0.0
-                                            ),
-                                            sell_shares,
-                                        )
-                                        if sold_shares > 0:
-                                            remaining_hint = close_resp.get(
-                                                "remaining_shares"
-                                            )
-                                            resolved_remaining_shares = (
-                                                resolve_close_remaining_shares(
-                                                    requested_shares=starting_shares,
-                                                    sold_shares=sold_shares,
-                                                    remaining_hint=remaining_hint,
-                                                    close_request_shares=sell_shares,
-                                                )
-                                            )
-                                            resolved_remaining_shares = preserve_partial_close_residual(
-                                                starting_shares=starting_shares,
-                                                requested_close_shares=sell_shares,
-                                                sold_shares=sold_shares,
-                                                remaining_shares=resolved_remaining_shares,
-                                            )
-                                            sold_shares = resolve_effective_closed_shares(
-                                                starting_shares=starting_shares,
-                                                sold_shares=sold_shares,
-                                                remaining_shares=resolved_remaining_shares,
-                                            )
-                                            avg_cost = starting_cost / max(
-                                                starting_shares, 1e-9
-                                            )
-                                            remaining_cost = (
-                                                avg_cost * resolved_remaining_shares
-                                            )
-                                            realized_cost = max(
-                                                0.0, starting_cost - remaining_cost
-                                            )
-                                            p.shares = resolved_remaining_shares
-                                            p.cost_usd = remaining_cost
-                                            p.has_scaled_out = True
-                                            if (
-                                                resolved_remaining_shares
-                                                > LOT_EPS_SHARES
-                                            ):
-                                                extend_live_sync_protection(p)
-
-                                            _raw_act_val = close_resp.get(
-                                                "actual_exit_value_usd", 0.0
-                                            )
-                                            _raw_act_src = str(
-                                                close_resp.get(
-                                                    "actual_exit_value_source"
-                                                )
-                                                or "unavailable"
-                                            )
-                                            _act_val, _act_src = (
-                                                sanitize_live_actual_exit_value(
-                                                    actual_exit_value_usd=_raw_act_val,
-                                                    actual_exit_value_source=_raw_act_src,
-                                                    sold_shares=sold_shares,
-                                                    mark=mark,
-                                                    dry_run=SETTINGS.dry_run,
-                                                )
-                                            )
-                                            _obs_val = observed_exit_value_from_mark(
-                                                sold_shares=sold_shares, mark=mark
-                                            )
-                                            _realized_pnl = realized_exit_pnl(
-                                                _act_val,
-                                                _obs_val,
-                                                realized_cost,
-                                            )
-                                            risk.daily_pnl += _realized_pnl
-                                            append_event(
-                                                {
-                                                    "kind": "exit",
-                                                    "slug": p.slug,
-                                                    "side": p.side,
-                                                    "token_id": p.token_id,
-                                                    "position_id": p.position_id,
-                                                    "closed_shares": sold_shares,
-                                                    "remaining_shares": resolved_remaining_shares,
-                                                    "realized_cost_usd": realized_cost,
-                                                    "actual_exit_value_usd": _act_val,
-                                                    "actual_exit_value_source": _act_src
-                                                    or "unavailable",
-                                                    "actual_realized_pnl_usd": (
-                                                        _act_val - realized_cost
-                                                    )
-                                                    if _act_val is not None
-                                                    else None,
-                                                    "observed_exit_value_usd": _obs_val,
-                                                    "observed_exit_value_source": "observed_mark_price",
-                                                    "observed_realized_pnl_usd": _obs_val
-                                                    - realized_cost,
-                                                    "exit_execution_style": normalize_execution_style(
-                                                        close_resp.get(
-                                                            "execution_style"
-                                                        ),
-                                                        default="maker",
-                                                    ),
-                                                    "status": "partial",
-                                                    "reason": "scale-out",
-                                                    "mfe_pnl_usd": p.max_favorable_pnl_usd,
-                                                    "mae_pnl_usd": p.max_adverse_pnl_usd,
-                                                }
-                                            )
-
-                                            log(
-                                                f"SCALED OUT! Sold {sold_shares:.2f} shares to lock in cost. Moonbag active."
-                                            )
-                                            maybe_record_cycle_label(
-                                                state,
-                                                "scale-out",
-                                                slug=p.slug,
-                                                side=p.side,
-                                            )
-                                except Exception as e:
-                                    log(f"Scale-out error: {e}")
-                                if (
-                                    p.shares > LOT_EPS_SHARES
-                                    and p.cost_usd > LOT_EPS_COST_USD
-                                ):
-                                    keep_positions.append(p)
-                                else:
-                                    log(
-                                        f"drop residual after scale-out | token={p.token_id} "
-                                        f"remaining_shares={p.shares:.6f} remaining_cost={p.cost_usd:.6f}"
-                                    )
-                                continue
-
-                            if exit_decision.reason == "stop-loss-scale-out":
-                                sell_fraction = effective_stop_loss_partial_fraction(
-                                    dry_run=SETTINGS.dry_run,
-                                )
-                                sell_shares = p.shares * sell_fraction
-
-                                hedge_mode, opp_token = evaluate_hedge_mode(
-                                    ex, p.token_id, p.side, sell_shares
-                                )
-
-                                try:
-                                    close_resp = ex.close_position(
-                                        p.token_id,
-                                        sell_shares,
-                                        simulated_price=float(mark)
-                                        if mark is not None
-                                        else None,
-                                        force_taker=should_force_taker_exit(
-                                            reason=exit_decision.reason,
-                                            dry_run=SETTINGS.dry_run,
-                                            has_panic_dumped=getattr(
-                                                p, "has_panic_dumped", False
-                                            ),
-                                        ),
-                                        hedge_mode=hedge_mode,
-                                        opposite_token_id=opp_token,
-                                        **loss_exit_retry_kwargs(
-                                            reason=exit_decision.reason,
-                                            dry_run=SETTINGS.dry_run,
-                                        ),
-                                    )
-                                    if (
-                                        close_resp.get("ok")
-                                        or float(
-                                            close_resp.get("closed_shares", 0.0) or 0.0
-                                        )
-                                        > 0.0
-                                    ):
-                                        starting_shares = float(p.shares)
-                                        starting_cost = float(p.cost_usd)
-                                        sold_shares = min(
-                                            float(
-                                                close_resp.get("closed_shares", 0.0)
-                                                or 0.0
-                                            ),
-                                            sell_shares,
-                                        )
-                                        if sold_shares > 0:
-                                            remaining_hint = close_resp.get(
-                                                "remaining_shares"
-                                            )
-                                            resolved_remaining_shares = (
-                                                resolve_close_remaining_shares(
-                                                    requested_shares=starting_shares,
-                                                    sold_shares=sold_shares,
-                                                    remaining_hint=remaining_hint,
-                                                    close_request_shares=sell_shares,
-                                                )
-                                            )
-                                            resolved_remaining_shares = preserve_partial_close_residual(
-                                                starting_shares=starting_shares,
-                                                requested_close_shares=sell_shares,
-                                                sold_shares=sold_shares,
-                                                remaining_shares=resolved_remaining_shares,
-                                            )
-                                            sold_shares = resolve_effective_closed_shares(
-                                                starting_shares=starting_shares,
-                                                sold_shares=sold_shares,
-                                                remaining_shares=resolved_remaining_shares,
-                                            )
-                                            avg_cost = starting_cost / max(
-                                                starting_shares, 1e-9
-                                            )
-                                            remaining_cost = (
-                                                avg_cost * resolved_remaining_shares
-                                            )
-                                            realized_cost = max(
-                                                0.0, starting_cost - remaining_cost
-                                            )
-                                            p.shares = resolved_remaining_shares
-                                            p.cost_usd = remaining_cost
-                                            p.has_scaled_out_loss = True
-                                            if (
-                                                resolved_remaining_shares
-                                                > LOT_EPS_SHARES
-                                            ):
-                                                extend_live_sync_protection(p)
-                                            residual_force_close_armed = should_arm_residual_force_close_after_stop_loss_scaleout(
-                                                dry_run=SETTINGS.dry_run,
-                                                requested_close_shares=sell_shares,
-                                                sold_shares=sold_shares,
-                                                starting_cost_usd=starting_cost,
-                                                remaining_shares=resolved_remaining_shares,
-                                                remaining_cost_usd=remaining_cost,
-                                            )
-                                            if residual_force_close_armed:
-                                                p.force_close_only = True
-                                                p.has_panic_dumped = (
-                                                    should_force_taker_exit(
-                                                        reason="residual-force-close",
-                                                        dry_run=SETTINGS.dry_run,
-                                                        has_panic_dumped=getattr(
-                                                            p, "has_panic_dumped", False
-                                                        ),
-                                                    )
-                                                )
-                                                arm_near_stop_poll(p)
-                                            else:
-                                                p.force_close_only = False
-
-                                            _raw_act_val = close_resp.get(
-                                                "actual_exit_value_usd", 0.0
-                                            )
-                                            _raw_act_src = str(
-                                                close_resp.get(
-                                                    "actual_exit_value_source"
-                                                )
-                                                or "unavailable"
-                                            )
-                                            _act_val, _act_src = (
-                                                sanitize_live_actual_exit_value(
-                                                    actual_exit_value_usd=_raw_act_val,
-                                                    actual_exit_value_source=_raw_act_src,
-                                                    sold_shares=sold_shares,
-                                                    mark=mark,
-                                                    dry_run=SETTINGS.dry_run,
-                                                )
-                                            )
-                                            _obs_val = observed_exit_value_from_mark(
-                                                sold_shares=sold_shares, mark=mark
-                                            )
-                                            _realized_pnl = realized_exit_pnl(
-                                                _act_val,
-                                                _obs_val,
-                                                realized_cost,
-                                            )
-                                            risk.daily_pnl += _realized_pnl
-                                            append_event(
-                                                {
-                                                    "kind": "exit",
-                                                    "slug": p.slug,
-                                                    "side": p.side,
-                                                    "token_id": p.token_id,
-                                                    "position_id": p.position_id,
-                                                    "closed_shares": sold_shares,
-                                                    "remaining_shares": resolved_remaining_shares,
-                                                    "realized_cost_usd": realized_cost,
-                                                    "actual_exit_value_usd": _act_val,
-                                                    "actual_exit_value_source": _act_src
-                                                    or "unavailable",
-                                                    "actual_realized_pnl_usd": (
-                                                        _act_val - realized_cost
-                                                    )
-                                                    if _act_val is not None
-                                                    else None,
-                                                    "observed_exit_value_usd": _obs_val,
-                                                    "observed_exit_value_source": "observed_mark_price",
-                                                    "observed_realized_pnl_usd": _obs_val
-                                                    - realized_cost,
-                                                    "exit_execution_style": normalize_execution_style(
-                                                        close_resp.get(
-                                                            "execution_style"
-                                                        ),
-                                                        default="maker",
-                                                    ),
-                                                    "status": "partial",
-                                                    "reason": "stop-loss-scale-out",
-                                                    "mfe_pnl_usd": p.max_favorable_pnl_usd,
-                                                    "mae_pnl_usd": p.max_adverse_pnl_usd,
-                                                }
-                                            )
-
-                                            log(
-                                                f"STOP-LOSS SCALED OUT! Sold {sold_shares:.2f} shares to mitigate risk."
-                                            )
-                                            if residual_force_close_armed:
-                                                scaleout_fill_ratio = close_fill_ratio(
-                                                    requested_close_shares=sell_shares,
-                                                    sold_shares=sold_shares,
-                                                )
-                                                remaining_cost_ratio = (
-                                                    remaining_cost
-                                                    / max(starting_cost, 1e-9)
-                                                )
-                                                log(
-                                                    f"stop-loss scale-out underfilled | token={p.token_id} "
-                                                    f"fill_ratio={scaleout_fill_ratio:.2%} remaining_cost_ratio={remaining_cost_ratio:.2%} "
-                                                    f"remaining_shares={p.shares:.6f} remaining_cost={p.cost_usd:.6f} -> escalating residual cleanup"
-                                                )
-                                            if getattr(p, "force_close_only", False):
-                                                log(
-                                                    f"stop-loss tail cleanup armed | token={p.token_id} "
-                                                    f"remaining_shares={p.shares:.6f} remaining_cost={p.cost_usd:.6f}"
-                                                )
-                                            if should_block_same_market_reentry(
-                                                "stop-loss-scale-out",
-                                                remaining_shares=resolved_remaining_shares,
-                                                realized_pnl_usd=(
-                                                    (_act_val - realized_cost)
-                                                    if _act_val is not None
-                                                    else (_obs_val - realized_cost)
-                                                ),
-                                            ):
-                                                same_market_reentry_block_slug = p.slug
-                                                log(
-                                                    f"same-market reentry blocked | slug={p.slug} side={p.side} "
-                                                    "reason=stop-loss-scale-out"
-                                                )
-                                            maybe_record_cycle_label(
-                                                state,
-                                                "stop-loss-scale-out",
-                                                slug=p.slug,
-                                                side=p.side,
-                                            )
-                                except Exception as e:
-                                    log(f"Stop-loss scale-out error: {e}")
-                                if (
-                                    p.shares > LOT_EPS_SHARES
-                                    and p.cost_usd > LOT_EPS_COST_USD
-                                ):
-                                    keep_positions.append(p)
-                                else:
-                                    log(
-                                        f"drop residual after stop-loss scale-out | token={p.token_id} "
-                                        f"remaining_shares={p.shares:.6f} remaining_cost={p.cost_usd:.6f}"
-                                    )
-                                continue
-
-                            if exit_decision.reason == "take-profit-principal":
-                                current_value = max(
-                                    float(profit_reference_value or 0.0), 1e-9
-                                )
-                                p.entry_shares = max(
-                                    float(getattr(p, "entry_shares", 0.0) or 0.0),
-                                    float(p.shares or 0.0),
-                                )
-                                target_runner_shares = target_runner_remaining_shares(p)
-                                sell_fraction = principal_extraction_sell_fraction(
-                                    current_value,
-                                    p.cost_usd,
-                                    current_shares=p.shares,
-                                    target_remaining_shares=target_runner_shares,
-                                )
-                                sell_shares = p.shares * sell_fraction
-                                target_principal_usd = max(p.cost_usd, 0.0)
-
-                                try:
-                                    close_resp = ex.close_position(
-                                        p.token_id,
-                                        sell_shares,
-                                        simulated_price=float(mark)
-                                        if mark is not None
-                                        else None,
-                                        force_taker=True,
-                                    )
-                                    if (
-                                        close_resp.get("ok")
-                                        or float(
-                                            close_resp.get("closed_shares", 0.0) or 0.0
-                                        )
-                                        > 0.0
-                                    ):
-                                        starting_shares = float(p.shares)
-                                        starting_cost = float(p.cost_usd)
-                                        sold_shares = min(
-                                            float(
-                                                close_resp.get("closed_shares", 0.0)
-                                                or 0.0
-                                            ),
-                                            sell_shares,
-                                        )
-                                        if sold_shares > 0:
-                                            remaining_hint = close_resp.get(
-                                                "remaining_shares"
-                                            )
-                                            resolved_remaining_shares = (
-                                                resolve_close_remaining_shares(
-                                                    requested_shares=starting_shares,
-                                                    sold_shares=sold_shares,
-                                                    remaining_hint=remaining_hint,
-                                                    close_request_shares=sell_shares,
-                                                )
-                                            )
-                                            resolved_remaining_shares = preserve_partial_close_residual(
-                                                starting_shares=starting_shares,
-                                                requested_close_shares=sell_shares,
-                                                sold_shares=sold_shares,
-                                                remaining_shares=resolved_remaining_shares,
-                                            )
-                                            sold_shares = resolve_effective_closed_shares(
-                                                starting_shares=starting_shares,
-                                                sold_shares=sold_shares,
-                                                remaining_shares=resolved_remaining_shares,
-                                            )
-                                            avg_cost = starting_cost / max(
-                                                starting_shares, 1e-9
-                                            )
-                                            remaining_cost = (
-                                                avg_cost * resolved_remaining_shares
-                                            )
-                                            realized_cost = max(
-                                                0.0, starting_cost - remaining_cost
-                                            )
-                                            actual_fraction = sold_shares / max(
-                                                starting_shares, 1e-9
-                                            )
-                                            p.shares = resolved_remaining_shares
-                                            p.cost_usd = remaining_cost
-
-                                            principal_exit_event = build_take_profit_principal_exit_event(
-                                                pos=p,
-                                                sold_shares=sold_shares,
-                                                remaining_shares=resolved_remaining_shares,
-                                                realized_cost=realized_cost,
-                                                mark=mark,
-                                                close_resp=close_resp,
-                                                target_principal_usd=target_principal_usd,
-                                                dry_run=SETTINGS.dry_run,
-                                            )
-                                            _act_val = principal_exit_event[
-                                                "actual_exit_value_usd"
-                                            ]
-                                            _principal_recovered = principal_exit_event[
-                                                "principal_recovered_usd"
-                                            ]
-                                            principal_done = bool(
-                                                principal_exit_event["principal_done"]
-                                            )
-                                            p.has_extracted_principal = principal_done
-                                            if (
-                                                resolved_remaining_shares
-                                                > LOT_EPS_SHARES
-                                            ):
-                                                extend_live_sync_protection(p)
-                                            if principal_done:
-                                                remaining_runner_value = (
-                                                    current_value
-                                                    * max(0.0, 1.0 - actual_fraction)
-                                                )
-                                                p.runner_peak_value_usd = max(
-                                                    0.0,
-                                                    float(
-                                                        remaining_runner_value or 0.0
-                                                    ),
-                                                )
-                                                p.runner_peak_ts = time.time()
-                                            _obs_val = principal_exit_event[
-                                                "observed_exit_value_usd"
-                                            ]
-                                            _realized_pnl = (
-                                                principal_exit_event[
-                                                    "actual_realized_pnl_usd"
-                                                ]
-                                                if principal_exit_event[
-                                                    "actual_realized_pnl_usd"
-                                                ]
-                                                is not None
-                                                else principal_exit_event[
-                                                    "observed_realized_pnl_usd"
-                                                ]
-                                            )
-                                            risk.daily_pnl += _realized_pnl
-                                            tp_reason = str(
-                                                principal_exit_event["reason"]
-                                            )
-                                            append_event(principal_exit_event)
-
-                                            if principal_done:
-                                                log(
-                                                    f"PRINCIPAL EXTRACTED! Sold {sold_shares:.2f} shares. Risk-Free Moonbag active."
-                                                )
-                                                if should_block_same_market_reentry(
-                                                    tp_reason,
-                                                    remaining_shares=resolved_remaining_shares,
-                                                    realized_pnl_usd=_realized_pnl,
-                                                ):
-                                                    same_market_reentry_block_slug = (
-                                                        p.slug
-                                                    )
-                                                    log(
-                                                        f"same-market reentry blocked | slug={p.slug} side={p.side} "
-                                                        f"reason={tp_reason}"
-                                                    )
-                                                maybe_record_cycle_label(
-                                                    state,
-                                                    "take-profit-principal",
-                                                    slug=p.slug,
-                                                    side=p.side,
-                                                )
-                                            else:
-                                                log(
-                                                    f"principal extraction incomplete | side={p.side} "
-                                                    f"recovered=${_principal_recovered:.4f} target=${target_principal_usd:.4f} "
-                                                    f"sold_shares={sold_shares:.4f} remaining_shares={p.shares:.4f} "
-                                                    f"runner_target={target_runner_shares:.4f}"
-                                                )
-                                                maybe_record_cycle_label(
-                                                    state,
-                                                    "take-profit-principal-partial",
-                                                    slug=p.slug,
-                                                    side=p.side,
-                                                )
-                                    else:
-                                        log(
-                                            f"take-profit principal close failed: {close_resp}"
-                                        )
-                                except Exception as e:
-                                    log(f"Take-profit principal error: {e}")
-                                if (
-                                    p.shares > LOT_EPS_SHARES
-                                    and p.cost_usd > LOT_EPS_COST_USD
-                                ):
-                                    keep_positions.append(p)
-                                else:
-                                    log(
-                                        f"drop residual after principal extraction | token={p.token_id} "
-                                        f"remaining_shares={p.shares:.6f} remaining_cost={p.cost_usd:.6f}"
-                                    )
-                                continue
-
-                            if exit_decision.reason == "take-profit-partial":
-                                sell_fraction = min(
-                                    0.95,
-                                    max(
-                                        0.05,
-                                        float(
-                                            getattr(
-                                                SETTINGS,
-                                                "take_profit_partial_fraction",
-                                                0.30,
-                                            )
-                                            or 0.30
-                                        ),
-                                    ),
-                                )
-                                sell_shares = p.shares * sell_fraction
-                                try:
-                                    close_resp = ex.close_position(
-                                        p.token_id,
-                                        sell_shares,
-                                        simulated_price=float(mark)
-                                        if mark is not None
-                                        else None,
-                                        force_taker=(
-                                            getattr(p, "has_panic_dumped", False)
-                                            or should_force_taker_take_profit(
-                                                dry_run=SETTINGS.dry_run
-                                            )
-                                        ),
-                                    )
-                                    if (
-                                        close_resp.get("ok")
-                                        or float(
-                                            close_resp.get("closed_shares", 0.0) or 0.0
-                                        )
-                                        > 0.0
-                                    ):
-                                        starting_shares = float(p.shares)
-                                        starting_cost = float(p.cost_usd)
-                                        sold_shares = min(
-                                            float(
-                                                close_resp.get("closed_shares", 0.0)
-                                                or 0.0
-                                            ),
-                                            sell_shares,
-                                        )
-                                        if sold_shares > 0:
-                                            remaining_hint = close_resp.get(
-                                                "remaining_shares"
-                                            )
-                                            resolved_remaining_shares = (
-                                                resolve_close_remaining_shares(
-                                                    requested_shares=starting_shares,
-                                                    sold_shares=sold_shares,
-                                                    remaining_hint=remaining_hint,
-                                                    close_request_shares=sell_shares,
-                                                )
-                                            )
-                                            resolved_remaining_shares = preserve_partial_close_residual(
-                                                starting_shares=starting_shares,
-                                                requested_close_shares=sell_shares,
-                                                sold_shares=sold_shares,
-                                                remaining_shares=resolved_remaining_shares,
-                                            )
-                                            sold_shares = resolve_effective_closed_shares(
-                                                starting_shares=starting_shares,
-                                                sold_shares=sold_shares,
-                                                remaining_shares=resolved_remaining_shares,
-                                            )
-                                            avg_cost = starting_cost / max(
-                                                starting_shares, 1e-9
-                                            )
-                                            remaining_cost = (
-                                                avg_cost * resolved_remaining_shares
-                                            )
-                                            realized_cost = max(
-                                                0.0, starting_cost - remaining_cost
-                                            )
-
-                                            _raw_act_val = close_resp.get(
-                                                "actual_exit_value_usd", 0.0
-                                            )
-                                            _raw_act_src = str(
-                                                close_resp.get(
-                                                    "actual_exit_value_source"
-                                                )
-                                                or "unavailable"
-                                            )
-                                            _act_val, _act_src = (
-                                                sanitize_live_actual_exit_value(
-                                                    actual_exit_value_usd=_raw_act_val,
-                                                    actual_exit_value_source=_raw_act_src,
-                                                    sold_shares=sold_shares,
-                                                    mark=mark,
-                                                    dry_run=SETTINGS.dry_run,
-                                                )
-                                            )
-                                            _obs_val = observed_exit_value_from_mark(
-                                                sold_shares=sold_shares, mark=mark
-                                            )
-                                            _realized_pnl = (
-                                                (_act_val - realized_cost)
-                                                if _act_val is not None
-                                                else (_obs_val - realized_cost)
-                                            )
-                                            risk.daily_pnl += _realized_pnl
-
-                                            p.shares = resolved_remaining_shares
-                                            p.cost_usd = remaining_cost
-                                            p.has_taken_partial = True
-                                            if (
-                                                resolved_remaining_shares
-                                                > LOT_EPS_SHARES
-                                            ):
-                                                extend_live_sync_protection(p)
-                                            append_event(
-                                                {
-                                                    "kind": "exit",
-                                                    "slug": p.slug,
-                                                    "side": p.side,
-                                                    "token_id": p.token_id,
-                                                    "position_id": p.position_id,
-                                                    "closed_shares": sold_shares,
-                                                    "remaining_shares": resolved_remaining_shares,
-                                                    "realized_cost_usd": realized_cost,
-                                                    "actual_exit_value_usd": _act_val,
-                                                    "actual_exit_value_source": _act_src
-                                                    or "unavailable",
-                                                    "actual_realized_pnl_usd": (
-                                                        _act_val - realized_cost
-                                                    )
-                                                    if _act_val is not None
-                                                    else None,
-                                                    "observed_exit_value_usd": _obs_val,
-                                                    "observed_exit_value_source": "observed_mark_price",
-                                                    "observed_realized_pnl_usd": _obs_val
-                                                    - realized_cost,
-                                                    "exit_execution_style": normalize_execution_style(
-                                                        close_resp.get(
-                                                            "execution_style"
-                                                        ),
-                                                        default="maker",
-                                                    ),
-                                                    "status": "partial",
-                                                    "reason": "take-profit-partial",
-                                                    "mfe_pnl_usd": p.max_favorable_pnl_usd,
-                                                    "mae_pnl_usd": p.max_adverse_pnl_usd,
-                                                }
-                                            )
-                                            log(
-                                                f"PARTIAL PROFIT TAKEN! Sold {sold_shares:.2f} shares "
-                                                f"({sell_fraction:.0%} clip at +{getattr(SETTINGS, 'take_profit_soft_pct', 0.30):.0%} threshold)."
-                                            )
-                                            if should_block_same_market_reentry(
-                                                "take-profit-partial",
-                                                remaining_shares=resolved_remaining_shares,
-                                                realized_pnl_usd=_realized_pnl,
-                                            ):
-                                                same_market_reentry_block_slug = p.slug
-                                                log(
-                                                    f"same-market reentry blocked | slug={p.slug} side={p.side} "
-                                                    "reason=take-profit-partial"
-                                                )
-                                            maybe_record_cycle_label(
-                                                state,
-                                                "take-profit-partial",
-                                                slug=p.slug,
-                                                side=p.side,
-                                            )
-                                    else:
-                                        log(
-                                            f"take-profit partial close failed: {close_resp}"
-                                        )
-                                except Exception as e:
-                                    log(f"Take-profit partial error: {e}")
-                                if (
-                                    p.shares > LOT_EPS_SHARES
-                                    and p.cost_usd > LOT_EPS_COST_USD
-                                ):
-                                    keep_positions.append(p)
-                                else:
-                                    log(
-                                        f"drop residual after take-profit partial | token={p.token_id} "
-                                        f"remaining_shares={p.shares:.6f} remaining_cost={p.cost_usd:.6f}"
-                                    )
-                                continue
-
                             try:
-                                close_retry_kwargs = loss_exit_retry_kwargs(
-                                    reason=exit_decision.reason,
-                                    dry_run=SETTINGS.dry_run,
-                                )
-                                close_retry_kwargs.update(
-                                    emergency_exit_retry_kwargs(
-                                        reason=exit_decision.reason,
-                                        secs_left=secs_left,
-                                        dry_run=SETTINGS.dry_run,
-                                    )
-                                )
-                                loss_tail_pct = loss_exit_tail_fraction(
-                                    reason=exit_decision.reason,
-                                    pnl_pct=pnl_pct,
-                                )
                                 sell_shares = p.shares
-                                if loss_tail_pct > 0.0:
-                                    loss_tail_target = p.shares * loss_tail_pct
-                                    sell_target = p.shares - loss_tail_target
-                                    if sell_target > 0.0001:
-                                        sell_shares = sell_target
-
-                                hedge_mode, opp_token = evaluate_hedge_mode(
-                                    ex, p.token_id, p.side, sell_shares
-                                )
-
                                 close_resp = ex.close_position(
                                     p.token_id,
                                     sell_shares,
-                                    simulated_price=float(mark)
-                                    if mark is not None
-                                    else None,
-                                    force_taker=(
-                                        should_force_taker_exit(
-                                            reason=exit_decision.reason,
-                                            dry_run=SETTINGS.dry_run,
-                                            has_panic_dumped=getattr(
-                                                p, "has_panic_dumped", False
-                                            ),
-                                        )
-                                        or should_force_taker_profit_protection(
-                                            reason=exit_decision.reason,
-                                            dry_run=SETTINGS.dry_run,
-                                        )
-                                    ),
-                                    hedge_mode=hedge_mode,
-                                    opposite_token_id=opp_token,
-                                    **close_retry_kwargs,
+                                    simulated_price=float(mark) if mark is not None else None,
+                                    force_taker=should_force_taker_exit(
+                                        reason=exit_decision.reason,
+                                        dry_run=SETTINGS.dry_run,
+                                        has_panic_dumped=getattr(p, "has_panic_dumped", False),
+                                    )
                                 )
                                 if (
                                     close_resp.get("ok")
-                                    or float(
-                                        close_resp.get("closed_shares", 0.0) or 0.0
-                                    )
-                                    > 0.0
+                                    or float(close_resp.get("closed_shares", 0.0) or 0.0) > 0.0
                                 ):
                                     starting_shares = float(p.shares)
                                     starting_cost = float(p.cost_usd)
                                     sold_shares = min(
-                                        float(
-                                            close_resp.get("closed_shares", 0.0) or 0.0
-                                        ),
+                                        float(close_resp.get("closed_shares", 0.0) or 0.0),
                                         starting_shares,
                                     )
                                     remaining_hint = close_resp.get("remaining_shares")
                                     if sold_shares <= 0:
                                         flags.close_fail_streak += 1
-                                        if urgent_exit:
-                                            flags.panic_exit_mode = True
-                                            panic_market_slug = p.slug
+                                        keep_positions.append(p)
+                                        continue
+                                    
+                                    flags.close_fail_streak = 0
+                                    closed_any = True
+                                    remaining_shares = resolve_close_remaining_shares(
+                                        requested_shares=starting_shares,
+                                        sold_shares=sold_shares,
+                                        remaining_hint=remaining_hint,
+                                        close_request_shares=sell_shares,
+                                    )
+                                    remaining_shares = preserve_partial_close_residual(
+                                        starting_shares=starting_shares,
+                                        requested_close_shares=sell_shares,
+                                        sold_shares=sold_shares,
+                                        remaining_shares=remaining_shares,
+                                    )
+                                    sold_shares = resolve_effective_closed_shares(
+                                        starting_shares=starting_shares,
+                                        sold_shares=sold_shares,
+                                        remaining_shares=remaining_shares,
+                                    )
+                                    remaining_cost = p.avg_cost_per_share * remaining_shares
+                                    realized_cost = max(0.0, starting_cost - remaining_cost)
+                                    
+                                    observed_exit_value_usd = observed_exit_value_from_mark(
+                                        sold_shares=sold_shares,
+                                        mark=mark,
+                                    )
+                                    observed_realized_pnl_usd = observed_exit_value_usd - realized_cost
+                                    observed_realized_return_pct = observed_realized_pnl_usd / max(realized_cost, 1e-9)
 
-                                        live_after_fail = None
-                                        try:
-                                            live_after_fail = ex.get_position(
-                                                p.token_id
-                                            )
-                                        except Exception as reconcile_err:
-                                            log(
-                                                f"reconcile after close fail errored | token={p.token_id} err={reconcile_err}"
-                                            )
+                                    actual_exit_value_usd = float(close_resp.get("actual_exit_value_usd", 0.0) or 0.0)
+                                    actual_exit_value_source = str(close_resp.get("actual_exit_value_source") or "unavailable")
+                                    
+                                    (actual_exit_value_usd, actual_exit_value_source) = sanitize_live_actual_exit_value(
+                                        actual_exit_value_usd=actual_exit_value_usd,
+                                        actual_exit_value_source=actual_exit_value_source,
+                                        sold_shares=sold_shares,
+                                        mark=mark,
+                                        dry_run=SETTINGS.dry_run,
+                                    )
 
-                                        err_text = str(close_resp.get("error") or "")
-                                        if (
-                                            live_after_fail is None
-                                            or float(live_after_fail.size)
-                                            <= LOT_EPS_SHARES
-                                        ):
-                                            log(
-                                                f"{exit_decision.reason} close failed but live position missing -> drop local lot | "
-                                                f"token={p.token_id} err={err_text or 'n/a'}"
-                                            )
-                                        elif (
-                                            "not enough balance" in err_text.lower()
-                                            or "allowance" in err_text.lower()
-                                            or (
-                                                live_after_fail is not None
-                                                and float(live_after_fail.size)
-                                                < max(
-                                                    LOT_EPS_SHARES,
-                                                    p.shares - LOT_EPS_SHARES,
-                                                )
-                                            )
-                                        ):
-                                            resized_shares = float(live_after_fail.size)
-                                            resized_cost = (
-                                                p.avg_cost_per_share * resized_shares
-                                            )
-                                            residual_force_close = (
-                                                should_force_full_loss_exit(
-                                                    reason=exit_decision.reason,
-                                                    dry_run=SETTINGS.dry_run,
-                                                )
-                                            )
-                                            log(
-                                                f"{exit_decision.reason} close reconciled live position | token={p.token_id} "
-                                                f"local_shares={p.shares:.6f} live_shares={resized_shares:.6f} err={err_text or 'n/a'}"
-                                            )
-                                            keep_positions.append(
-                                                replace(
-                                                    p,
-                                                    shares=resized_shares,
-                                                    cost_usd=resized_cost,
-                                                    last_synced_size=float(
-                                                        live_after_fail.size
-                                                    ),
-                                                    last_synced_initial_value=float(
-                                                        live_after_fail.initial_value
-                                                    ),
-                                                    last_synced_current_value=float(
-                                                        live_after_fail.current_value
-                                                    ),
-                                                    last_synced_cash_pnl=float(
-                                                        live_after_fail.cash_pnl
-                                                    ),
-                                                    last_synced_at=time.time(),
-                                                    max_favorable_ts=float(
-                                                        getattr(
-                                                            p,
-                                                            "max_favorable_ts",
-                                                            p.opened_ts,
-                                                        )
-                                                        or p.opened_ts
-                                                        or 0.0
-                                                    ),
-                                                    has_panic_dumped=should_force_taker_exit(
-                                                        reason=exit_decision.reason,
-                                                        dry_run=SETTINGS.dry_run,
-                                                        has_panic_dumped=getattr(
-                                                            p, "has_panic_dumped", False
-                                                        ),
-                                                    ),
-                                                    force_close_only=residual_force_close,
-                                                )
-                                            )
-                                        else:
-                                            log(
-                                                f"{exit_decision.reason} close failed: zero shares closed | resp={close_resp}"
-                                            )
-                                            keep_positions.append(p)
+                                    if actual_exit_value_usd is not None:
+                                        actual_realized_pnl_usd = actual_exit_value_usd - realized_cost
+                                        actual_realized_return_pct = actual_realized_pnl_usd / max(realized_cost, 1e-9)
+                                        risk.daily_pnl += actual_realized_pnl_usd
+                                        pnl_source = "actual_execution"
                                     else:
-                                        flags.close_fail_streak = 0
-                                        closed_any = True
-                                        remaining_shares = (
-                                            resolve_close_remaining_shares(
-                                                requested_shares=starting_shares,
-                                                sold_shares=sold_shares,
-                                                remaining_hint=remaining_hint,
-                                                close_request_shares=sell_shares,
-                                            )
-                                        )
-                                        remaining_shares = (
-                                            preserve_partial_close_residual(
-                                                starting_shares=starting_shares,
-                                                requested_close_shares=sell_shares,
-                                                sold_shares=sold_shares,
-                                                remaining_shares=remaining_shares,
-                                            )
-                                        )
-                                        sold_shares = resolve_effective_closed_shares(
-                                            starting_shares=starting_shares,
-                                            sold_shares=sold_shares,
-                                            remaining_shares=remaining_shares,
-                                        )
-                                        remaining_cost = (
-                                            p.avg_cost_per_share * remaining_shares
-                                        )
-                                        realized_cost = max(
-                                            0.0, starting_cost - remaining_cost
-                                        )
-                                        observed_exit_value_usd = (
-                                            observed_exit_value_from_mark(
-                                                sold_shares=sold_shares,
-                                                mark=mark,
-                                            )
-                                        )
-                                        observed_realized_pnl_usd = (
-                                            observed_exit_value_usd - realized_cost
-                                        )
-                                        observed_realized_return_pct = (
-                                            observed_realized_pnl_usd
-                                            / max(realized_cost, 1e-9)
-                                        )
+                                        actual_realized_pnl_usd = None
+                                        actual_realized_return_pct = None
+                                        risk.daily_pnl += observed_realized_pnl_usd
+                                        pnl_source = "observed_mark"
 
-                                        actual_exit_value_usd = float(
-                                            close_resp.get("actual_exit_value_usd", 0.0)
-                                            or 0.0
+                                    p.shares = remaining_shares
+                                    p.cost_usd = remaining_cost
+                                    
+                                    exit_event_data = {
+                                        "kind": "exit",
+                                        "slug": p.slug,
+                                        "side": p.side,
+                                        "token_id": p.token_id,
+                                        "position_id": p.position_id,
+                                        "closed_shares": sold_shares,
+                                        "remaining_shares": remaining_shares,
+                                        "realized_cost_usd": realized_cost,
+                                        "actual_exit_value_usd": actual_exit_value_usd,
+                                        "actual_exit_value_source": actual_exit_value_source,
+                                        "actual_realized_pnl_usd": actual_realized_pnl_usd,
+                                        "observed_mark_price": float(mark),
+                                        "observed_exit_value_usd": observed_exit_value_usd,
+                                        "observed_realized_pnl_usd": observed_realized_pnl_usd,
+                                        "pnl_source": pnl_source,
+                                        "exit_execution_style": normalize_execution_style(close_resp.get("execution_style"), default="maker"),
+                                        "reason": exit_decision.reason,
+                                        "mae_pnl_usd": p.max_adverse_pnl_usd,
+                                        "mfe_pnl_usd": p.max_favorable_pnl_usd,
+                                    }
+                                    exit_event = append_event(exit_event_data)
+                                    log(format_exit_summary(exit_event))
+                                    actual_bits = ""
+                                    if actual_realized_pnl_usd is not None:
+                                        actual_bits = (
+                                            f" actual_realized_pnl_usd={actual_realized_pnl_usd:+.4f}"
+                                            f" actual_return={actual_realized_return_pct:.2%}"
                                         )
-                                        actual_exit_value_source = str(
-                                            close_resp.get("actual_exit_value_source")
-                                            or ""
-                                        )
-                                        close_response_value = close_resp.get(
-                                            "close_response_value"
-                                        )
-                                        close_response_value_source = str(
-                                            close_resp.get(
-                                                "close_response_value_source"
-                                            )
-                                            or ""
-                                        )
-                                        close_response_amount_fields = (
-                                            close_resp.get(
-                                                "close_response_amount_fields"
-                                            )
-                                            or {}
-                                        )
-
-                                        if (
-                                            close_response_value is not None
-                                            and float(close_response_value) > 0
-                                            and "balance" in close_response_value_source
-                                        ):
-                                            actual_exit_value_usd = float(
-                                                close_response_value
-                                            )
-                                            actual_exit_value_source = (
-                                                close_response_value_source
-                                                or actual_exit_value_source
-                                                or "close_response_value"
-                                            )
-
-                                        (
-                                            actual_exit_value_usd,
-                                            actual_exit_value_source,
-                                        ) = sanitize_live_actual_exit_value(
-                                            actual_exit_value_usd=actual_exit_value_usd,
-                                            actual_exit_value_source=actual_exit_value_source,
-                                            sold_shares=sold_shares,
-                                            mark=mark,
-                                            dry_run=SETTINGS.dry_run,
-                                        )
-
-                                        if (
-                                            actual_exit_value_usd is not None
-                                            and actual_exit_value_source
-                                            == "cash_balance_delta"
-                                        ):
-                                            actual_realized_pnl_usd = (
-                                                actual_exit_value_usd - realized_cost
-                                            )
-                                            actual_realized_return_pct = (
-                                                actual_realized_pnl_usd
-                                                / max(realized_cost, 1e-9)
-                                            )
-                                            pnl_source = "actual_cash_recovered"
-                                            risk.daily_pnl += actual_realized_pnl_usd
-                                        elif (
-                                            actual_exit_value_usd is not None
-                                            and "sanity-rejected"
-                                            not in actual_exit_value_source
-                                        ):
-                                            actual_realized_pnl_usd = (
-                                                actual_exit_value_usd - realized_cost
-                                            )
-                                            actual_realized_return_pct = (
-                                                actual_realized_pnl_usd
-                                                / max(realized_cost, 1e-9)
-                                            )
-                                            pnl_source = "actual_close_response_value"
-                                            risk.daily_pnl += actual_realized_pnl_usd
-                                        else:
-                                            actual_exit_value_usd = (
-                                                actual_exit_value_usd
-                                                if actual_exit_value_usd
-                                                and actual_exit_value_usd > 0
-                                                else None
-                                            )
-                                            actual_realized_pnl_usd = None
-                                            actual_realized_return_pct = None
-                                            pnl_source = "observed_mark_estimate"
-                                            risk.daily_pnl += observed_realized_pnl_usd
-
-                                        if (
-                                            actual_realized_pnl_usd
-                                            if actual_realized_pnl_usd is not None
-                                            else observed_realized_pnl_usd
-                                        ) < 0:
-                                            flags.live_consec_losses += 1
-                                            flags.last_loss_side = p.side
-                                        else:
-                                            flags.live_consec_losses = 0
-                                            flags.last_loss_side = ""
-                                        risk.consec_losses = flags.live_consec_losses
-
-                                        quality_pnl = (
-                                            actual_realized_pnl_usd
-                                            if actual_realized_pnl_usd is not None
-                                            else observed_realized_pnl_usd
-                                        )
-                                        entry_quality = (
-                                            "good-entry"
-                                            if quality_pnl > 0
-                                            else "bad-entry"
-                                            if quality_pnl < 0
-                                            else "flat-entry"
-                                        )
-                                        exit_event = append_event(
-                                            {
-                                                "kind": "exit",
-                                                "slug": p.slug,
-                                                "side": p.side,
-                                                "token_id": p.token_id,
-                                                "position_id": p.position_id,
-                                                "closed_shares": sold_shares,
-                                                "remaining_shares": remaining_shares,
-                                                "realized_cost_usd": realized_cost,
-                                                "actual_exit_value_usd": actual_exit_value_usd,
-                                                "actual_exit_value_source": actual_exit_value_source
-                                                or "unavailable",
-                                                "actual_realized_pnl_usd": actual_realized_pnl_usd,
-                                                "actual_realized_return_pct": actual_realized_return_pct,
-                                                "actual_close_response_value": close_response_value,
-                                                "actual_close_response_value_source": close_response_value_source
-                                                or "close_response_unavailable",
-                                                "actual_close_response_amount_fields": close_response_amount_fields,
-                                                "observed_mark_price": float(mark),
-                                                "observed_exit_value_usd": observed_exit_value_usd,
-                                                "observed_exit_value_source": "observed_mark_price",
-                                                "observed_realized_pnl_usd": observed_realized_pnl_usd,
-                                                "observed_realized_return_pct": observed_realized_return_pct,
-                                                "pnl_source": pnl_source,
-                                                "exit_execution_style": normalize_execution_style(
-                                                    close_resp.get("execution_style"),
-                                                    default="maker",
-                                                ),
-                                                "reason": exit_decision.reason,
-                                                "entry_quality": entry_quality,
-                                                "mae_pnl_usd": p.max_adverse_pnl_usd,
-                                                "mfe_pnl_usd": p.max_favorable_pnl_usd,
-                                                "mae_value_usd": p.max_adverse_value_usd,
-                                                "mfe_value_usd": p.max_favorable_value_usd,
-                                            }
-                                        )
-                                        log(format_exit_summary(exit_event))
-                                        actual_bits = ""
-                                        if actual_realized_pnl_usd is not None:
-                                            actual_bits = (
-                                                f" actual_realized_pnl_usd={actual_realized_pnl_usd:+.4f}"
-                                                f" actual_return={actual_realized_return_pct:.2%}"
-                                            )
-                                        log(
-                                            f"{exit_decision.reason} close | side={p.side} pnl_pct={pnl_pct:.2%} hard_stop_pnl_pct={hard_stop_pnl_pct:.2%}"
-                                            f"{actual_bits} observed_pnl_usd={observed_realized_pnl_usd:+.4f} hold={hold_sec:.0f}s "
-                                            f"consec_losses={flags.live_consec_losses} resp={close_resp}"
-                                        )
-                                        if should_block_same_market_reentry(
-                                            exit_decision.reason,
-                                            remaining_shares=remaining_shares,
-                                            realized_pnl_usd=(
-                                                actual_realized_pnl_usd
-                                                if actual_realized_pnl_usd is not None
-                                                else observed_realized_pnl_usd
-                                            ),
-                                        ):
-                                            same_market_reentry_block_slug = p.slug
-                                            log(
-                                                f"same-market reentry blocked | slug={p.slug} side={p.side} "
-                                                f"reason={exit_decision.reason}"
-                                            )
-
-                                        if p.entry_reason:
-                                            from core.learning import SCOREBOARD
-                                            from core.exchange import get_fee_rate_bps
-                                            
-                                            raw_pnl_pct = (
-                                                actual_realized_return_pct
-                                                if actual_realized_return_pct is not None
-                                                else observed_realized_return_pct
-                                            )
-                                            
-                                            fee_rate = (get_fee_rate_bps(p.token_id) or 156.0) / 10000.0
-                                            
-                                            # If maker, exit is free. If taker, subtract fee. 
-                                            # Simplified estimation: if exit was taker, apply exit fee.
-                                            # We apply entry fee unconditionally here as a baseline penalty for the trade.
-                                            exit_style = exit_resp.get("execution_style", "unknown")
-                                            fee_penalty = fee_rate # entry fee
-                                            if exit_style == "taker" or force_taker_exit:
-                                                fee_penalty += fee_rate
-                                                
-                                            fee_adj_pnl_pct = raw_pnl_pct - fee_penalty
-
-                                            # High-confidence learning rule for production 15m
-                                            # Only learn from actual fills and confirmed outcomes.
-                                            can_learn = True
-                                            if str(getattr(p, "source", "")).strip().lower() == "observed-only":
-                                                can_learn = False
-                                            if actual_realized_return_pct is None:
-                                                can_learn = False
-                                            if exit_style == "unknown" and not SETTINGS.dry_run:
-                                                # In live, unknown exit style means we lack execution truth.
-                                                can_learn = False
-                                            
-                                            if can_learn:
-                                                SCOREBOARD.record_outcome(
-                                                    strategy_name=p.entry_reason,
-                                                    fee_adjusted_pnl_pct=fee_adj_pnl_pct,
-                                                    timestamp=time.time(),
-                                                    execution_style=exit_style,
-                                                    price_bucket="unknown",
-                                                    secs_left_bucket="unknown"
-                                                )
-                                            else:
-                                                log(f"learning: skipped recording outcome for {p.entry_reason} due to low confidence (source={p.source}, actual={actual_realized_return_pct is not None})")
-                                        if (
-                                            remaining_shares > LOT_EPS_SHARES
-                                            and remaining_cost > LOT_EPS_COST_USD
-                                        ):
-                                            is_loss_tail_triggered = loss_tail_pct > 0.0
-                                            residual_force_close = (
-                                                False
-                                                if is_loss_tail_triggered
-                                                else should_force_full_loss_exit(
-                                                    reason=exit_decision.reason,
-                                                    dry_run=SETTINGS.dry_run,
-                                                )
-                                            )
-                                            dust_retry = (
-                                                int(getattr(p, "dust_retry_count", 0))
-                                                + 1
-                                            )
-                                            if residual_force_close:
-                                                log(
-                                                    f"residual liquidation mode | token={p.token_id} remaining_shares={remaining_shares:.6f} "
-                                                    f"remaining_cost={remaining_cost:.6f}"
-                                                )
-                                                keep_positions.append(
-                                                    replace(
-                                                        p,
-                                                        shares=remaining_shares,
-                                                        cost_usd=remaining_cost,
-                                                        max_favorable_ts=float(
-                                                            getattr(
-                                                                p,
-                                                                "max_favorable_ts",
-                                                                p.opened_ts,
-                                                            )
-                                                            or p.opened_ts
-                                                            or 0.0
-                                                        ),
-                                                        has_panic_dumped=should_force_taker_exit(
-                                                            reason=exit_decision.reason,
-                                                            dry_run=SETTINGS.dry_run,
-                                                            has_panic_dumped=getattr(
-                                                                p,
-                                                                "has_panic_dumped",
-                                                                False,
-                                                            ),
-                                                        ),
-                                                        force_close_only=True,
-                                                        dust_retry_count=dust_retry,
-                                                    )
-                                                )
-                                            elif dust_retry > 3:  # DUST_MAX_RETRIES = 3
-                                                log(
-                                                    f"dust_abandoned | token={p.token_id} remaining_shares={remaining_shares:.6f} "
-                                                    f"after {dust_retry} retries — forcing drop to avoid zombie position"
-                                                )
-                                            else:
-                                                if is_loss_tail_triggered:
-                                                    extend_live_sync_protection(p)
-                                                keep_positions.append(
-                                                    replace(
-                                                        p,
-                                                        shares=remaining_shares,
-                                                        cost_usd=remaining_cost,
-                                                        max_favorable_ts=float(
-                                                            getattr(
-                                                                p,
-                                                                "max_favorable_ts",
-                                                                p.opened_ts,
-                                                            )
-                                                            or p.opened_ts
-                                                            or 0.0
-                                                        ),
-                                                        is_moonbag=False,
-                                                        is_loss_tail=is_loss_tail_triggered,
-                                                        force_close_only=False,
-                                                        dust_retry_count=dust_retry,
-                                                    )
-                                                )
-
-                                            if is_loss_tail_triggered:
-                                                log(
-                                                    f"loss tail preserved | token={p.token_id} remaining_shares={remaining_shares:.6f} "
-                                                    f"remaining_cost={remaining_cost:.6f} reason={exit_decision.reason}"
-                                                )
-                                        else:
-                                            log(
-                                                f"drop residual after close | token={p.token_id} remaining_shares={remaining_shares:.6f} "
-                                                f"remaining_cost={remaining_cost:.6f}"
-                                            )
-                                else:
-                                    err_text = str(close_resp.get("error") or "")
-                                    remaining_hint = max(
-                                        0.0,
-                                        float(
-                                            close_resp.get("remaining_shares", 0.0)
-                                            or 0.0
-                                        ),
-                                    )
-                                    balance_or_allowance_error = (
-                                        "not enough balance" in err_text.lower()
-                                        or "allowance" in err_text.lower()
-                                    )
-                                    if (
-                                        balance_or_allowance_error
-                                        and remaining_hint < 0.01
-                                    ):
-                                        flags.close_fail_streak = 0
-                                        closed_any = True
-                                        log(
-                                            f"{exit_decision.reason} close reconciled to dust -> drop local lot | "
-                                            f"token={p.token_id} remaining_shares={remaining_hint:.6f} err={err_text or 'n/a'}"
-                                        )
-                                        if should_block_same_market_reentry(
-                                            exit_decision.reason,
-                                            remaining_shares=0.0,
-                                            realized_pnl_usd=0.0,
-                                        ):
-                                            same_market_reentry_block_slug = p.slug
-                                        continue
-                                    if (
-                                        balance_or_allowance_error
-                                        and remaining_hint + LOT_EPS_SHARES < p.shares
-                                    ):
-                                        flags.close_fail_streak = 0
-                                        resized_shares = remaining_hint
-                                        resized_cost = (
-                                            p.avg_cost_per_share * resized_shares
-                                        )
-                                        residual_force_close = (
-                                            should_force_full_loss_exit(
-                                                reason=exit_decision.reason,
-                                                dry_run=SETTINGS.dry_run,
-                                            )
-                                        )
-                                        log(
-                                            f"{exit_decision.reason} close reconciled live remainder | token={p.token_id} "
-                                            f"local_shares={p.shares:.6f} live_shares={resized_shares:.6f} err={err_text or 'n/a'}"
-                                        )
-                                        keep_positions.append(
-                                            replace(
-                                                p,
-                                                shares=resized_shares,
-                                                cost_usd=resized_cost,
-                                                max_favorable_ts=float(
-                                                    getattr(
-                                                        p,
-                                                        "max_favorable_ts",
-                                                        p.opened_ts,
-                                                    )
-                                                    or p.opened_ts
-                                                    or 0.0
-                                                ),
-                                                has_panic_dumped=should_force_taker_exit(
-                                                    reason=exit_decision.reason,
-                                                    dry_run=SETTINGS.dry_run,
-                                                    has_panic_dumped=getattr(
-                                                        p, "has_panic_dumped", False
-                                                    ),
-                                                ),
-                                                force_close_only=residual_force_close,
-                                            )
-                                        )
-                                        continue
-                                    flags.close_fail_streak += 1
-                                    if urgent_exit:
-                                        flags.panic_exit_mode = True
-                                        panic_market_slug = p.slug
                                     log(
-                                        f"{exit_decision.reason} close failed: {close_resp}"
+                                        f"{exit_decision.reason} close | side={p.side} pnl_pct={pnl_pct:.2%} hard_stop_pnl_pct={hard_stop_pnl_pct:.2%}"
+                                        f"{actual_bits} observed_pnl_usd={observed_realized_pnl_usd:+.4f} hold={hold_sec:.0f}s "
+                                        f"consec_losses={flags.live_consec_losses} resp={close_resp}"
                                     )
-                                    kept = OpenPos(**p.__dict__)
-                                    if should_force_full_loss_exit(
-                                        reason=exit_decision.reason,
-                                        dry_run=SETTINGS.dry_run,
-                                    ):
-                                        kept.force_close_only = True
-                                        kept.has_panic_dumped = should_force_taker_exit(
-                                            reason=exit_decision.reason,
-                                            dry_run=SETTINGS.dry_run,
-                                            has_panic_dumped=getattr(
-                                                p, "has_panic_dumped", False
-                                            ),
-                                        )
-                                    keep_positions.append(kept)
-                            except Exception as e:
-                                flags.close_fail_streak += 1
-                                if urgent_exit:
-                                    flags.panic_exit_mode = True
-                                    panic_market_slug = p.slug
-                                log(f"{exit_decision.reason} close failed: {e}")
-                                kept = OpenPos(**p.__dict__)
-                                if should_force_full_loss_exit(
-                                    reason=exit_decision.reason,
-                                    dry_run=SETTINGS.dry_run,
-                                ):
-                                    kept.force_close_only = True
-                                    kept.has_panic_dumped = should_force_taker_exit(
-                                        reason=exit_decision.reason,
-                                        dry_run=SETTINGS.dry_run,
-                                        has_panic_dumped=getattr(
-                                            p, "has_panic_dumped", False
+                                    if should_block_same_market_reentry(
+                                        exit_decision.reason,
+                                        remaining_shares=remaining_shares,
+                                        realized_pnl_usd=(
+                                            actual_realized_pnl_usd
+                                            if actual_realized_pnl_usd is not None
+                                            else observed_realized_pnl_usd
                                         ),
-                                    )
-                                keep_positions.append(kept)
+                                    ):
+                                        same_market_reentry_block_slug = p.slug
+                                        log(
+                                            f"same-market reentry blocked | slug={p.slug} side={p.side} "
+                                            f"reason={exit_decision.reason}"
+                                        )
+                                    
+                                    # (Learning logic removed here, moved to high-confidence block in Phase-1 refactor)
+                                    
+                                    if remaining_shares > LOT_EPS_SHARES:
+                                        # Keep partial fill for next cycle
+                                        keep_positions.append(p)
+                                    else:
+                                        log(f"close complete | token={p.token_id}")
+                                    
+                            except Exception as e:
+                                log(f"exit failed: {e}")
+                                keep_positions.append(p)
                         else:
                             keep_positions.append(p)
+                    
                     open_positions, residual_notes = sanitize_open_positions(
                         keep_positions, source="post-close"
                     )
@@ -7621,20 +5760,12 @@ def main():
                 except Exception:
                     pass
 
-                # Determine if we must be a taker (speed-critical strategies)
-                _snipe_strategy = "ws_flash_snipe" in str(
-                    signal_origin
-                ) or "theta_bleed" in str(signal_origin)
-                use_market_entry = (not SETTINGS.dry_run) and bool(
-                    getattr(SETTINGS, "live_entry_use_market_orders", True)
-                )
-                force_taker_entry = (
-                    force_taker_snipe or use_market_entry or _snipe_strategy
-                )
+                # Determine if we must be a taker (ONLY for dry-runs or extreme emergency)
+                # In Phase-1 Refactor, we disable standard Taker entry to preserve EV.
+                force_taker_entry = False 
 
                 # ── Maker-First Entry（策略 4：費用節省）──
-                # 如果沒有強制 Taker 的理由，先試 Maker 下單（費率 0.5% vs 1.56%）
-                # 等待 MAKER_ENTRY_TIMEOUT_SEC 秒後未成交，自動轉 Taker FOK。
+                # Phase-1: Strictly Maker only. No Taker fallback.
                 maker_entry_enabled = bool(
                     getattr(SETTINGS, "maker_entry_enabled", True)
                 )
@@ -7736,59 +5867,22 @@ def main():
                                 order_latencies = maker_latencies
                                 order_attempts = 1
                             else:
-                                if not routine_taker_fallback_allowed:
-                                    log(
-                                        f"maker timeout, skipping taker fallback | side={signal_side} edge too thin"
-                                    )
-                                    smart_sleep(SETTINGS.poll_seconds)
-                                    continue
                                 log(
-                                    f"⚡ maker timeout, falling back to taker | side={signal_side}"
+                                    f"❌ maker timeout, skipping taker fallback | side={signal_side} (Phase-1 Refactor: Never cross spread)"
                                 )
-                                resp, order_latencies, order_attempts = (
-                                    place_entry_order_with_retry(
-                                        ex,
-                                        signal_side,
-                                        order_usd,
-                                        token_override,
-                                        simulated_price=sim_price,
-                                        force_taker=True,
-                                        max_attempts=int(
-                                            getattr(SETTINGS, "entry_retry_attempts", 3)
-                                        ),
-                                        backoff_sec=float(
-                                            getattr(
-                                                SETTINGS, "entry_retry_backoff_sec", 2.0
-                                            )
-                                        ),
-                                        decision_started_at=decision_started_at,
-                                    )
-                                )
+                                # Cancel the stale maker order
+                                try:
+                                    maker_id = str(maker_resp.get("response", {}).get("orderID") or "").strip()
+                                    if maker_id:
+                                        ex.cancel_order(maker_id)
+                                except Exception:
+                                    pass
+                                smart_sleep(SETTINGS.poll_seconds)
+                                continue
                     except Exception as _me:
-                        if not routine_taker_fallback_allowed:
-                            log(
-                                f"maker entry failed ({_me}), skipping taker fallback | edge too thin"
-                            )
-                            smart_sleep(SETTINGS.poll_seconds)
-                            continue
-                        log(f"maker entry failed ({_me}), falling back to taker")
-                        resp, order_latencies, order_attempts = (
-                            place_entry_order_with_retry(
-                                ex,
-                                signal_side,
-                                order_usd,
-                                token_override,
-                                simulated_price=sim_price,
-                                force_taker=True,
-                                max_attempts=int(
-                                    getattr(SETTINGS, "entry_retry_attempts", 3)
-                                ),
-                                backoff_sec=float(
-                                    getattr(SETTINGS, "entry_retry_backoff_sec", 2.0)
-                                ),
-                                decision_started_at=decision_started_at,
-                            )
-                        )
+                        log(f"maker entry failed ({_me}), skipping trade | side={signal_side}")
+                        smart_sleep(SETTINGS.poll_seconds)
+                        continue
                 else:
                     resp, order_latencies, order_attempts = (
                         place_entry_order_with_retry(
