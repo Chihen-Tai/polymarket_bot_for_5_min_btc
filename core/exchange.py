@@ -210,9 +210,58 @@ def _normalize_orderbook_summary(raw_book: Any) -> dict:
     return {}
 
 
-def estimate_book_exit_value(
+def estimate_entry_avg_price_from_asks(
+    book: dict | None, amount_usd: float
+) -> tuple[float | None, float, float]:
+    """
+    Returns (estimated_avg_price, estimated_shares, fill_ratio)
+    Using the ask ladder for buying.
+    """
+    target_usd = max(0.0, float(amount_usd or 0.0))
+    if target_usd <= 0.0:
+        return 0.0, 0.0, 1.0
+    if not isinstance(book, dict):
+        return None, 0.0, 0.0
+
+    ask_levels = _normalize_book_levels(book.get("ask_levels"), reverse=False)
+    if ask_levels:
+        remaining_usd = target_usd
+        total_shares = 0.0
+        for price, size in ask_levels:
+            if price <= 0.0 or size <= 0.0:
+                continue
+            available_usd = price * size
+            take_usd = min(remaining_usd, available_usd)
+            take_shares = take_usd / price
+            total_shares += take_shares
+            remaining_usd -= take_usd
+            if remaining_usd <= 1e-9:
+                break
+        fill_ratio = min(1.0, (target_usd - remaining_usd) / max(target_usd, 1e-9))
+        if total_shares > 0.0:
+            return (target_usd - remaining_usd) / total_shares, total_shares, fill_ratio
+        return None, 0.0, 0.0
+
+    best_ask = _to_float(book.get("best_ask"), 0.0)
+    if best_ask <= 0.0:
+        return None, 0.0, 0.0
+    best_ask_size = _to_float(book.get("best_ask_size"), 0.0)
+    best_ask_usd = best_ask * best_ask_size
+    if best_ask_size > 0.0:
+        take_usd = min(target_usd, best_ask_usd)
+        filled_shares = take_usd / best_ask
+        fill_ratio = min(1.0, take_usd / max(target_usd, 1e-9))
+        return best_ask, filled_shares, fill_ratio
+    return best_ask, target_usd / best_ask, 1.0
+
+
+def estimate_exit_value_from_bids(
     book: dict | None, shares: float
 ) -> tuple[float | None, float]:
+    """
+    Returns (estimated_usdc_recovered, fill_ratio)
+    Using the bid ladder for selling.
+    """
     target_shares = max(0.0, float(shares or 0.0))
     if target_shares <= 0.0:
         return 0.0, 1.0
@@ -233,7 +282,7 @@ def estimate_book_exit_value(
             remaining -= take
             if remaining <= 1e-9:
                 break
-        fill_ratio = min(1.0, filled_shares / target_shares)
+        fill_ratio = min(1.0, filled_shares / max(target_shares, 1e-9))
         return realized_value, fill_ratio
 
     best_bid = _to_float(book.get("best_bid"), 0.0)
@@ -242,9 +291,31 @@ def estimate_book_exit_value(
     best_bid_size = _to_float(book.get("best_bid_size"), 0.0)
     if best_bid_size > 0.0:
         filled_shares = min(target_shares, best_bid_size)
-        fill_ratio = min(1.0, filled_shares / target_shares)
+        fill_ratio = min(1.0, filled_shares / max(target_shares, 1e-9))
         return filled_shares * best_bid, fill_ratio
     return target_shares * best_bid, 1.0
+
+
+def estimate_book_exit_value(
+    book: dict | None, shares: float
+) -> tuple[float | None, float]:
+    # Deprecated: use estimate_exit_value_from_bids
+    return estimate_exit_value_from_bids(book, shares)
+
+
+def market_is_fee_enabled(token_id: str | None = None, slug: str | None = None) -> bool | None:
+    # Most Polymarket crypto markets (like BTC) are fee-enabled now.
+    # A robust integration would query the market API or token metadata.
+    # For now, default to True for btc-updown markets.
+    if slug and "btc-updown" in slug.lower():
+        return True
+    return True
+
+
+def get_fee_rate_bps(token_id: str) -> float | None:
+    # A true implementation would query the Polymarket API or use config.
+    # Fallback to configured rate
+    return float(getattr(SETTINGS, "report_assumed_taker_fee_rate", 0.0156)) * 10000.0
 
 
 def estimate_book_exit_floor_price(book: dict | None, shares: float) -> float | None:

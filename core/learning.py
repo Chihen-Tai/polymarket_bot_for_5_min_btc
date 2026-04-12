@@ -4,6 +4,7 @@ import os
 from collections import defaultdict
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional
+import numpy as np
 
 from core.config import SETTINGS
 
@@ -11,16 +12,18 @@ log = logging.getLogger("learning")
 
 SCORE_FILE = os.path.join(SETTINGS.data_dir, "strategy_scores.json")
 
-# A simple Bayesian-like tracking of wins and losses per strategy
-# Prior: We assume every strategy starts with 1 win and 1 loss (50% win rate) to prevent wild early swings.
-PRIOR_WINS = 1.0
-PRIOR_LOSSES = 1.0
-MAX_HISTORY = 100
+# Prior for expectancy: 1 small win, 1 small loss to prevent early wild swings
+PRIOR_TRADES = 2.0
+PRIOR_EXPECTANCY = 0.0
+MAX_HISTORY = 200
 
 @dataclass
 class TradeOutcome:
-    pnl_pct: float
+    fee_adjusted_pnl_pct: float
     timestamp: float
+    execution_style: str = "unknown"
+    price_bucket: str = "unknown"
+    secs_left_bucket: str = "unknown"
 
 class StrategyScoreboard:
     def __init__(self):
@@ -31,7 +34,7 @@ class StrategyScoreboard:
         return strategy_name.replace("model-", "").split("+")[0]
 
     def _neutral_band(self) -> float:
-        return max(0.0, float(getattr(SETTINGS, "scoreboard_neutral_pnl_pct", 0.0)))
+        return max(0.0, float(getattr(SETTINGS, "scoreboard_neutral_pnl_pct", 0.001)))
 
     def load(self):
         if not os.path.exists(SCORE_FILE):
@@ -40,7 +43,13 @@ class StrategyScoreboard:
             with open(SCORE_FILE, "r") as f:
                 data = json.load(f)
                 for k, v in data.items():
-                    self.history[k] = [TradeOutcome(**item) for item in v]
+                    # Handle migration from old format
+                    parsed = []
+                    for item in v:
+                        if "pnl_pct" in item and "fee_adjusted_pnl_pct" not in item:
+                            item["fee_adjusted_pnl_pct"] = item.pop("pnl_pct")
+                        parsed.append(TradeOutcome(**item))
+                    self.history[k] = parsed
         except Exception as e:
             log.error(f"Failed to load strategy scores: {e}")
 
@@ -53,59 +62,90 @@ class StrategyScoreboard:
         except Exception as e:
             log.error(f"Failed to save strategy scores: {e}")
 
-    def record_outcome(self, strategy_name: str, pnl_pct: float, timestamp: float):
-        """Record the outcome of a trade to update the strategy's historical win rate."""
-        # Standardize strategy name (remove 'model-' prefix if present)
+    def record_outcome(
+        self, 
+        strategy_name: str, 
+        fee_adjusted_pnl_pct: float, 
+        timestamp: float,
+        execution_style: str = "unknown",
+        price_bucket: str = "unknown",
+        secs_left_bucket: str = "unknown"
+    ):
         strategy_name = self._normalized_name(strategy_name)
         
-        outcome = TradeOutcome(pnl_pct=pnl_pct, timestamp=timestamp)
+        outcome = TradeOutcome(
+            fee_adjusted_pnl_pct=fee_adjusted_pnl_pct, 
+            timestamp=timestamp,
+            execution_style=execution_style,
+            price_bucket=price_bucket,
+            secs_left_bucket=secs_left_bucket
+        )
         self.history[strategy_name].append(outcome)
         
-        # Keep only the last MAX_HISTORY trades to auto-adapt to changing market regimes
         if len(self.history[strategy_name]) > MAX_HISTORY:
             self.history[strategy_name] = self.history[strategy_name][-MAX_HISTORY:]
             
         self.save()
-        log.info(f"Learning step: {strategy_name} outcome {pnl_pct:.2%} recorded.")
 
-    def get_strategy_score(self, strategy_name: str) -> float:
+    def get_strategy_expectancy(self, strategy_name: str) -> float:
         """
-        Calculate the Bayesian/smoothed win rate for a strategy.
-        Tiny scratch exits inside the neutral band are ignored so flat trades do not
-        poison the score and eventually disable all entries.
+        Calculate the Bayesian smoothed fee-adjusted expectancy for a strategy.
+        Returns the expected fee-adjusted PnL percentage per trade.
         """
         strategy_name = self._normalized_name(strategy_name)
         trades = self.history.get(strategy_name, [])
 
-        wins = PRIOR_WINS
-        losses = PRIOR_LOSSES
-        neutral_band = self._neutral_band()
-        decay = getattr(SETTINGS, "scoreboard_decay_factor", 0.95)
-
-        # Weight by PnL magnitude: a +50% win counts more than a +1% win.
-        # Scale factor 5.0 keeps the prior (1 win + 1 loss) meaningful.
-        _SCALE = 5.0
+        decay = float(getattr(SETTINGS, "scoreboard_decay_factor", 0.95))
         
-        # We iterate backwards. The most recent decisive trade has a decay power of 0 (weight x 1.0).
-        # The next most recent decisive trade has a decay power of 1 (weight x 0.95), etc.
+        total_weight = PRIOR_TRADES
+        weighted_sum = PRIOR_EXPECTANCY * PRIOR_TRADES
+        
         decay_power = 0
         for t in reversed(trades):
-            if abs(t.pnl_pct) <= neutral_band:
-                continue
-            
             decay_mult = (decay ** decay_power)
-            weight = (1.0 + abs(t.pnl_pct) * _SCALE) * decay_mult
+            weight = 1.0 * decay_mult
             
-            if t.pnl_pct > neutral_band:
-                wins += weight
-            else:
-                losses += weight
+            weighted_sum += t.fee_adjusted_pnl_pct * weight
+            total_weight += weight
                 
             decay_power += 1
 
-        total = wins + losses
-        win_rate = wins / total
-        return win_rate
+        return weighted_sum / total_weight
+
+    def get_strategy_score(self, strategy_name: str) -> float:
+        """
+        For backward compatibility, returns a normalized score [0.01, 0.99] based on expectancy.
+        0 expectancy -> 0.5 score.
+        +5% expectancy -> ~0.9 score.
+        -5% expectancy -> ~0.1 score.
+        """
+        expectancy = self.get_strategy_expectancy(strategy_name)
+        # Sigmoid-like normalization
+        score = 1.0 / (1.0 + np.exp(-expectancy * 40.0)) # scale factor
+        return min(0.99, max(0.01, float(score)))
+
+    def get_strategy_stats(self, strategy_name: str) -> dict:
+        strategy_name = self._normalized_name(strategy_name)
+        trades = self.history.get(strategy_name, [])
+        if not trades:
+            return {"expectancy": 0.0, "win_rate": 0.5, "count": 0, "profit_factor": 1.0, "avg_pnl": 0.0}
+        
+        pnls = [t.fee_adjusted_pnl_pct for t in trades]
+        wins = [p for p in pnls if p > self._neutral_band()]
+        losses = [p for p in pnls if p < -self._neutral_band()]
+        
+        win_rate = len(wins) / len(pnls) if pnls else 0.5
+        gross_profit = sum(wins)
+        gross_loss = abs(sum(losses))
+        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (99.0 if gross_profit > 0 else 1.0)
+        
+        return {
+            "expectancy": self.get_strategy_expectancy(strategy_name),
+            "win_rate": win_rate,
+            "count": len(pnls),
+            "profit_factor": profit_factor,
+            "avg_pnl": sum(pnls) / len(pnls)
+        }
 
     def get_strategy_trade_count(self, strategy_name: str) -> int:
         strategy_name = self._normalized_name(strategy_name)
@@ -114,35 +154,7 @@ class StrategyScoreboard:
     def get_strategy_decisive_trade_count(self, strategy_name: str) -> int:
         strategy_name = self._normalized_name(strategy_name)
         neutral_band = self._neutral_band()
-        return sum(1 for trade in self.history.get(strategy_name, []) if abs(trade.pnl_pct) > neutral_band)
+        return sum(1 for trade in self.history.get(strategy_name, []) if abs(trade.fee_adjusted_pnl_pct) > neutral_band)
 
-    def get_best_strategy(self, available_strategies: Dict[str, dict]) -> Optional[dict]:
-        """
-        Given a dictionary of proposed signals {strategy_name: decision_dict},
-        evaluate their historical scores and return the highest-scoring decision.
-        """
-        if not available_strategies:
-            return None
-            
-        best_strategy = None
-        best_score = -1.0
-        
-        for strat_name, decision in available_strategies.items():
-            if not decision.get("ok"):
-                continue
-                
-            score = self.get_strategy_score(strat_name)
-            log.info(f"Evaluating strategy candidate: {strat_name} | Expected Win-Rate: {score:.1%}")
-            
-            if score > best_score:
-                best_score = score
-                best_strategy = strat_name
-                
-        if best_strategy:
-            log.info(f"Adaptive Learning Selected: [{best_strategy}] with score {best_score:.1%}")
-            return available_strategies[best_strategy]
-            
-        return None
 
-# Global instance
 SCOREBOARD = StrategyScoreboard()

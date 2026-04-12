@@ -2471,7 +2471,7 @@ def update_network_guard(
 
 
 def required_trade_edge(
-    entry_price: float, secs_left: float | None, history_count: int = 0
+    entry_price: float, secs_left: float | None, history_count: int = 0, fee_rate: float = 0.0156
 ) -> float:
     required = max(0.0, float(getattr(SETTINGS, "edge_threshold", 0.0)))
     if history_count < 5:
@@ -2503,11 +2503,10 @@ def required_trade_edge(
     # Fee floor: required edge must at minimum cover taker fees on both entry and expected exit
     # entry_fee ≈ fee_rate * entry_price; exit_fee ≈ fee_rate * (1 - entry_price) on a win
     # Conservative: use 2x fee_rate as floor (covers round-trip taker cost)
-    taker_fee_rate = float(getattr(SETTINGS, "report_assumed_taker_fee_rate", 0.0156))
     fee_floor_buffer = float(
         getattr(SETTINGS, "entry_fee_floor_buffer", 1.0)
     )  # multiplier on 2x fee
-    fee_floor = taker_fee_rate * 2.0 * fee_floor_buffer
+    fee_floor = fee_rate * 2.0 * fee_floor_buffer
     maker_edge_buffer = max(
         0.0, float(getattr(SETTINGS, "entry_require_maker_edge_buffer", 0.01) or 0.01)
     )
@@ -2564,11 +2563,12 @@ def summarize_entry_edge(
     entry_price: float,
     secs_left: float | None,
     history_count: int = 0,
+    fee_rate: float = 0.0156,
 ) -> dict:
     neutral_hard_block = abs(float(entry_price) - 0.5) <= float(
         getattr(SETTINGS, "entry_neutral_hard_block_half_width", 0.02) or 0.02
     )
-    required = required_trade_edge(entry_price, secs_left, history_count=history_count)
+    required = required_trade_edge(entry_price, secs_left, history_count=history_count, fee_rate=fee_rate)
     raw_edge = win_rate - entry_price
     blocked_reason = "neutral-no-trade-zone" if neutral_hard_block else ""
     return {
@@ -2663,11 +2663,18 @@ def score_entry_candidate(
             probability_source=probability_source,
         )
     )
+    
+    from core.exchange import get_fee_rate_bps
+    # Convert bps to decimal rate (e.g. 156 bps -> 0.0156)
+    token_id_for_fee = str(candidate.get("token_id") or "")
+    fee_rate = (get_fee_rate_bps(token_id_for_fee) or 156.0) / 10000.0
+
     entry_edge = summarize_entry_edge(
         win_rate=effective_probability,
         entry_price=entry_price,
         secs_left=secs_left,
         history_count=strategy_decisive_trade_count,
+        fee_rate=fee_rate,
     )
     return {
         "ok": bool(
@@ -6335,14 +6342,33 @@ def main():
 
                                         if p.entry_reason:
                                             from core.learning import SCOREBOARD
+                                            from core.exchange import get_fee_rate_bps
+                                            
+                                            raw_pnl_pct = (
+                                                actual_realized_return_pct
+                                                if actual_realized_return_pct is not None
+                                                else observed_realized_return_pct
+                                            )
+                                            
+                                            fee_rate = (get_fee_rate_bps(p.token_id) or 156.0) / 10000.0
+                                            
+                                            # If maker, exit is free. If taker, subtract fee. 
+                                            # Simplified estimation: if exit was taker, apply exit fee.
+                                            # We apply entry fee unconditionally here as a baseline penalty for the trade.
+                                            exit_style = exit_resp.get("execution_style", "unknown")
+                                            fee_penalty = fee_rate # entry fee
+                                            if exit_style == "taker" or force_taker_exit:
+                                                fee_penalty += fee_rate
+                                                
+                                            fee_adj_pnl_pct = raw_pnl_pct - fee_penalty
 
                                             SCOREBOARD.record_outcome(
                                                 strategy_name=p.entry_reason,
-                                                pnl_pct=actual_realized_return_pct
-                                                if actual_realized_return_pct
-                                                is not None
-                                                else observed_realized_return_pct,
+                                                fee_adjusted_pnl_pct=fee_adj_pnl_pct,
                                                 timestamp=time.time(),
+                                                execution_style=exit_style,
+                                                price_bucket="unknown",
+                                                secs_left_bucket="unknown"
                                             )
                                         if (
                                             remaining_shares > LOT_EPS_SHARES

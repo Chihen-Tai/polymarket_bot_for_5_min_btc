@@ -48,56 +48,58 @@ def get_ofi_signal(
         max(0.0, ofi_threshold - 0.5),
         0.5,
     )
-    # Raw probability calculation (0.55 - 0.85)
-    ofi_probability = _probability_from_confidence(ofi_confidence, floor=0.55, ceiling=0.85)
-
+    
     # Polymarket OB cross-confirmation
-    poly_up_imbalance = _check_imbalance(poly_ob_up)
-    poly_down_imbalance = _check_imbalance(poly_ob_down)
-
-    # Required edge for momentum strategies in decision_engine.py was effectively 0.05
-    # when being boosted. We'll set it to 0.05 here as the minimum threshold the strategy desires.
+    poly_up_imbalance = _check_imbalance(poly_ob_up) if poly_ob_up else 0.5
+    poly_down_imbalance = _check_imbalance(poly_ob_down) if poly_ob_down else 0.5
+    
+    # Required edge baseline before dynamic fee evaluation
     required_edge = 0.05
+    
+    # True edge of order flow is usually small (0.5% - 2%)
+    expected_edge_hint = 0.005 + (0.015 * ofi_confidence)
 
     # Check UP signal
     if ofi_ratio > ofi_threshold:
-        # Binance says UP: Polymarket UP token must also have bid pressure > 0.55
         if poly_up_imbalance >= 0.55:
+            adj_prob = min(0.99, float(up_price) + expected_edge_hint)
             results.append(StrategyResult(
                 strategy_name="model-ws_order_flow_up",
                 side="UP",
                 trigger_reason="ofi_up",
                 entry_price=float(up_price),
-                model_probability=ofi_probability,
+                model_probability=adj_prob,
                 confidence=ofi_confidence,
                 required_edge=required_edge,
-                raw_edge=ofi_probability - float(up_price),
+                raw_edge=expected_edge_hint,
                 metadata={
                     "ofi_ratio": ofi_ratio,
                     "poly_up_imbalance": poly_up_imbalance,
                     "buy_vol": buy_vol,
-                    "sell_vol": sell_vol
+                    "sell_vol": sell_vol,
+                    "expected_edge_hint": expected_edge_hint
                 }
             ))
 
     # Check DOWN signal
     if ofi_ratio < (1.0 - ofi_threshold):
-        # Binance says DOWN: Polymarket DOWN token must also have bid pressure > 0.55
         if poly_down_imbalance >= 0.55:
+            adj_prob = min(0.99, float(down_price) + expected_edge_hint)
             results.append(StrategyResult(
                 strategy_name="model-ws_order_flow_down",
                 side="DOWN",
                 trigger_reason="ofi_down",
                 entry_price=float(down_price),
-                model_probability=ofi_probability,
+                model_probability=adj_prob,
                 confidence=ofi_confidence,
                 required_edge=required_edge,
-                raw_edge=ofi_probability - float(down_price),
+                raw_edge=expected_edge_hint,
                 metadata={
                     "ofi_ratio": ofi_ratio,
                     "poly_down_imbalance": poly_down_imbalance,
                     "buy_vol": buy_vol,
-                    "sell_vol": sell_vol
+                    "sell_vol": sell_vol,
+                    "expected_edge_hint": expected_edge_hint
                 }
             ))
 

@@ -226,11 +226,31 @@ def explain_choose_side(
     poly_ob_up: Optional[dict] = None,
     poly_ob_down: Optional[dict] = None,
 ) -> dict:
+    from core.exchange import estimate_entry_avg_price_from_asks
+
     prices = get_outcome_prices(market)
     gamma_up = prices.get("up") or prices.get("漲")
     gamma_down = prices.get("down") or prices.get("跌")
     up = observed_up if observed_up is not None else gamma_up
     down = observed_down if observed_down is not None else gamma_down
+
+    # Calculate Executable Prices (Assume default $10 estimation size)
+    exec_est_size = float(getattr(SETTINGS, "min_live_order_usd", 10.0) or 10.0)
+    exec_up = up
+    if poly_ob_up:
+        est_price, _, fill_ratio = estimate_entry_avg_price_from_asks(poly_ob_up, exec_est_size)
+        if est_price is not None and est_price > 0 and fill_ratio >= 0.5:
+            exec_up = est_price
+
+    exec_down = down
+    if poly_ob_down:
+        est_price, _, fill_ratio = estimate_entry_avg_price_from_asks(poly_ob_down, exec_est_size)
+        if est_price is not None and est_price > 0 and fill_ratio >= 0.5:
+            exec_down = est_price
+
+    up = exec_up
+    down = exec_down
+
     secs_left = seconds_to_market_end(market)
     
     # 15m Time Regime Split
@@ -240,14 +260,15 @@ def explain_choose_side(
         "ok": False,
         "side": None,
         "reason": "no_valid_signals",
-        "up": up,
-        "down": down,
+        "up": exec_up, # use executable price
+        "down": exec_down, # use executable price
         "secs_left": secs_left,
         "spread": None,
         "entry_price": None,
         "mr_side": None,
         "regime": regime,
     }
+
 
     if up is None or down is None:
         base_result["reason"] = "missing_prices"
