@@ -619,10 +619,14 @@ class PolymarketExchange:
 
         cash = self._get_cash_balance()
         positions_value = self._get_positions_value()
+        positions = self.get_positions()
         equity = cash + positions_value
+        open_exposure = sum(
+            max(0.0, float(getattr(pos, "initial_value", 0.0) or 0.0))
+            for pos in positions
+        )
 
-        # open exposure 先用保守值 0（後續可擴充為掃 open orders）
-        acct = Account(equity=equity, cash=cash, open_exposure=0.0)
+        acct = Account(equity=equity, cash=cash, open_exposure=open_exposure)
         if cache_ttl_sec > 0.0:
             self._live_account_cache = acct
             self._live_account_cache_ts = now_ts

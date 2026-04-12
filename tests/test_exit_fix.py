@@ -397,7 +397,7 @@ def main():
         token_id="tok-strong",
         placed_ts=1.0,
         order_usd=1.0,
-        raw_edge=0.031,
+        raw_edge=0.041,
         required_edge=0.020,
     )
 
@@ -1317,7 +1317,7 @@ def main():
         (
             "routine_normal_taker_fallback_allows_strong_post_cost_edge",
             should_allow_normal_taker_fallback(
-                raw_edge=0.031,
+                raw_edge=0.041,
                 required_edge=0.020,
                 emergency=False,
             )
@@ -1568,6 +1568,52 @@ def main():
 
 def test_main():
     main()
+
+
+def test_live_account_open_exposure_uses_position_notional(monkeypatch):
+    original = PolymarketExchange._init_real_client
+    PolymarketExchange._init_real_client = lambda self: setattr(self, "client", None)
+    try:
+        ex = PolymarketExchange(dry_run=False)
+    finally:
+        PolymarketExchange._init_real_client = original
+
+    ex._funder = "0xtest"
+
+    monkeypatch.setattr(ex, "_get_cash_balance", lambda: 12.0)
+    monkeypatch.setattr(ex, "_get_positions_value", lambda: 3.0)
+    monkeypatch.setattr(
+        ex,
+        "get_positions",
+        lambda: [
+            type(
+                "P",
+                (),
+                {
+                    "token_id": "tok1",
+                    "size": 10.0,
+                    "avg_price": 0.2,
+                    "initial_value": 2.0,
+                    "current_value": 3.0,
+                    "cash_pnl": 1.0,
+                    "percent_pnl": 0.5,
+                },
+            )()
+        ],
+    )
+
+    acct = ex.get_account()
+
+    assert acct.equity == 15.0
+    assert acct.cash == 12.0
+    assert acct.open_exposure == 2.0
+
+
+def test_live_env_example_does_not_disable_loss_guards():
+    text = open(".env.live.example", "r", encoding="utf-8").read()
+
+    assert "MAX_CONSEC_LOSS=99" not in text
+    assert "DAILY_MAX_LOSS=999999999" not in text
 
 
 if __name__ == "__main__":
