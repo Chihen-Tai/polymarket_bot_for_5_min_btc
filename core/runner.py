@@ -346,6 +346,8 @@ class OpenPos:
     opened_ts: float
     position_id: str = ""
     entry_reason: str = "signal"
+    signal_price: float = 0.0
+    fill_price: float = 0.0
     source: str = "runtime"
     last_synced_size: float = 0.0
     last_synced_initial_value: float = 0.0
@@ -398,6 +400,7 @@ class PendingOrder:
     placed_ts: float
     order_usd: float
     entry_reason: str = "signal"
+    signal_price: float = 0.0
     raw_edge: float = 0.0
     required_edge: float = 0.0
     fallback_attempted: bool = False
@@ -1917,6 +1920,10 @@ def track_pending_fill(
     opened_ts = time.time()
     position_id = f"pos_{int(opened_ts)}_{po.token_id[-6:]}"
     reason = entry_reason or po.entry_reason or "signal"
+    signal_price = float(getattr(po, "signal_price", 0.0) or 0.0)
+    fill_price = cost_usd / max(shares, 1e-9)
+    slippage = (fill_price - signal_price) / signal_price if signal_price > 0 else 0.0
+
     open_positions.append(
         OpenPos(
             slug=po.slug,
@@ -1928,6 +1935,8 @@ def track_pending_fill(
             opened_ts=opened_ts,
             position_id=position_id,
             entry_reason=reason,
+            signal_price=signal_price,
+            fill_price=fill_price,
             source=source,
             pending_confirmation=True,
             max_favorable_value_usd=cost_usd,
@@ -1948,6 +1957,10 @@ def track_pending_fill(
             "cost_usd": cost_usd,
             "opened_ts": opened_ts,
             "entry_reason": reason,
+            "strategy_name": reason,
+            "signal_price": signal_price,
+            "fill_price": fill_price,
+            "slippage": slippage,
             "classification": source,
             "execution_style": normalize_execution_style(
                 execution_style or source, default="maker"
@@ -8004,6 +8017,13 @@ def main():
                             order_id=order_id,
                         ):
                             risk.orders_this_window += 1
+
+                        # Attribution details
+                        sig_p = float(entry_price or 0.0)
+                        f_p = actual_entry_cost_usd / max(shares, 1e-9)
+                        slip = (f_p - sig_p) / sig_p if sig_p > 0 else 0.0
+                        strat = signal_origin or "signal"
+
                         open_positions.append(
                             OpenPos(
                                 slug=market["slug"],
@@ -8014,7 +8034,9 @@ def main():
                                 cost_usd=actual_entry_cost_usd,
                                 opened_ts=opened_ts,
                                 position_id=position_id,
-                                entry_reason=signal_origin or "signal",
+                                entry_reason=strat,
+                                signal_price=sig_p,
+                                fill_price=f_p,
                                 source="live-order",
                                 pending_confirmation=True,
                                 max_favorable_value_usd=actual_entry_cost_usd,
@@ -8034,7 +8056,11 @@ def main():
                                 "shares": shares,
                                 "cost_usd": actual_entry_cost_usd,
                                 "opened_ts": opened_ts,
-                                "entry_reason": signal_origin or "signal",
+                                "entry_reason": strat,
+                                "strategy_name": strat,
+                                "signal_price": sig_p,
+                                "fill_price": f_p,
+                                "slippage": slip,
                                 "classification": "good-entry-candidate",
                                 "execution_style": normalize_execution_style(
                                     resp.get("execution_style")
@@ -8042,7 +8068,7 @@ def main():
                                     else "",
                                     default="taker" if force_taker_entry else "maker",
                                 ),
-                                "entry_price": float(entry_price),
+                                "entry_price": sig_p,
                                 "entry_book_spread": (
                                     float(entry_book_quality.get("spread"))
                                     if entry_book_quality
@@ -8091,6 +8117,7 @@ def main():
                                     placed_ts=time.time(),
                                     order_usd=actual_entry_cost_usd,
                                     entry_reason=signal_origin or "signal",
+                                    signal_price=float(entry_price or 0.0),
                                     raw_edge=float(
                                         (entry_edge or {}).get("raw_edge") or 0.0
                                     ),
