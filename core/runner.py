@@ -33,6 +33,7 @@ from core.trade_manager import (
     maybe_reverse_entry,
     should_block_same_market_reentry,
 )
+from core.risk_manager import RISK_MANAGER
 from core.ws_binance import BINANCE_WS
 from core.indicators import compute_buy_sell_pressure
 from core.journal import (
@@ -4095,6 +4096,7 @@ def main():
                             )
                             realized_pnl = resolution_value - gp.cost_usd
                             risk.daily_pnl += realized_pnl
+                            RISK_MANAGER.update_outcome(realized_pnl)
                             mark_text = (
                                 f"{last_mark:.3f}" if last_mark is not None else "n/a"
                             )
@@ -4657,11 +4659,13 @@ def main():
                                         actual_realized_pnl_usd = actual_exit_value_usd - realized_cost
                                         actual_realized_return_pct = actual_realized_pnl_usd / max(realized_cost, 1e-9)
                                         risk.daily_pnl += actual_realized_pnl_usd
+                                        RISK_MANAGER.update_outcome(actual_realized_pnl_usd)
                                         pnl_source = "actual_execution"
                                     else:
                                         actual_realized_pnl_usd = None
                                         actual_realized_return_pct = None
                                         risk.daily_pnl += observed_realized_pnl_usd
+                                        RISK_MANAGER.update_outcome(observed_realized_pnl_usd)
                                         pnl_source = "observed_mark"
 
                                     p.shares = remaining_shares
@@ -5686,6 +5690,20 @@ def main():
                 if _total > 0:
                     current_ofi = _bv / _total
 
+            # 新增風險管理冷卻與集中度檢查
+            rm_ok, rm_reason = RISK_MANAGER.can_trade(acct.equity, acct.open_exposure)
+            if not rm_ok:
+                maybe_record_cycle_label(
+                    state,
+                    "signal-blocked",
+                    slug=last_market_slug,
+                    side=signal_side,
+                    reason=f"risk_manager_{rm_reason}",
+                )
+                log(f"blocked by risk manager: {rm_reason}")
+                smart_sleep(SETTINGS.poll_seconds)
+                continue
+
             ok, reason = can_place_order(
                 equity=acct.equity,
                 open_exposure=acct.open_exposure,
@@ -6136,6 +6154,7 @@ def main():
                                 )
                                 realized_pnl = realized_exit_value - realized_cost
                                 risk.daily_pnl += realized_pnl
+                                RISK_MANAGER.update_outcome(realized_pnl)
                                 append_event(
                                     {
                                         "kind": "exit",

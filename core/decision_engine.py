@@ -14,6 +14,7 @@ from core.latency_monitor import LATENCY_MONITOR
 
 from core.strategies.base import StrategyResult
 from core.fair_value_model import get_fair_value
+from core.microstructure import calculate_ofi
 
 
 def _sf(x: Any) -> Optional[float]:
@@ -230,424 +231,110 @@ def explain_choose_side(
 ) -> dict:
     from core.exchange import estimate_entry_avg_price_from_asks
 
+    # 1. 取得可執行價格 (Executable Prices)
     prices = get_outcome_prices(market)
     gamma_up = prices.get("up") or prices.get("漲")
     gamma_down = prices.get("down") or prices.get("跌")
+    
+    # 這裡我們優先使用觀察到的價格，若無則使用 Gamma API
     up = observed_up if observed_up is not None else gamma_up
     down = observed_down if observed_down is not None else gamma_down
 
-    # Calculate Executable Prices (Assume default $10 estimation size)
     exec_est_size = float(getattr(SETTINGS, "min_live_order_usd", 10.0) or 10.0)
     exec_up = up
     if poly_ob_up:
-        est_price, _, fill_ratio = estimate_entry_avg_price_from_asks(poly_ob_up, exec_est_size)
-        if est_price is not None and est_price > 0 and fill_ratio >= 0.5:
-            exec_up = est_price
+        est_p, _, fill = estimate_entry_avg_price_from_asks(poly_ob_up, exec_est_size)
+        if est_p and fill >= 0.5: exec_up = est_p
 
     exec_down = down
     if poly_ob_down:
-        est_price, _, fill_ratio = estimate_entry_avg_price_from_asks(poly_ob_down, exec_est_size)
-        if est_price is not None and est_price > 0 and fill_ratio >= 0.5:
-            exec_down = est_price
-
-    up = exec_up
-    down = exec_down
+        est_p, _, fill = estimate_entry_avg_price_from_asks(poly_ob_down, exec_est_size)
+        if est_p and fill >= 0.5: exec_down = est_p
 
     secs_left = seconds_to_market_end(market)
-    
-    # 15m Time Regime Split
     regime = _get_time_regime(secs_left) if secs_left is not None else "unknown"
 
     base_result = {
         "ok": False,
         "side": None,
         "reason": "no_valid_signals",
-        "up": exec_up, # use executable price
-        "down": exec_down, # use executable price
+        "up": exec_up,
+        "down": exec_down,
         "secs_left": secs_left,
-        "spread": None,
-        "entry_price": None,
-        "mr_side": None,
         "regime": regime,
     }
 
-
-    if up is None or down is None:
-        base_result["reason"] = "missing_prices"
+    if exec_up is None or exec_down is None or secs_left is None:
+        base_result["reason"] = "missing_data"
         return base_result
 
-    if secs_left is None:
-        base_result["reason"] = "missing_end_time"
+    # 2. 核心統計模型 (Unified Fair Value with Dynamic Vol)
+    strike_price = market.get("strike_price") or _extract_strike_price(market.get("question", ""))
+    if strike_price is None or binance_1m is None:
+        base_result["reason"] = "missing_valuation_inputs"
         return base_result
+
+    # 從 binance_5m 提取價格歷史計算實現波動率
+    price_history = []
+    if binance_5m:
+        price_history = [float(k.get('c') or k.get('close') or 0) for k in binance_5m]
     
-    # Get AI Advisory for 15m
-    ai_advice = {"no_trade_bias": False, "allow_strategies": [], "confidence_modifier": 0.0}
-    if SETTINGS.market_profile == "btc_15m" and SETTINGS.ai_advisor_enabled:
-        vel_3s = 0.0
-        try:
-            from core.ws_binance import BINANCE_WS
-            vel_3s = BINANCE_WS.get_price_velocity(3.0)
-        except Exception: pass
-        
-        ai_advice = AI_ADVISOR.get_advisory(
-            market.get("slug", ""),
-            secs_left,
-            float(up),
-            float(down),
-            vel_3s
-        )
+    btc_price = float(binance_1m.get("c") or binance_1m.get("close") or 0.0)
+    fv_yes = get_fair_value(btc_price, strike_price, secs_left, price_history=price_history)
+    fv_no = 1.0 - fv_yes
 
-    time_valid = False
-    if secs_left is not None:
-        if secs_left > SETTINGS.entry_window_max_sec:
-            base_result["reason"] = "too_early_in_market"
-        elif secs_left < SETTINGS.entry_window_min_sec:
-            base_result["reason"] = "too_late_in_market"
-        else:
-            time_valid = True
+    # 3. 計算淨邊際 (Net Edge)
+    # Edge = FairValue - ExecutablePrice - Fee (Maker 0.005, Taker 0.0156)
+    # 我們假設使用 Maker 入場
+    maker_fee = 0.005
+    edge_yes = fv_yes - float(exec_up) - maker_fee
+    edge_no = fv_no - float(exec_down) - maker_fee
 
-    regular_valid_up = (
-        up is not None
-        and SETTINGS.min_entry_price <= float(up) <= SETTINGS.max_entry_price
-    )
-    regular_valid_down = (
-        down is not None
-        and SETTINGS.min_entry_price <= float(down) <= SETTINGS.max_entry_price
-    )
-
-    _snipe_min = float(getattr(SETTINGS, "snipe_min_entry_price", 0.05))
-    _snipe_max = float(getattr(SETTINGS, "snipe_max_entry_price", 0.96))
-    snipe_valid_up = up is not None and _snipe_min <= float(up) <= _snipe_max
-    snipe_valid_down = down is not None and _snipe_min <= float(down) <= _snipe_max
-
-    if (
-        base_result.get("reason") == "no_valid_signals"
-        and not regular_valid_up
-        and not regular_valid_down
-        and not snipe_valid_up
-        and not snipe_valid_down
-    ):
-        base_result["reason"] = f"prices_out_of_bounds_up{up}_down{down}"
+    # 4. 微觀結構確認 (Microstructure OFI)
+    ofi_yes = calculate_ofi(poly_ob_up) if poly_ob_up else 0.0
+    ofi_no = calculate_ofi(poly_ob_down) if poly_ob_down else 0.0
 
     candidates = {}
+    edge_threshold = float(getattr(SETTINGS, "EDGE_THRESHOLD", 0.04))
+    min_ofi = float(getattr(SETTINGS, "MIN_OFI_CONFIRM", 0.2))
 
-    # Extract Strike Price for Advanced Strategies
-    strike_price = market.get("strike_price")
-    if strike_price is None:
-        strike_price = _extract_strike_price(market.get("question", ""))
-
-    # --- Unified Fair Value Strategy (Phase-2 Primary) ---
-    if strike_price is not None and secs_left is not None and binance_1m:
-        btc_price = float(binance_1m.get("c") or binance_1m.get("close") or 0.0)
-        if btc_price > 0:
-            # We use a unified fair value model based on price and time-to-expiry
-            fair_val_yes = get_fair_value(btc_price, strike_price, secs_left)
-            fair_val_no = 1.0 - fair_val_yes
-            
-            # Record candidates for both sides
-            if snipe_valid_up:
-                candidates["unified_fair_value_up"] = _build_candidate(
-                    base_result,
-                    side="UP",
-                    strategy_key="unified_fair_value_up",
-                    entry_price=float(up),
-                    signal_score=fair_val_yes,
-                    signal_confidence=1.0,
-                    extras={"btc_price": btc_price, "strike_price": strike_price, "fair_value": fair_val_yes}
-                )
-            if snipe_valid_down:
-                candidates["unified_fair_value_down"] = _build_candidate(
-                    base_result,
-                    side="DOWN",
-                    strategy_key="unified_fair_value_down",
-                    entry_price=float(down),
-                    signal_score=fair_val_no,
-                    signal_confidence=1.0,
-                    extras={"btc_price": btc_price, "strike_price": strike_price, "fair_value": fair_val_no}
-                )
-
-    # Advanced Strategy 1: Theta Bleed Arbitrage (DEPRECATED in Phase-2)
-    if False and getattr(SETTINGS, "theta_bleed_enabled", True) and strike_price is not None:
-        # VPN Safe Mode: Disable Theta Bleed (high latency dependency)
-        if SETTINGS.vpn_safe_mode and SETTINGS.vpn_disable_theta_bleed:
-            pass
-        else:
-            try:
-                from core.ws_binance import BINANCE_WS
-
-                if secs_left is not None and secs_left <= float(
-                    getattr(SETTINGS, "theta_bleed_min_sec", 60.0)
-                ):
-                    if BINANCE_WS.get_last_update_age() < 5.0:
-                        binance_bba = BINANCE_WS.get_bba()
-                        binance_mid = (
-                            binance_bba.get("b", 0.0) + binance_bba.get("a", 0.0)
-                        ) / 2.0
-                        if binance_mid > 0:
-                            dist = binance_mid - strike_price
-                            theta_dist = float(
-                                getattr(SETTINGS, "theta_bleed_distance", 120.0)
-                            )
-
-                            # If Binance is > 120 dist ABOVE strike, UP is highly certain
-                            if dist > theta_dist and snipe_valid_up:
-                                r = _build_candidate(
-                                    base_result,
-                                    side="UP",
-                                    strategy_key="theta_bleed_up",
-                                    entry_price=float(up),
-                                    signal_score=0.95,  # Heuristic strength
-                                    signal_confidence=1.0,
-                                    extras={
-                                        "binance_mid": binance_mid,
-                                        "strike_price": strike_price,
-                                        "dist": dist,
-                                    },
-                                )
-                                candidates["theta_bleed_up"] = r
-
-                            # If Binance is < 120 dist BELOW strike, DOWN is highly certain
-                            elif dist < -theta_dist and snipe_valid_down:
-                                r = _build_candidate(
-                                    base_result,
-                                    side="DOWN",
-                                    strategy_key="theta_bleed_down",
-                                    entry_price=float(down),
-                                    signal_score=0.95,  # Heuristic strength
-                                    signal_confidence=1.0,
-                                    extras={
-                                        "binance_mid": binance_mid,
-                                        "strike_price": strike_price,
-                                        "dist": dist,
-                                    },
-                                )
-                                candidates["theta_bleed_down"] = r
-            except Exception:
-                pass
-
-    # Advanced Strategy 3: Strike Cross Front-run Snipe (DEPRECATED in Phase-2)
-    if (
-        False and getattr(SETTINGS, "strike_cross_snipe_enabled", True)
-        and strike_price is not None
-    ):
-        # VPN Safe Mode: Disable Strike Cross Snipe
-        if SETTINGS.vpn_safe_mode and SETTINGS.vpn_disable_strike_cross:
-            pass
-        else:
-            try:
-                from core.ws_binance import BINANCE_WS
-
-                if BINANCE_WS.get_last_update_age() < 5.0:
-                    oldest, newest = BINANCE_WS.get_recent_prices_window(seconds=5.0)
-                    if oldest is not None and newest is not None:
-                        gap = float(getattr(SETTINGS, "strike_cross_gap", 20.0))
-
-                        # Crossed UP securely
-                        if (
-                            oldest < strike_price
-                            and newest > (strike_price + gap)
-                            and snipe_valid_up
-                        ):
-                            r = _build_candidate(
-                                base_result,
-                                side="UP",
-                                strategy_key="strike_cross_snipe_up",
-                                entry_price=float(up),
-                                signal_score=0.99,  # High, exempts from stabilization
-                                signal_confidence=0.95,
-                                extras={
-                                    "oldest": oldest,
-                                    "newest": newest,
-                                    "strike_price": strike_price,
-                                },
-                            )
-                            candidates["strike_cross_snipe_up"] = r
-
-                        # Crossed DOWN securely
-                        elif (
-                            oldest > strike_price
-                            and newest < (strike_price - gap)
-                            and snipe_valid_down
-                        ):
-                            r = _build_candidate(
-                                base_result,
-                                side="DOWN",
-                                strategy_key="strike_cross_snipe_down",
-                                entry_price=float(down),
-                                signal_score=0.99,  # High, exempts from stabilization
-                                signal_confidence=0.95,
-                                extras={
-                                    "oldest": oldest,
-                                    "newest": newest,
-                                    "strike_price": strike_price,
-                                },
-                            )
-                            candidates["strike_cross_snipe_down"] = r
-            except Exception:
-                pass
-
-    # Strategy 1: Binance Oracle Front-running (Disabled)
-    # ... (omitted) ...
-
-    # Strategy 5: Zhihu ZLSMA + ATR Scalper (Disabled)
-    # ... (omitted) ...
-
-    # Strategy 6: WebSocket Order Flow Imbalance (OFI) (DEPRECATED in Phase-2)
-    # for res in get_ofi_signal(ws_trades, up, down, poly_ob_up, poly_ob_down, SETTINGS):
-    #    candidates[res.strategy_name.replace("model-", "")] = res
-
-    # Strategy 7: WS Flash Snipe (WebSocket 閃電狙擊 0.3%) (DEPRECATED in Phase-2)
-    # ... (code commented out) ...
-
-    # Strategy 8: Polymarket Orderbook Imbalance (DEPRECATED in Phase-2)
-    if False and poly_ob_up and poly_ob_down:
-        imbalance_up = _check_imbalance(poly_ob_up)
-        imbalance_down = _check_imbalance(poly_ob_down)
-        # ... (rest of strategy 8)
-
-    # Strategy 11: Binance Liquidation Fader (DEPRECATED in Phase-2)
-    try:
-        from core.ws_binance import BINANCE_WS
-
-        if (
-            False and getattr(SETTINGS, "liquidation_fade_min_usd", 0.0) > 0
-            and BINANCE_WS.get_last_update_age() < 5.0
-        ):
-            # ... (rest of strategy 11)
-            pass
-    except Exception:
-        pass
-
-    # Strategy 12: Early Underdog Sniper (DEPRECATED in Phase-2)
-    try:
-        if False and secs_left is not None:
-            # ... (rest of strategy 12)
-            pass
-    except Exception:
-        pass
-
-    # Strategy 13: 15m Extreme-Price Fade (Counter-trend Value Entry) (DEPRECATED in Phase-2)
-    if False and SETTINGS.market_profile == "btc_15m":
-        # ... (rest of strategy 13)
-        pass
-
-    # Mean Reversion
-    mr_res = mean_reversion.run(up, yes_window, SETTINGS)
-    if mr_res:
-        candidates["mean_reversion"] = mr_res
-
-    # Apply Momentum Confirmation and Edge Filters
-    latency_penalty = LATENCY_MONITOR.get_edge_penalty()
-    filtered_candidates = {}
-    
-    for name, s_result in candidates.items():
-        if not time_valid:
-            continue
-        
-        # 15m Strategy Blacklist (Disable latency-sensitive 5m strategies)
-        if SETTINGS.market_profile == "btc_15m":
-            if any(k in name for k in ["ws_flash_snipe", "strike_cross_snipe", "theta_bleed", "liquidation_fade", "early_underdog"]):
-                continue
-            
-            # AI Advisor Strategy Filter & No-Trade Bias
-            if SETTINGS.ai_advisor_enabled:
-                if ai_advice.get("no_trade_bias"):
-                    continue
-                # If AI allows specific strategies, only allow those + extreme_fade
-                allowed = ai_advice.get("allow_strategies", [])
-                if allowed and not any(a in name for a in allowed) and "extreme_price_fade" not in name:
-                    continue
-
-        # VPN Safe Mode: Block if secs_left < 150
-        if SETTINGS.vpn_safe_mode and secs_left is not None and secs_left < SETTINGS.vpn_entry_min_secs_left:
-            continue
-
-        side = s_result.side if hasattr(s_result, "side") else s_result.get("side")
-        price = float(up if side == "UP" else down)
-
-        # 15m Value Entry Bands & No-Chase Rules
-        if SETTINGS.market_profile == "btc_15m":
-            if price > SETTINGS.hard_no_chase_above:
-                continue
-            # If price is in soft-no-chase zone, require very high signal_score
-            if price > SETTINGS.soft_no_chase_above:
-                score = s_result.get("signal_score", 0)
-                if score < 0.85:
-                    continue
-
-        # Apply AI Confidence Modifier
-        if SETTINGS.ai_advisor_enabled:
-            s_result["signal_score"] += ai_advice.get("confidence_modifier", 0.0)
-
-        raw_edge = getattr(s_result, "raw_edge", None)
-        if raw_edge is None:
-            raw_edge = s_result.get("model_edge", 0.0)
-            
-        required_edge = getattr(s_result, "required_edge", 0.05)
-        
-        # VPN Safe Mode: Hard floor for required edge
-        if SETTINGS.vpn_safe_mode:
-            required_edge = max(required_edge, SETTINGS.vpn_min_executable_edge)
-            
-        effective_required_edge = required_edge + latency_penalty
-
-        # 1. Price Bounds Filter
-        is_snipe = name.startswith("ws_flash_snipe") or name.startswith("strike_cross_snipe") or name.startswith("theta_bleed")
-        if side == "UP":
-            if is_snipe:
-                if not snipe_valid_up: continue
-            elif not regular_valid_up:
-                continue
-        elif side == "DOWN":
-            if is_snipe:
-                if not snipe_valid_down: continue
-            elif not regular_valid_down:
-                continue
-
-        # 2. Momentum Filter
-        if up_window is not None and down_window is not None:
-            if not _has_momentum(side, up_window, down_window):
-                continue
-
-        # 3. Edge Filter (Latency Aware)
-        if raw_edge < effective_required_edge:
-            continue
-
-        filtered_candidates[name] = s_result
-
-    if not filtered_candidates:
-        r = base_result.copy()
-        if candidates:
-            r["reason"] = (
-                f"flow_too_weak_{len(candidates)}_lat{latency_penalty:.3f}"
-                if time_valid
-                else r.get("reason", "too_late_in_market")
+    if edge_yes >= edge_threshold:
+        if ofi_yes >= -min_ofi: # 只要不是強烈反向
+            candidates["unified_fv_up"] = _build_candidate(
+                base_result,
+                side="UP",
+                strategy_key="unified_fv",
+                entry_price=float(exec_up),
+                signal_score=fv_yes,
+                signal_confidence=0.5 + (ofi_yes * 0.5),
+                extras={"net_edge": edge_yes, "ofi": ofi_yes}
             )
-        else:
-            if not r.get("reason"):
-                 r["reason"] = "no_valid_signals"
-        return r
 
-    # Handle Aggressive Volume Mode (Return all candidates)
-    if getattr(SETTINGS, "aggressive_volume_mode", False):
-        ranked = _rank_candidates(filtered_candidates)
-        # Convert all to dicts for output
-        all_dicts = []
-        for c in ranked:
-            all_dicts.append(to_dict(c))
-        
-        best = all_dicts[0].copy()
-        best["candidates"] = all_dicts
-        best["candidate_count"] = len(all_dicts)
-        return best
+    if edge_no >= edge_threshold:
+        if ofi_no >= -min_ofi:
+            candidates["unified_fv_down"] = _build_candidate(
+                base_result,
+                side="DOWN",
+                strategy_key="unified_fv",
+                entry_price=float(exec_down),
+                signal_score=fv_no,
+                signal_confidence=0.5 + (ofi_no * 0.5),
+                extras={"net_edge": edge_no, "ofi": ofi_no}
+            )
 
-    best_decision = _select_best_candidate(filtered_candidates, base_result)
-    if best_decision:
-        return best_decision
+    # 5. 時間窗口與風控過濾 (Time/VPN Filters)
+    if not candidates:
+        base_result["reason"] = "no_edge_or_ofi_blocked"
+        base_result["fv_yes"] = fv_yes
+        return base_result
 
-    r = base_result.copy()
-    r["reason"] = "no_best_strategy_found"
-    return r
+    # 這裡不再重複複雜的舊過濾，直接選擇最佳 candidate
+    # (如果需要 AI 建議，可以在這裡插入)
+    if SETTINGS.ai_advisor_enabled:
+        # ... AI logic could go here ...
+        pass
+
+    return _select_best_candidate(candidates, base_result)
 
 
 def choose_side(

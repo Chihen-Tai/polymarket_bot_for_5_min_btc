@@ -79,6 +79,12 @@ class Settings:
     )
     ofi_bypass_threshold: float = _f("OFI_BYPASS_THRESHOLD", 0.65)
 
+    # Execution-First Fair Value Settings
+    EDGE_THRESHOLD: float = _f("EDGE_THRESHOLD", 0.04)
+    MIN_OFI_CONFIRM: float = _f("MIN_OFI_CONFIRM", 0.2)
+    VOL_WINDOW: int = _i("VOL_WINDOW", 30)
+    COOLDOWN_AFTER_LOSS: int = _i("COOLDOWN_AFTER_LOSS", 300)
+
     poll_seconds: int = _i("POLL_SECONDS", 5)
     live_account_cache_ttl_sec: float = _f("LIVE_ACCOUNT_CACHE_TTL_SEC", 5.0)
     pending_order_poll_seconds: float = _f("PENDING_ORDER_POLL_SECONDS", 0.5)
