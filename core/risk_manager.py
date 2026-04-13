@@ -2,7 +2,7 @@ from __future__ import annotations
 import time
 from core.config import SETTINGS
 
-import numpy as np
+import statistics
 from core.resolution_source import check_resolution_divergence
 
 class RiskManager:
@@ -22,7 +22,7 @@ class RiskManager:
         """計算延遲抖動 (標準差)"""
         if len(self.rtt_history) < 5:
             return 0.0
-        return float(np.std(self.rtt_history))
+        return float(statistics.stdev(self.rtt_history))
 
     def update_outcome(self, pnl_usd: float):
         """更新交易結果，若虧損則增加連敗計數"""
@@ -35,14 +35,14 @@ class RiskManager:
             self.cooldown_until = 0
 
     def can_trade(self, current_equity: float, current_exposure: float, 
-                  binance_p: float = 0, chainlink_p: float = 0) -> tuple[bool, str]:
+                  binance_p: float = 0, chainlink_p: float = 0,
+                  network_mode: str = "normal") -> tuple[bool, str]:
         """檢查是否允許交易"""
         now = time.time()
         
-        # 1. 網路品質檢查 (VPN 抖動)
-        jitter = self.get_jitter()
-        if jitter > 100.0: # 抖動超過 100ms
-            return False, f"high_jitter_{jitter:.1f}ms"
+        # 1. 網路品質檢查 (Graded Degradation)
+        if network_mode == "close_only":
+            return False, "network_close_only"
             
         # 2. 決議源分歧檢查
         if chainlink_p > 0:

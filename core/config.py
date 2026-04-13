@@ -85,6 +85,23 @@ class Settings:
     VOL_WINDOW: int = _i("VOL_WINDOW", 30)
     COOLDOWN_AFTER_LOSS: int = _i("COOLDOWN_AFTER_LOSS", 300)
 
+    # Graded Network Modes (Latency/Jitter thresholds)
+    NETWORK_MAKER_ONLY_LATENCY_MS: float = _f("NETWORK_MAKER_ONLY_LATENCY_MS", 350.0)
+    NETWORK_CLOSE_ONLY_LATENCY_MS: float = _f("NETWORK_CLOSE_ONLY_LATENCY_MS", 600.0)
+    NETWORK_MAKER_ONLY_JITTER_MS: float = _f("NETWORK_MAKER_ONLY_JITTER_MS", 50.0)
+    NETWORK_CLOSE_ONLY_JITTER_MS: float = _f("NETWORK_CLOSE_ONLY_JITTER_MS", 120.0)
+
+    # Selective High-Confidence Taker Fallback
+    high_confidence_taker_fallback_enabled: bool = _b("HIGH_CONFIDENCE_TAKER_FALLBACK_ENABLED", True)
+    high_confidence_edge_extra: float = _f("HIGH_CONFIDENCE_EDGE_EXTRA", 0.02)
+    max_acceptable_entry_premium_pct: float = _f("MAX_ACCEPTABLE_ENTRY_PREMIUM_PCT", 0.03)
+
+    # Expiry-First Certainty Hold
+    expiry_first_certainty_hold_enabled: bool = _b("EXPIRY_FIRST_CERTAINTY_HOLD_ENABLED", True)
+    expiry_first_hold_max_secs_left: float = _f("EXPIRY_FIRST_HOLD_MAX_SECS_LEFT", 10.0)
+    expiry_first_hold_min_fair_value: float = _f("EXPIRY_FIRST_HOLD_MIN_FAIR_VALUE", 0.92)
+    strategic_exit_min_ev_advantage: float = _f("STRATEGIC_EXIT_MIN_EV_ADVANTAGE", 0.03)
+
     # 15m Low-Frequency Value Entry Settings
     POLL_SECONDS: int = _i("POLL_SECONDS", 15) # 降低頻率，減少無謂 API 消耗與雜訊
     MIN_EXECUTABLE_EDGE: float = _f("MIN_EXECUTABLE_EDGE", 0.05) # 至少 5% 淨邊際才進場
@@ -93,7 +110,7 @@ class Settings:
     DAILY_MAX_LOSS_USD: float = _f("DAILY_MAX_LOSS_USD", 5.0)
     
     # 執行優先參數
-    MAKER_ENTRY_TIMEOUT_SEC: int = _i("MAKER_ENTRY_TIMEOUT_SEC", 10) # 給 Maker 更多時間成交
+    MAKER_ENTRY_TIMEOUT_SEC: float = _f("MAKER_ENTRY_TIMEOUT_SEC", 10.0) # 給 Maker 更多時間成交
     
     poll_seconds: int = _i("POLL_SECONDS", 15)
     live_account_cache_ttl_sec: float = _f("LIVE_ACCOUNT_CACHE_TTL_SEC", 5.0)

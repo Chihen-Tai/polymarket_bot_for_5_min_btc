@@ -1,7 +1,4 @@
 from __future__ import annotations
-import numpy as np
-from typing import Dict, List, Any
-
 def calculate_ofi(order_book: Dict[str, List[Dict[str, Any]]]) -> float:
     """
     計算訂單流不平衡 (Order Flow Imbalance, OFI)。
@@ -22,7 +19,7 @@ def calculate_ofi(order_book: Dict[str, List[Dict[str, Any]]]) -> float:
         return 0.0
         
     imbalance = (bid_vol - ask_vol) / total_vol
-    return float(np.clip(imbalance, -1.0, 1.0))
+    return float(max(-1.0, min(imbalance, 1.0)))
 
 def get_book_skew(order_book: Dict[str, List[Dict[str, Any]]]) -> float:
     """計算掛單價格偏斜度"""

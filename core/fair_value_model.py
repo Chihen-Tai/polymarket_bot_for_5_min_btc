@@ -37,9 +37,9 @@ def calculate_binary_probability(
     except Exception:
         return 0.5
 
-import numpy as np
+import statistics
 
-def calculate_realized_vol(price_history: List[float], window: int = 20) -> float:
+def calculate_realized_vol(price_history: list[float], window: int = 20) -> float:
     """
     從價格歷史計算年化實現波動率。
     假設輸入是 1 分鐘級別的價格。
@@ -47,10 +47,18 @@ def calculate_realized_vol(price_history: List[float], window: int = 20) -> floa
     if len(price_history) < window:
         return 0.70  # 樣本不足時回傳預設值
     
-    returns = np.diff(np.log(price_history))
+    # Calculate log returns
+    returns = []
+    for i in range(1, len(price_history)):
+        returns.append(math.log(price_history[i] / price_history[i-1]))
+    
+    if len(returns) < 2:
+        return 0.70
+
     # 年化係數: sqrt(一年分鐘數)
-    vol = np.std(returns) * math.sqrt(365 * 24 * 60)
-    return float(np.clip(vol, 0.30, 1.50)) # 限制在 30%-150% 之間
+    stdev = statistics.stdev(returns)
+    vol = stdev * math.sqrt(365 * 24 * 60)
+    return float(max(0.30, min(vol, 1.50))) # 限制在 30%-150% 之間
 
 def get_fair_value(
     btc_price: float,

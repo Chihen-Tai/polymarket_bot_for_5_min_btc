@@ -20,6 +20,11 @@ class LatencyMonitor:
     def add_rtt(self, rtt_ms: float):
         self.rtts.append(rtt_ms)
 
+    def get_last_rtt(self) -> float | None:
+        if not self.rtts:
+            return None
+        return self.rtts[-1]
+
     def record_decision_to_order(self, ms: float):
         self.decision_to_order.append(ms)
 
@@ -48,6 +53,38 @@ class LatencyMonitor:
             return 0.0
         return statistics.median(self.rtts)
 
+    def get_network_mode(self) -> str:
+        """
+        Determines the trading mode based on network health.
+        Modes: normal, maker_only, close_only
+        """
+        if not SETTINGS.vpn_safe_mode:
+            return "normal"
+            
+        median_rtt = self.get_median_rtt()
+        # Fallback to general stats if e2e is empty
+        stats = self.get_e2e_stats()
+        
+        # Use simple jitter calculation from generic RTTs if e2e is not yet populated
+        rtt_list = list(self.rtts)
+        jitter = 0.0
+        if len(rtt_list) >= 5:
+            jitter = statistics.stdev(rtt_list)
+
+        # 1. Close-only mode (Hard stop for entries)
+        if median_rtt > SETTINGS.NETWORK_CLOSE_ONLY_LATENCY_MS:
+            return "close_only"
+        if jitter > SETTINGS.NETWORK_CLOSE_ONLY_JITTER_MS:
+            return "close_only"
+            
+        # 2. Maker-only mode (Degraded performance)
+        if median_rtt > SETTINGS.NETWORK_MAKER_ONLY_LATENCY_MS:
+            return "maker_only"
+        if jitter > SETTINGS.NETWORK_MAKER_ONLY_JITTER_MS:
+            return "maker_only"
+            
+        return "normal"
+
     def get_edge_penalty(self) -> float:
         median_rtt = self.get_median_rtt()
         # In VPN safe mode, we penalize more aggressively
@@ -63,20 +100,9 @@ class LatencyMonitor:
         return max(0.0, (median_rtt - base_threshold) / 100.0 * SETTINGS.latency_edge_buffer)
 
     def is_blocked(self) -> tuple[bool, str]:
-        if not SETTINGS.vpn_safe_mode:
-            return False, ""
-        
-        stats = self.get_e2e_stats()
-        if len(self.decision_to_order) < 3: # Grace period
-            return False, ""
-            
-        if stats["p50"] > SETTINGS.vpn_e2e_p50_block_ms:
-            return True, f"E2E_P50_TOO_HIGH({stats['p50']:.0f}ms > {SETTINGS.vpn_e2e_p50_block_ms}ms)"
-        if stats["p95"] > SETTINGS.vpn_e2e_p95_block_ms:
-            return True, f"E2E_P95_TOO_HIGH({stats['p95']:.0f}ms > {SETTINGS.vpn_e2e_p95_block_ms}ms)"
-        if stats["jitter"] > SETTINGS.vpn_e2e_jitter_block_ms:
-            return True, f"E2E_JITTER_TOO_HIGH({stats['jitter']:.0f}ms > {SETTINGS.vpn_e2e_jitter_block_ms}ms)"
-            
+        mode = self.get_network_mode()
+        if mode == "close_only":
+            return True, f"NetworkMode=close_only (rtt={self.get_median_rtt():.0f}ms)"
         return False, ""
 
 LATENCY_MONITOR = LatencyMonitor()

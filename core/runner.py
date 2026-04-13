@@ -1736,6 +1736,34 @@ def should_allow_normal_taker_fallback(
     )
 
 
+def should_allow_high_confidence_taker_fallback(
+    *, 
+    raw_edge: float, 
+    required_edge: float, 
+    market_secs_left: Optional[float],
+    network_mode: str = "normal"
+) -> bool:
+    """
+    Selective fallback for high-edge opportunities.
+    Requires extra edge margin and healthy network.
+    """
+    if not bool(getattr(SETTINGS, "high_confidence_taker_fallback_enabled", True)):
+        return False
+    
+    if network_mode == "close_only":
+        return False
+
+    extra_margin = float(getattr(SETTINGS, "high_confidence_edge_extra", 0.02))
+    if float(raw_edge or 0.0) < (float(required_edge or 0.0) + extra_margin):
+        return False
+    
+    # Do not fallback if market is ending very soon (risk of no fill before expiry)
+    if market_secs_left is not None and market_secs_left < 30:
+        return False
+        
+    return True
+
+
 def maker_entry_timeout_seconds() -> float:
     return float(getattr(SETTINGS, "maker_order_timeout_sec", 15) or 15.0)
 
@@ -4325,6 +4353,7 @@ def main():
                                     chosen_candidate.get("probability_source") or ""
                                 )
                                 entry_price = chosen_candidate.get("entry_price")
+                                canonical_entry_price = chosen_candidate.get("canonical_entry_price") or entry_price
                                 strategy_win_rate = float(
                                     chosen_candidate.get("strategy_win_rate") or 0.5
                                 )
@@ -5711,13 +5740,17 @@ def main():
             # 記錄當前延遲樣本供 RiskManager 計算抖動
             last_rtt = LATENCY_MONITOR.get_last_rtt()
             if last_rtt: RISK_MANAGER.add_latency_sample(last_rtt)
+            
+            # 取得網路模式 (Graded Degradation)
+            current_network_mode = LATENCY_MONITOR.get_network_mode()
 
-            # 2. 新增風險管理檢查 (抖動 + 分歧 + 基礎風控)
+            # 2. 新增風險管理檢查 (抖動 + 分歧 + 基礎風控 + 網路模式)
             rm_ok, rm_reason = RISK_MANAGER.can_trade(
                 acct.equity, 
                 acct.open_exposure,
                 binance_p=binance_p,
-                chainlink_p=chainlink_p
+                chainlink_p=chainlink_p,
+                network_mode=current_network_mode
             )
             if not rm_ok:
                 maybe_record_cycle_label(
@@ -5780,11 +5813,7 @@ def main():
                 continue
 
             try:
-                sim_price = (
-                    (float(up) if up is not None else None)
-                    if signal_side == "UP"
-                    else (float(down) if down is not None else None)
-                )
+                sim_price = float(canonical_entry_price) if canonical_entry_price is not None else None
 
                 force_taker_snipe = False
                 try:
@@ -5912,18 +5941,44 @@ def main():
                                 order_latencies = maker_latencies
                                 order_attempts = 1
                             else:
-                                log(
-                                    f"❌ maker timeout, skipping taker fallback | side={signal_side} (Phase-1 Refactor: Never cross spread)"
+                                # Selective Taker Fallback
+                                can_fallback = should_allow_high_confidence_taker_fallback(
+                                    raw_edge=float((entry_edge or {}).get("raw_edge") or 0.0),
+                                    required_edge=float((entry_edge or {}).get("required_edge") or 0.0),
+                                    market_secs_left=secs_left,
+                                    network_mode=current_network_mode
                                 )
-                                # Cancel the stale maker order
-                                try:
-                                    maker_id = str(maker_resp.get("response", {}).get("orderID") or "").strip()
-                                    if maker_id:
-                                        ex.cancel_order(maker_id)
-                                except Exception:
-                                    pass
-                                smart_sleep(SETTINGS.poll_seconds)
-                                continue
+                                
+                                if can_fallback:
+                                    log(
+                                        f"⚡ high-confidence fallback to taker | side={signal_side} edge={(entry_edge or {}).get('raw_edge')}"
+                                    )
+                                    # Cancel stale order first
+                                    try:
+                                        maker_id = str(maker_resp.get("response", {}).get("orderID") or "").strip()
+                                        if maker_id: ex.cancel_order(maker_id)
+                                    except Exception: pass
+                                    
+                                    resp, order_latencies, order_attempts = place_entry_order_with_retry(
+                                        ex, signal_side, order_usd, token_override,
+                                        simulated_price=sim_price, force_taker=True,
+                                        max_attempts=int(getattr(SETTINGS, "entry_retry_attempts", 3)),
+                                        backoff_sec=float(getattr(SETTINGS, "entry_retry_backoff_sec", 2.0)),
+                                        decision_started_at=decision_started_at,
+                                    )
+                                else:
+                                    log(
+                                        f"❌ maker timeout, skipping trade | side={signal_side} (fallback denied or disabled)"
+                                    )
+                                    # Cancel the stale maker order
+                                    try:
+                                        maker_id = str(maker_resp.get("response", {}).get("orderID") or "").strip()
+                                        if maker_id:
+                                            ex.cancel_order(maker_id)
+                                    except Exception:
+                                        pass
+                                    smart_sleep(SETTINGS.poll_seconds)
+                                    continue
                     except Exception as _me:
                         log(f"maker entry failed ({_me}), skipping trade | side={signal_side}")
                         smart_sleep(SETTINGS.poll_seconds)
@@ -6029,8 +6084,8 @@ def main():
                         slippage_breach = False
                         slippage_premium_pct = 0.0
                         slippage_expected_price = (
-                            float(entry_price)
-                            if entry_price and float(entry_price) > 0
+                            float(canonical_entry_price)
+                            if canonical_entry_price and float(canonical_entry_price) > 0
                             else 0.0
                         )
                         if (
