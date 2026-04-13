@@ -4525,10 +4525,23 @@ def main():
                             keep_positions.append(p)
                             continue
                         else:
+                            # 獲取當前公平價值用於出場比較
+                            from core.fair_value_model import get_fair_value
+                            current_fv = get_fair_value(
+                                float(binance_1m.get("c", 0)), 
+                                market.get("strike_price") or 0.0, 
+                                secs_left or 0.0
+                            )
+                            
+                            # 出場評估 (包含 EV 比較)
                             exit_decision = decide_exit(
                                 pnl_pct=hard_stop_pnl_pct,
                                 hold_sec=hold_sec,
                                 secs_left=secs_left,
+                                fair_value=current_fv,
+                                side=p.side,
+                                ob_bids=(poly_ob_up.get('bids', []) if p.side == "UP" else poly_ob_down.get('bids', [])),
+                                shares=p.shares,
                             )
 
                         # ── Late Certainty Hold（末段確定性持倉策略）──

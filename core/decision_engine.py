@@ -229,110 +229,63 @@ def explain_choose_side(
     poly_ob_up: Optional[dict] = None,
     poly_ob_down: Optional[dict] = None,
 ) -> dict:
-    from core.exchange import estimate_entry_avg_price_from_asks
+    from core.execution_engine import calculate_committed_edge, get_vwap_from_ladder
 
-    # 1. 取得可執行價格 (Executable Prices)
-    prices = get_outcome_prices(market)
-    gamma_up = prices.get("up") or prices.get("漲")
-    gamma_down = prices.get("down") or prices.get("跌")
-    
-    # 這裡我們優先使用觀察到的價格，若無則使用 Gamma API
-    up = observed_up if observed_up is not None else gamma_up
-    down = observed_down if observed_down is not None else gamma_down
-
-    exec_est_size = float(getattr(SETTINGS, "min_live_order_usd", 10.0) or 10.0)
-    exec_up = up
-    if poly_ob_up:
-        est_p, _, fill = estimate_entry_avg_price_from_asks(poly_ob_up, exec_est_size)
-        if est_p and fill >= 0.5: exec_up = est_p
-
-    exec_down = down
-    if poly_ob_down:
-        est_p, _, fill = estimate_entry_avg_price_from_asks(poly_ob_down, exec_est_size)
-        if est_p and fill >= 0.5: exec_down = est_p
-
+    # 1. 數據準備與基礎過濾
     secs_left = seconds_to_market_end(market)
-    regime = _get_time_regime(secs_left) if secs_left is not None else "unknown"
-
     base_result = {
-        "ok": False,
-        "side": None,
-        "reason": "no_valid_signals",
-        "up": exec_up,
-        "down": exec_down,
-        "secs_left": secs_left,
-        "regime": regime,
+        "ok": False, "side": None, "reason": "no_valid_signals",
+        "market_slug": market.get("slug"), "secs_left": secs_left,
     }
 
-    if exec_up is None or exec_down is None or secs_left is None:
-        base_result["reason"] = "missing_data"
+    if binance_1m is None or secs_left is None or poly_ob_up is None or poly_ob_down is None:
+        base_result["reason"] = "missing_market_data"
         return base_result
 
-    # 2. 核心統計模型 (Unified Fair Value with Dynamic Vol)
+    # 2. 公平價值計算 (Dynamic Vol BS Model)
     strike_price = market.get("strike_price") or _extract_strike_price(market.get("question", ""))
-    if strike_price is None or binance_1m is None:
-        base_result["reason"] = "missing_valuation_inputs"
+    if strike_price is None:
+        base_result["reason"] = "missing_strike_price"
         return base_result
 
-    # 從 binance_5m 提取價格歷史計算實現波動率
-    price_history = []
-    if binance_5m:
-        price_history = [float(k.get('c') or k.get('close') or 0) for k in binance_5m]
-    
-    btc_price = float(binance_1m.get("c") or binance_1m.get("close") or 0.0)
+    price_history = [float(k.get('c', 0)) for k in (binance_5m or [])]
+    btc_price = float(binance_1m.get("c", 0))
     fv_yes = get_fair_value(btc_price, strike_price, secs_left, price_history=price_history)
-    fv_no = 1.0 - fv_yes
 
-    # 3. 計算淨邊際 (Net Edge)
-    # Edge = FairValue - ExecutablePrice - Fee (Maker 0.005, Taker 0.0156)
-    # 我們假設使用 Maker 入場
-    maker_fee = 0.005
-    edge_yes = fv_yes - float(exec_up) - maker_fee
-    edge_no = fv_no - float(exec_down) - maker_fee
+    # 3. 執行策略：無交易區 (No-Trade Zone)
+    # 避免在接近 0.5 的高競爭/低優勢區域交易
+    mid_price = (float(observed_up or 0.5) + (1.0 - float(observed_down or 0.5))) / 2.0
+    if SETTINGS.NO_TRADE_ZONE_LOW < mid_price < SETTINGS.NO_TRADE_ZONE_HIGH:
+        base_result["reason"] = f"no_trade_zone_{mid_price:.3f}"
+        return base_result
 
-    # 4. 微觀結構確認 (Microstructure OFI)
-    ofi_yes = calculate_ofi(poly_ob_up) if poly_ob_up else 0.0
-    ofi_no = calculate_ofi(poly_ob_down) if poly_ob_down else 0.0
+    # 4. 承諾邊際 (Ladder-Aware Committed Edge)
+    order_size = float(getattr(SETTINGS, "min_live_order_usd", 1.0))
+    edge_up = calculate_committed_edge(fv_yes, poly_ob_up, poly_ob_down, order_size, "UP")
+    edge_down = calculate_committed_edge(fv_yes, poly_ob_up, poly_ob_down, order_size, "DOWN")
 
     candidates = {}
-    edge_threshold = float(getattr(SETTINGS, "EDGE_THRESHOLD", 0.04))
-    min_ofi = float(getattr(SETTINGS, "MIN_OFI_CONFIRM", 0.2))
+    threshold = float(SETTINGS.MIN_EXECUTABLE_EDGE)
 
-    if edge_yes >= edge_threshold:
-        if ofi_yes >= -min_ofi: # 只要不是強烈反向
-            candidates["unified_fv_up"] = _build_candidate(
-                base_result,
-                side="UP",
-                strategy_key="unified_fv",
-                entry_price=float(exec_up),
-                signal_score=fv_yes,
-                signal_confidence=0.5 + (ofi_yes * 0.5),
-                extras={"net_edge": edge_yes, "ofi": ofi_yes}
-            )
+    if edge_up >= threshold:
+        candidates["unified_fv_up"] = _build_candidate(
+            base_result, side="UP", strategy_key="unified_fv",
+            entry_price=get_vwap_from_ladder(poly_ob_up.get('asks', []), order_size),
+            signal_score=fv_yes, signal_confidence=1.0,
+            extras={"committed_edge": edge_up}
+        )
 
-    if edge_no >= edge_threshold:
-        if ofi_no >= -min_ofi:
-            candidates["unified_fv_down"] = _build_candidate(
-                base_result,
-                side="DOWN",
-                strategy_key="unified_fv",
-                entry_price=float(exec_down),
-                signal_score=fv_no,
-                signal_confidence=0.5 + (ofi_no * 0.5),
-                extras={"net_edge": edge_no, "ofi": ofi_no}
-            )
+    if edge_down >= threshold:
+        candidates["unified_fv_down"] = _build_candidate(
+            base_result, side="DOWN", strategy_key="unified_fv",
+            entry_price=get_vwap_from_ladder(poly_ob_down.get('asks', []), order_size),
+            signal_score=1.0 - fv_yes, signal_confidence=1.0,
+            extras={"committed_edge": edge_down}
+        )
 
-    # 5. 時間窗口與風控過濾 (Time/VPN Filters)
     if not candidates:
-        base_result["reason"] = "no_edge_or_ofi_blocked"
-        base_result["fv_yes"] = fv_yes
+        base_result["reason"] = "insufficient_edge"
         return base_result
-
-    # 這裡不再重複複雜的舊過濾，直接選擇最佳 candidate
-    # (如果需要 AI 建議，可以在這裡插入)
-    if SETTINGS.ai_advisor_enabled:
-        # ... AI logic could go here ...
-        pass
 
     return _select_best_candidate(candidates, base_result)
 

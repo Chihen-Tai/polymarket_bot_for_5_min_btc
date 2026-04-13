@@ -85,7 +85,17 @@ class Settings:
     VOL_WINDOW: int = _i("VOL_WINDOW", 30)
     COOLDOWN_AFTER_LOSS: int = _i("COOLDOWN_AFTER_LOSS", 300)
 
-    poll_seconds: int = _i("POLL_SECONDS", 5)
+    # 15m Low-Frequency Value Entry Settings
+    POLL_SECONDS: int = _i("POLL_SECONDS", 15) # 降低頻率，減少無謂 API 消耗與雜訊
+    MIN_EXECUTABLE_EDGE: float = _f("MIN_EXECUTABLE_EDGE", 0.05) # 至少 5% 淨邊際才進場
+    NO_TRADE_ZONE_LOW: float = 0.45
+    NO_TRADE_ZONE_HIGH: float = 0.55
+    DAILY_MAX_LOSS_USD: float = _f("DAILY_MAX_LOSS_USD", 5.0)
+    
+    # 執行優先參數
+    MAKER_ENTRY_TIMEOUT_SEC: int = _i("MAKER_ENTRY_TIMEOUT_SEC", 10) # 給 Maker 更多時間成交
+    
+    poll_seconds: int = _i("POLL_SECONDS", 15)
     live_account_cache_ttl_sec: float = _f("LIVE_ACCOUNT_CACHE_TTL_SEC", 5.0)
     pending_order_poll_seconds: float = _f("PENDING_ORDER_POLL_SECONDS", 0.5)
     open_position_poll_seconds: float = _f("OPEN_POSITION_POLL_SECONDS", 0.5)
