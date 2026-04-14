@@ -20,6 +20,7 @@ def load_state() -> dict:
 
 def save_state(state: dict) -> None:
     path = _state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2))
     tmp.replace(path)
