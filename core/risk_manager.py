@@ -41,8 +41,10 @@ class RiskManager:
         now = time.time()
         
         # 1. 網路品質檢查 (Graded Degradation)
-        if network_mode == "close_only":
-            return False, "network_close_only"
+        from core.latency_monitor import LATENCY_MONITOR
+        is_blocked, block_reason = LATENCY_MONITOR.is_blocked()
+        if is_blocked:
+            return False, block_reason
             
         # 2. 決議源分歧檢查
         if chainlink_p > 0:

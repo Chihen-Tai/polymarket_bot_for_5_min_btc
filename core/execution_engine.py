@@ -1,11 +1,8 @@
 from __future__ import annotations
 from typing import List, Dict, Any
+from core.config import SETTINGS
 
 def get_vwap_from_ladder(ladder: List[Dict[str, Any]], size_usd: float) -> float:
-    """
-    模擬在訂單簿梯次中成交特定金額的 VWAP。
-    如果深度不足以支撐該金額，回傳 999.0 (代表成本無窮大)。
-    """
     if not ladder:
         return 999.0
         
@@ -27,47 +24,58 @@ def get_vwap_from_ladder(ladder: List[Dict[str, Any]], size_usd: float) -> float
         
     return 999.0
 
-def calculate_polymarket_fee(price: float, size_usd: float) -> float:
+class FeeModel:
     """
-    官方費率公式: Fee = Amount * feeRate * p * (1-p)
-    feeRate 固定為 0.0156 (156 bps)。
+    Polymarket dynamic fee abstraction.
+    Maker orders often have 0% fee or a rebate.
+    Taker orders incur the dynamic fee p * (1-p) * TakerRate.
     """
-    fee_rate = 0.0156
-    # p * (1-p) 在 0.5 時達到最大值 0.25
-    return float(size_usd * fee_rate * price * (1.0 - price))
+    def __init__(self, taker_rate: float = 0.02, maker_rate: float = 0.0):
+        self.taker_rate = taker_rate
+        self.maker_rate = maker_rate
+
+    def calculate_taker_fee(self, price: float, size_usd: float) -> float:
+        """Calculates taker fee based on theoretical p * (1-p) scaling."""
+        return float(size_usd * self.taker_rate * price * (1.0 - price))
+
+    def calculate_maker_fee(self, price: float, size_usd: float) -> float:
+        """Calculates maker fee (or rebate if rate is negative)."""
+        return float(size_usd * self.maker_rate * price * (1.0 - price))
+
+# Global injected fee model for current epoch
+FEE_MODEL = FeeModel()
 
 def calculate_committed_edge(
     fair_value: float, 
     ob_up: Dict[str, Any], 
     ob_down: Dict[str, Any], 
     order_size_usd: float, 
-    side: str
+    side: str,
+    assume_maker: bool = True
 ) -> float:
     """
-    計算「承諾邊際」。
-    邊際 = 期望價值 - 入場成本 - (進場費 + 出場費) - 延遲緩衝
+    Calculates execution edge.
+    Edge = EV - EntryPrice - Fees - EmpiricalSlippage
     """
-    safety_buffer = 0.01 # 1% 靜態緩衝
-    
     if side == "UP":
-        entry_price = get_vwap_from_ladder(ob_up.get('asks', []), order_size_usd)
+        top_ask = float(ob_up.get('asks', [{'price': 999.0}])[0]['price'])
+        entry_price = top_ask if assume_maker else get_vwap_from_ladder(ob_up.get('asks', []), order_size_usd)
         if entry_price > 1.0: return -1.0
         
-        # 官方費率計算 (進場與預期出場)
-        entry_fee = calculate_polymarket_fee(entry_price, order_size_usd) / order_size_usd
-        # 出場假設到期 (費率為 0)，若非到期則需額外計算
-        total_fees = entry_fee 
+        fee_func = FEE_MODEL.calculate_maker_fee if assume_maker else FEE_MODEL.calculate_taker_fee
+        entry_fee = fee_func(entry_price, order_size_usd) / order_size_usd
         
         ev_expiry = fair_value
-        edge = ev_expiry - entry_price - total_fees - safety_buffer
+        edge = ev_expiry - entry_price - entry_fee - SETTINGS.latency_buffer_usd
     else:
-        entry_price = get_vwap_from_ladder(ob_down.get('asks', []), order_size_usd)
+        top_ask = float(ob_down.get('asks', [{'price': 999.0}])[0]['price'])
+        entry_price = top_ask if assume_maker else get_vwap_from_ladder(ob_down.get('asks', []), order_size_usd)
         if entry_price > 1.0: return -1.0
         
-        entry_fee = calculate_polymarket_fee(entry_price, order_size_usd) / order_size_usd
-        total_fees = entry_fee
+        fee_func = FEE_MODEL.calculate_maker_fee if assume_maker else FEE_MODEL.calculate_taker_fee
+        entry_fee = fee_func(entry_price, order_size_usd) / order_size_usd
         
         ev_expiry = 1.0 - fair_value
-        edge = ev_expiry - entry_price - total_fees - safety_buffer
+        edge = ev_expiry - entry_price - entry_fee - SETTINGS.latency_buffer_usd
         
     return float(edge)

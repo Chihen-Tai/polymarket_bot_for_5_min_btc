@@ -257,45 +257,37 @@ def explain_choose_side(
     # 3. Sniper 核心過濾：只交易極端區域
     up_price = float(observed_up or 0.5)
     
-    # 規則 A: 避開中間區域 (0.40 - 0.60)
-    if SETTINGS.SNIPER_MID_ZONE_LOW < up_price < SETTINGS.SNIPER_MID_ZONE_HIGH:
-        base_result["reason"] = f"sniper_mid_zone_avoidance_{up_price:.3f}"
-        return base_result
-
-    # 規則 B: 必須是極端定價 (>0.75 或 <0.25)
-    is_extreme = up_price > SETTINGS.SNIPER_EXTREME_UPPER or up_price < SETTINGS.SNIPER_EXTREME_LOWER
+    # 必須是極端定價 (>0.75 或 <0.25)
+    is_extreme = up_price > SETTINGS.sniper_extreme_upper or up_price < SETTINGS.sniper_extreme_lower
     if not is_extreme:
         base_result["reason"] = "not_extreme_enough"
         return base_result
 
     # 4. 承諾邊際 (Committed Edge) 與 延遲補償
     order_size = float(getattr(SETTINGS, "min_live_order_usd", 1.0))
-    edge_up = calculate_committed_edge(fv_yes, poly_ob_up, poly_ob_down, order_size, "UP")
-    edge_down = calculate_committed_edge(fv_yes, poly_ob_up, poly_ob_down, order_size, "DOWN")
+    # We enforce assume_maker=True for the VPN profile
+    edge_up = calculate_committed_edge(fv_yes, poly_ob_up, poly_ob_down, order_size, "UP", assume_maker=SETTINGS.vpn_maker_only)
+    edge_down = calculate_committed_edge(fv_yes, poly_ob_up, poly_ob_down, order_size, "DOWN", assume_maker=SETTINGS.vpn_maker_only)
     
-    # 額外扣除延遲緩衝 (2%)
-    edge_up -= float(getattr(SETTINGS, "LATENCY_BUFFER_USD", 0.02))
-    edge_down -= float(getattr(SETTINGS, "LATENCY_BUFFER_USD", 0.02))
-
     candidates = {}
-    threshold = float(SETTINGS.MIN_SNIPER_EDGE)
+    threshold = float(SETTINGS.min_sniper_edge_bps) / 10000.0
 
     if edge_up >= threshold:
-        reason = "fade_retail_panic" if up_price < 0.25 else "fade_retail_fomo"
+        reason = "fade_retail_panic" if up_price < SETTINGS.sniper_extreme_lower else "fade_retail_fomo"
         candidates["sniper_fade_up"] = _build_candidate(
             base_result, side="UP", strategy_key=reason,
             entry_price=get_vwap_from_ladder(poly_ob_up.get('asks', []), order_size),
             signal_score=fv_yes, signal_confidence=1.0,
-            extras={"sniper_edge": edge_up, "behavioral_alpha": reason}
+            extras={"sniper_edge": edge_up, "behavioral_alpha": reason, "latency_buffer": SETTINGS.latency_buffer_usd}
         )
 
     if edge_down >= threshold:
-        reason = "fade_retail_panic" if (1.0 - up_price) < 0.25 else "fade_retail_fomo"
+        reason = "fade_retail_panic" if (1.0 - up_price) < SETTINGS.sniper_extreme_lower else "fade_retail_fomo"
         candidates["sniper_fade_down"] = _build_candidate(
             base_result, side="DOWN", strategy_key=reason,
             entry_price=get_vwap_from_ladder(poly_ob_down.get('asks', []), order_size),
             signal_score=1.0 - fv_yes, signal_confidence=1.0,
-            extras={"sniper_edge": edge_down, "behavioral_alpha": reason}
+            extras={"sniper_edge": edge_down, "behavioral_alpha": reason, "latency_buffer": SETTINGS.latency_buffer_usd}
         )
 
     if not candidates:

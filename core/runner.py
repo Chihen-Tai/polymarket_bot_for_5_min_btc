@@ -2947,11 +2947,10 @@ def build_take_profit_principal_exit_event(
         sold_shares=sold_shares,
         mark=mark,
     )
-    principal_recovered = (
-        actual_exit_value if actual_exit_value is not None else observed_exit_value
-    )
+    # Strictly do NOT substitute observed for actual. Wait for true execution.
+    principal_recovered = actual_exit_value
     principal_done = principal_extraction_complete(
-        principal_recovered,
+        principal_recovered if principal_recovered is not None else 0.0,
         target_principal_usd,
     )
     return {
@@ -4706,9 +4705,9 @@ def main():
                                     else:
                                         actual_realized_pnl_usd = None
                                         actual_realized_return_pct = None
-                                        risk.daily_pnl += observed_realized_pnl_usd
-                                        RISK_MANAGER.update_outcome(observed_realized_pnl_usd)
-                                        pnl_source = "observed_mark"
+                                        # Do NOT pollute the risk manager and equity curves with fake paper PnL.
+                                        # Only actual_realized_pnl_usd should affect daily_pnl.
+                                        pnl_source = "observed_mark_unrealized_fallback"
 
                                     p.shares = remaining_shares
                                     p.cost_usd = remaining_cost

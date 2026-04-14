@@ -34,8 +34,9 @@ def _decide_exit_15m(
     Sniper 模式出場邏輯：持倉到期 (Hold-to-Expiry)。
     我們在高邊際進場，目標是獲取全額賠付。
     """
-    # 1. 災難性止損 (30%) - 針對極端波動的寬鬆止損
-    if pnl_pct <= -0.30:
+    # 1. 災難性止損
+    catastrophic_stop = -abs(float(getattr(SETTINGS, "catastrophic_stop_loss_pct", 0.30)))
+    if pnl_pct <= catastrophic_stop:
         return ExitDecision(True, "catastrophic-reversal-stop", pnl_pct, hold_sec)
 
     # 2. 確定性持倉 (Expiry-First Certainty Hold)
@@ -64,36 +65,18 @@ def decide_exit(
     ob_bids: list = None,
     shares: float = 0.0,
 ) -> ExitDecision:
-    # 0. 15m Default Path (Execution-First: Expiry Priority)
-    if SETTINGS.market_profile == "btc_15m":
-        return _decide_exit_15m(
-            pnl_pct=pnl_pct,
-            hold_sec=hold_sec,
-            secs_left=secs_left,
-            fair_value=fair_value,
-            side=side,
-            ob_bids=ob_bids,
-            shares=shares,
-        )
-
-    # Legacy 5m / Non-15m Path (Maintained for safety, but simplified)
-    # 1. Hard Stop Loss (Absolute Safety)
-    if pnl_pct <= -SETTINGS.stop_loss_pct:
-        return ExitDecision(True, "hard-stop-loss", pnl_pct, hold_sec)
-
-    # 2. Hold to Expiry / Deadline Exit
-    if secs_left is not None:
-        exit_deadline = float(getattr(SETTINGS, "exit_deadline_sec", 15.0))
-        if secs_left <= exit_deadline:
-            if pnl_pct <= 0:
-                return ExitDecision(True, "deadline-exit-loss", pnl_pct, hold_sec)
-            return ExitDecision(True, "deadline-exit-win", pnl_pct, hold_sec)
-
-    # 3. Max Hold Failsafe
-    if hold_sec >= SETTINGS.max_hold_seconds and pnl_pct < 0:
-        return ExitDecision(True, "max-hold-loss", pnl_pct, hold_sec)
-
-    return ExitDecision(False, "hold", pnl_pct, hold_sec)
+    """
+    Enforces the strict 15M Maker VPN exit rules.
+    """
+    return _decide_exit_15m(
+        pnl_pct=pnl_pct,
+        hold_sec=hold_sec,
+        secs_left=secs_left,
+        fair_value=fair_value,
+        side=side,
+        ob_bids=ob_bids,
+        shares=shares,
+    )
 
 
 def maybe_reverse_entry(
