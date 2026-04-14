@@ -77,6 +77,10 @@ class Settings:
     # --- Windows ---
     vpn_entry_min_secs_left: float = _f("VPN_ENTRY_MIN_SECS_LEFT", 120.0)
     vpn_entry_max_secs_left: float = _f("VPN_ENTRY_MAX_SECS_LEFT", 880.0)
+    
+    # --- Selective Entry Gates ---
+    vpn_neutral_zone_width: float = _f("VPN_NEUTRAL_ZONE_WIDTH", 0.05)
+    min_volatility_gate_bps: float = _f("MIN_VOLATILITY_GATE_BPS", 15.0)
 
     # --- Exits ---
     # We strictly hold to expiry if EV is high, or emergency close only

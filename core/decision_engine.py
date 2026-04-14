@@ -263,13 +263,23 @@ def explain_choose_side(
     # 3. Sniper 核心過濾：只交易極端區域
     up_price = float(observed_up or 0.5)
     
-    # 必須是極端定價 (>0.75 或 <0.25)
-    is_extreme = up_price > SETTINGS.sniper_extreme_upper or up_price < SETTINGS.sniper_extreme_lower
-    if not is_extreme:
-        base_result["reason"] = "not_extreme_enough"
+    # 必須不是中性區 (0.45 - 0.55 block)
+    neutral_width = float(getattr(SETTINGS, "vpn_neutral_zone_width", 0.05) or 0.05)
+    if abs(up_price - 0.5) <= neutral_width:
+        base_result["reason"] = "neutral_zone_no_trade"
         return base_result
 
-    # 4. 承諾邊際 (Committed Edge) 與 延遲補償
+    # 4. 波動率閘門 (Volatility Gate)
+    if binance_5m:
+        recent_prices = [float(k.get('c', btc_price)) for k in binance_5m[-5:]]
+        if recent_prices:
+            price_range_bps = (max(recent_prices) - min(recent_prices)) / max(min(recent_prices), 1e-9) * 10000.0
+            min_vol_bps = float(getattr(SETTINGS, "min_volatility_gate_bps", 15.0) or 15.0)
+            if price_range_bps < min_vol_bps:
+                base_result["reason"] = f"low_volatility_gate (range={price_range_bps:.1f}bps < {min_vol_bps}bps)"
+                return base_result
+
+    # 5. 承諾邊際 (Committed Edge) 與 延遲補償
     order_size = float(getattr(SETTINGS, "min_live_order_usd", 1.0))
     # We enforce assume_maker=True for the VPN profile
     edge_up = calculate_committed_edge(fv_yes, poly_ob_up, poly_ob_down, order_size, "UP", assume_maker=SETTINGS.vpn_maker_only)

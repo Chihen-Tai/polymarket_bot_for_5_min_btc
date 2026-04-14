@@ -42,9 +42,13 @@ class RiskManager:
         
         # 1. 網路品質檢查 (Graded Degradation)
         from core.latency_monitor import LATENCY_MONITOR
-        is_blocked, block_reason = LATENCY_MONITOR.is_blocked()
-        if is_blocked:
-            return False, block_reason
+        network_tier = LATENCY_MONITOR.get_network_quality_tier()
+        
+        if network_tier == "BLOCKED":
+            return False, "network_blocked"
+        
+        if network_tier == "CLOSE_ONLY":
+            return False, "network_close_only_mode"
             
         # 2. 決議源分歧檢查
         if chainlink_p > 0:

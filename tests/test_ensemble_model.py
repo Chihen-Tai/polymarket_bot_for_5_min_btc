@@ -16,11 +16,12 @@ def test_ensemble_aggregator_bid_wall():
     }
     
     # Imbalance = (10 - 0.1) / 10.1 = ~0.98. 
-    # Max skew penalty is 0.05. Modification = 0.98 * 0.05 = ~0.049
+    # Max skew penalty is 0.05. ofi_prob = 0.5 + (0.98 * 0.05) = ~0.549
+    # Weighted Blend (35/65) = (0.5 * 0.35) + (0.549 * 0.65) = ~0.532
     base_prob = 0.5
     prob = ENSEMBLE.get_calibrated_fair_value(base_prob, ws_bba)
     assert prob > base_prob
-    assert abs(prob - 0.549) < 0.01
+    assert abs(prob - 0.532) < 0.005
 
 def test_ensemble_aggregator_ask_wall():
     # A massive ask wall should skew the imbalance negative
@@ -29,11 +30,14 @@ def test_ensemble_aggregator_ask_wall():
         'a': [{'price': 60100, 'size': 50}]
     }
     
-    # Decreases prob
+    # ofi_prob = ~0.45
+    # Blend = (0.8 * 0.35) + (0.45 * 0.65) = 0.28 + 0.29 = ~0.57
     base_prob = 0.8
     prob = ENSEMBLE.get_calibrated_fair_value(base_prob, ws_bba)
     assert prob < base_prob
-    assert prob > 0.7  # It shouldn't wreck the probability entirely
+    # Since microstructure is now prioritized (65%), it pulls the 0.8 base prob down significantly
+    assert prob > 0.55
+    assert prob < 0.60
 
 def test_get_fair_value_integration():
     # Test that the outer layer orchestrates correctly

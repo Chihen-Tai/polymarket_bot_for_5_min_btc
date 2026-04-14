@@ -351,6 +351,7 @@ def reconcile_rows_with_account_activity(
         )
         _, actual_total_fees, observed_total_fees, _ = estimate_pair_fees(
             matched_cost_usd=row.entry_cost_usd,
+            matched_shares=row.entry_shares,
             actual_exit_value_usd=row.exit_recovered_actual_usd,
             observed_exit_value_usd=row.exit_recovered_observed_usd,
             entry_execution_style=row.entry_execution_style,
@@ -718,43 +719,55 @@ def normalize_execution_style(style: str | None) -> str:
     return text
 
 
-def execution_fee_rate(
-    style: str | None, *, close_reason: str | None = None, for_exit: bool = False
-) -> float:
-    if for_exit and classify_close_bucket(close_reason) != "active-close":
+def calculate_dynamic_fee(usd_amount: float, price: float, rate: float = 0.02) -> float:
+    """Calculates the Polymarket p*(1-p)*rate fee."""
+    if price <= 0 or price >= 1.0 or usd_amount <= EPS:
         return 0.0
-    normalized = normalize_execution_style(style)
-    if normalized in {"taker", "mixed"}:
-        return max(0.0, float(getattr(SETTINGS, "report_assumed_taker_fee_rate", 0.0)))
-    return 0.0
-
+    return usd_amount * rate * price * (1.0 - price)
 
 def estimate_pair_fees(
     *,
     matched_cost_usd: float,
+    matched_shares: float,
     actual_exit_value_usd: float | None,
     observed_exit_value_usd: float | None,
     entry_execution_style: str | None,
     exit_execution_style: str | None,
     close_reason: str | None,
 ) -> tuple[float | None, float | None, float | None, float | None]:
-    entry_fee_rate = execution_fee_rate(
-        entry_execution_style, close_reason=close_reason, for_exit=False
-    )
-    exit_fee_rate = execution_fee_rate(
-        exit_execution_style, close_reason=close_reason, for_exit=True
-    )
-    entry_fee = matched_cost_usd * entry_fee_rate if matched_cost_usd > EPS else 0.0
-
+    """
+    Estimates total fees for a trade pair using dynamic pricing.
+    """
+    entry_style = normalize_execution_style(entry_execution_style)
+    exit_style = normalize_execution_style(exit_execution_style)
+    
+    # 1. Entry Fee
+    entry_fee = 0.0
+    if entry_style in {"taker", "mixed"} and matched_shares > EPS:
+        entry_price = matched_cost_usd / matched_shares
+        entry_fee = calculate_dynamic_fee(matched_cost_usd, entry_price)
+        
+    # 2. Exit Fee (only if active-close)
     actual_total_fees = None
-    if actual_exit_value_usd is not None:
-        actual_total_fees = entry_fee + (actual_exit_value_usd * exit_fee_rate)
-
     observed_total_fees = None
-    if observed_exit_value_usd is not None:
-        observed_total_fees = entry_fee + (observed_exit_value_usd * exit_fee_rate)
+    
+    is_active_close = classify_close_bucket(close_reason) == "active-close"
+    
+    if actual_exit_value_usd is not None:
+        exit_fee = 0.0
+        if is_active_close and exit_style in {"taker", "mixed"} and matched_shares > EPS:
+            exit_price = actual_exit_value_usd / matched_shares
+            exit_fee = calculate_dynamic_fee(actual_exit_value_usd, exit_price)
+        actual_total_fees = entry_fee + exit_fee
 
-    return entry_fee, actual_total_fees, observed_total_fees, exit_fee_rate
+    if observed_exit_value_usd is not None:
+        exit_fee = 0.0
+        if is_active_close and exit_style in {"taker", "mixed"} and matched_shares > EPS:
+            exit_price = observed_exit_value_usd / matched_shares
+            exit_fee = calculate_dynamic_fee(observed_exit_value_usd, exit_price)
+        observed_total_fees = entry_fee + exit_fee
+
+    return entry_fee, actual_total_fees, observed_total_fees, 0.0 # fourth ret ignored mostly
 
 
 def _actual_source_rank(tier: str | None) -> int:
@@ -779,6 +792,7 @@ def _recompute_pair_row_accounting(row: TradePairRow) -> None:
     )
     _, actual_total_fees, observed_total_fees, _ = estimate_pair_fees(
         matched_cost_usd=row.entry_cost_usd,
+        matched_shares=row.entry_shares,
         actual_exit_value_usd=row.exit_recovered_actual_usd,
         observed_exit_value_usd=row.exit_recovered_observed_usd,
         entry_execution_style=row.entry_execution_style,

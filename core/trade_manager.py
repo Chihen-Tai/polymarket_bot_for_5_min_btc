@@ -31,8 +31,8 @@ def _decide_exit_15m(
     shares: float = 0.0,
 ) -> ExitDecision:
     """
-    Sniper 模式出場邏輯：持倉到期 (Hold-to-Expiry)。
-    我們在高邊際進場，目標是獲取全額賠付。
+    EV-Aware Exit Logic for 15m markets.
+    Compares Theoretical EV (Expiry) vs. Real-world Executable Maker Exit.
     """
     # 1. 災難性止損
     catastrophic_stop = -abs(float(getattr(SETTINGS, "catastrophic_stop_loss_pct", 0.30)))
@@ -40,18 +40,25 @@ def _decide_exit_15m(
         return ExitDecision(True, "catastrophic-reversal-stop", pnl_pct, hold_sec)
 
     # 2. 確定性持倉 (Expiry-First Certainty Hold)
-    # 如果已經快到期，且勝率極高，絕對不平倉。
     pos_fv = fair_value if side == "UP" else (1.0 - fair_value)
-    if secs_left is not None and secs_left <= 15.0:
-        if pos_fv >= 0.90:
-            return ExitDecision(False, "sniper-hold-to-settle", pnl_pct, hold_sec)
+    
+    # 如果快到期，判斷是否值得提前平倉
+    if secs_left is not None and secs_left <= 60.0:
+        # 取得當前可執行的 Maker Exit 價格 (Best Bid)
+        best_bid = float(ob_bids[0]['price']) if ob_bids else 0.0
         
-        # 否則在最後 15 秒清理不確定部位
-        reason = "deadline-exit-loss" if pnl_pct <= 0 else "deadline-exit-win"
-        return ExitDecision(True, reason, pnl_pct, hold_sec)
+        # 如果當前市價價格 > 理論 EV (Retail FOMO)，提前平倉鎖定利潤
+        # 加入小幅 buffer (0.01) 避免頻繁抖動
+        if best_bid > (pos_fv + 0.01) and pnl_pct > 0.05:
+            return ExitDecision(True, f"early-exit-fomo-premium (bid={best_bid:.3f} > ev={pos_fv:.3f})", pnl_pct, hold_sec)
 
-    # 3. 預設：持有到期
-    # 移除所有中間的 strategic-take-profit，因為 Taker 費與價差會吃掉優勢。
+        # 在最後 15 秒，如果勝率不夠高 (>95%)，執行 Taker 清理
+        if secs_left <= 15.0:
+            if pos_fv >= 0.95:
+                return ExitDecision(False, "sniper-hold-to-settle-lock", pnl_pct, hold_sec)
+            return ExitDecision(True, "deadline-final-exit", pnl_pct, hold_sec)
+
+    # 3. 預設：持有到期 (Max realization of edge)
     return ExitDecision(False, "hold", pnl_pct, hold_sec)
 
 

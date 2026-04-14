@@ -2510,7 +2510,11 @@ def update_network_guard(
 
 
 def required_trade_edge(
-    entry_price: float, secs_left: float | None, history_count: int = 0, fee_rate: float = 0.0156
+    entry_price: float, 
+    secs_left: float | None, 
+    history_count: int = 0, 
+    fee_rate: float = 0.0156,
+    network_tier: str = "NORMAL"
 ) -> float:
     required = max(0.0, float(getattr(SETTINGS, "edge_threshold", 0.0)))
     if history_count < 5:
@@ -2537,7 +2541,14 @@ def required_trade_edge(
     ):
         required += float(getattr(SETTINGS, "entry_neutral_edge_penalty", 0.0))
     if center_distance <= float(getattr(SETTINGS, "entry_micro_band_half_width", 0.0)):
-        required += float(getattr(SETTINGS, "entry_micro_edge_penalty", 0.0))
+    # ... (existing penalties)
+    
+    # Network Quality Penalty
+    if network_tier == "DEGRADED":
+        required *= 1.5
+        required += 0.015
+        
+    return required
 
     # Fee floor: required edge must at minimum cover taker fees on both entry and expected exit
     # entry_fee ≈ fee_rate * entry_price; exit_fee ≈ fee_rate * (1 - entry_price) on a win
@@ -2605,11 +2616,17 @@ def summarize_entry_edge(
     secs_left: float | None,
     history_count: int = 0,
     fee_rate: float = 0.0156,
+    network_tier: str = "NORMAL"
 ) -> dict:
-    neutral_hard_block = abs(float(entry_price) - 0.5) <= float(
-        getattr(SETTINGS, "entry_neutral_hard_block_half_width", 0.02) or 0.02
+    # 1. Neutral-Zone block (0.45 - 0.55 is toxic for fees/spread)
+    neutral_width = float(getattr(SETTINGS, "vpn_neutral_zone_width", 0.05) or 0.05)
+    neutral_hard_block = abs(float(entry_price) - 0.5) <= neutral_width
+    
+    # 2. Scale required edge by network quality
+    required = required_trade_edge(
+        entry_price, secs_left, history_count=history_count, fee_rate=fee_rate, network_tier=network_tier
     )
-    required = required_trade_edge(entry_price, secs_left, history_count=history_count, fee_rate=fee_rate)
+    
     raw_edge = win_rate - entry_price
     blocked_reason = "neutral-no-trade-zone" if neutral_hard_block else ""
     return {
@@ -3855,6 +3872,7 @@ def main():
             flags.last_api_latency_ms = 0.0
             cycle_had_slow_api = False
             cycle_ws_age = current_ws_age()
+            current_network_tier = LATENCY_MONITOR.get_network_quality_tier()
 
             now = datetime.now()
             key = current_5min_key(now)
@@ -5246,6 +5264,7 @@ def main():
                     entry_price=float(entry_price),
                     secs_left=secs_left if "secs_left" in locals() else None,
                     history_count=strategy_decisive_trade_count,
+                    network_tier=current_network_tier,
                 )
                 if not entry_edge["ok"]:
                     maybe_record_cycle_label(
@@ -5774,7 +5793,7 @@ def main():
             if last_rtt: RISK_MANAGER.add_latency_sample(last_rtt)
             
             # 取得網路模式 (Graded Degradation)
-            current_network_mode = LATENCY_MONITOR.get_network_mode()
+            # (Already calculated at top of loop: current_network_tier)
 
             # 2. 新增風險管理檢查 (抖動 + 分歧 + 基礎風控 + 網路模式)
             rm_ok, rm_reason = RISK_MANAGER.can_trade(
@@ -5782,7 +5801,7 @@ def main():
                 acct.open_exposure,
                 binance_p=binance_p,
                 chainlink_p=chainlink_p,
-                network_mode=current_network_mode
+                network_mode=current_network_tier
             )
             if not rm_ok:
                 maybe_record_cycle_label(
