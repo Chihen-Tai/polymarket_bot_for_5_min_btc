@@ -65,12 +65,13 @@ def get_fair_value(
     strike_price: float,
     secs_left: float,
     implied_vol: Optional[float] = None,
-    price_history: Optional[List[float]] = None
+    price_history: Optional[list[float]] = None,
+    ws_bba: Optional[dict] = None
 ) -> float:
     """
-    Returns the unified fair value (0.0 to 1.0) for a YES token.
+    Returns the unified fair value (0.0 to 1.0) for a YES token 
+    by orchestrating the M1 (Black-Scholes) and M2 (Microstructure) Ensemble.
     """
-    # 優先使用傳入的波動率，其次計算實現波動率，最後使用預設 70%
     if implied_vol is not None:
         vol = implied_vol
     elif price_history:
@@ -78,11 +79,16 @@ def get_fair_value(
     else:
         vol = 0.70
     
-    prob = calculate_binary_probability(
+    # M1 Base Probability
+    base_prob = calculate_binary_probability(
         current_price=btc_price,
         strike_price=strike_price,
         time_to_expiry_sec=secs_left,
         volatility_annual=vol
     )
     
-    return prob
+    # Send through ensemble aggregator
+    from core.ensemble_models.ensemble import ENSEMBLE
+    prob = ENSEMBLE.get_calibrated_fair_value(base_prob, ws_bba)
+    
+    return float(prob)

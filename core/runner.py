@@ -404,6 +404,7 @@ class PendingOrder:
     signal_price: float = 0.0
     raw_edge: float = 0.0
     required_edge: float = 0.0
+    binance_snapshot_price: float = 0.0
     fallback_attempted: bool = False
     disappeared_since_ts: float = 0.0
     cancel_requested: bool = False
@@ -1930,6 +1931,29 @@ def decide_pending_order_action(
             return "fallback-taker"
         return "cancel-timeout"
     return "wait"
+
+def is_adverse_selection_imminent(po: PendingOrder, ws_bba: dict) -> bool:
+    """
+    Checks if the Binance market price has moved aggressively against the 
+    resting maker order setup, justifying pre-emptive cancellation over API.
+    """
+    if not po.binance_snapshot_price or not ws_bba:
+        return False
+        
+    current_price = float(ws_bba.get('c', ws_bba.get('p', 0.0)))
+    if current_price <= 0.0:
+        return False
+        
+    move = current_price - po.binance_snapshot_price
+    
+    # If we bet YES (UP) and BTC plummets by > 2.00, it's adverse
+    if po.side == "UP" and move <= -2.00:
+        return True
+    # If we bet NO (DOWN) and BTC rallies by > 2.00, it's adverse
+    if po.side == "DOWN" and move >= 2.00:
+        return True
+        
+    return False
 
 
 def track_pending_fill(
@@ -3960,23 +3984,26 @@ def main():
                         if order_still_open:
                             po.disappeared_since_ts = 0.0
                             po.cancel_requested = False
+                            
+                        # Grab live BBA from Binance payload
+                        ws_bba = getattr(BINANCE_WS, 'last_bba', {}) 
+                        
                         action = decide_pending_order_action(
                             order_still_open=order_still_open,
                             age_sec=time.time() - po.placed_ts,
                             side=po.side,
                             ws_vel=ws_vel,
-                            cancel_velocity=float(
-                                getattr(SETTINGS, "cancel_on_reversal_velocity", 0.0)
-                            ),
+                            cancel_velocity=float(getattr(SETTINGS, "cancel_on_reversal_velocity", 0.0)),
                             timeout_sec=maker_entry_timeout_seconds(),
                             has_live_position=has_live_position,
-                            fallback_enabled=bool(
-                                getattr(SETTINGS, "maker_timeout_fallback_taker", True)
-                            ),
-                            fallback_attempted=bool(
-                                getattr(po, "fallback_attempted", False)
-                            ),
+                            fallback_enabled=bool(getattr(SETTINGS, "maker_timeout_fallback_taker", True)),
+                            fallback_attempted=bool(getattr(po, "fallback_attempted", False)),
                         )
+
+                        # Adverse selection override
+                        if action == "wait" and order_still_open and not po.cancel_requested:
+                            if is_adverse_selection_imminent(po, ws_bba):
+                                action = "cancel-adverse"
 
                         if action == "filled":
                             shares = (
@@ -4035,6 +4062,12 @@ def main():
                                     entry_reason=po.entry_reason,
                                     source="maker-cancel-reconciled",
                                 )
+                            pending_orders.remove(po)
+                            continue
+
+                        if action == "cancel-adverse":
+                            log(f"ADVERSE SELECTION PRE-EMPTION TRIGGERED on {po.side} {po.order_id}. Cancelling maker limit order.")
+                            ex.cancel_order(po.order_id)
                             pending_orders.remove(po)
                             continue
 
@@ -6461,6 +6494,7 @@ def main():
                                     required_edge=float(
                                         (entry_edge or {}).get("required_edge") or 0.0
                                     ),
+                                    binance_snapshot_price=float((binance_1m or {}).get("c", 0.0)),
                                     fallback_attempted=False,
                                 )
                             )

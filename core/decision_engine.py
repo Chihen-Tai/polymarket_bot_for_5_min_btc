@@ -252,7 +252,13 @@ def explain_choose_side(
 
     price_history = [float(k.get('c', 0)) for k in (binance_5m or [])]
     btc_price = float(binance_1m.get("c", 0))
-    fv_yes = get_fair_value(btc_price, strike_price, secs_left, price_history=price_history)
+    fv_yes = get_fair_value(
+        btc_price, 
+        strike_price, 
+        secs_left, 
+        price_history=price_history,
+        ws_bba=ws_bba
+    )
 
     # 3. Sniper 核心過濾：只交易極端區域
     up_price = float(observed_up or 0.5)
