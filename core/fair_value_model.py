@@ -8,10 +8,10 @@ def norm_cdf(x: float) -> float:
 
 def calculate_binary_probability(
     current_price: float,
-    strike_price: float,
+    strike_price: float | None,
     time_to_expiry_sec: float,
     volatility_annual: float = 0.60, # Default 60% annual vol
-) -> float:
+) -> float | None:
     """
     Calculates the theoretical probability that current_price > strike_price at expiry
     using a simplified Black-Scholes model for a binary option (delta).
@@ -19,6 +19,9 @@ def calculate_binary_probability(
     P = Phi(d2)
     d2 = [ln(S/K) - (sigma^2 / 2) * T] / (sigma * sqrt(T))
     """
+    if strike_price is None:
+        return None
+
     if time_to_expiry_sec <= 0:
         return 1.0 if current_price > strike_price else 0.0
     
@@ -62,7 +65,7 @@ def calculate_realized_vol(price_history: list[float], window: int = 20) -> floa
 
 def get_fair_value(
     btc_price: float,
-    strike_price: float,
+    strike_price: float | None,
     secs_left: float,
     implied_vol: Optional[float] = None,
     price_history: Optional[list[float]] = None,

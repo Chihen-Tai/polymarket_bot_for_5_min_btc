@@ -246,12 +246,13 @@ def explain_choose_side(
 
     # 2. 公平價值估算 (BS Model)
     strike_price = market.get("strike_price") or _extract_strike_price(market.get("question", ""))
-    if strike_price is None or binance_1m is None:
+    
+    if binance_1m is None:
         base_result["reason"] = "missing_valuation_inputs"
         return base_result
 
-    price_history = [float(k.get('c', 0)) for k in (binance_5m or [])]
-    btc_price = float(binance_1m.get("c", 0))
+    price_history = [float(k.get('close', k.get('c', 0))) for k in (binance_5m or [])]
+    btc_price = float(binance_1m.get("close", binance_1m.get("c", 0)))
     fv_yes = get_fair_value(
         btc_price, 
         strike_price, 
@@ -271,7 +272,7 @@ def explain_choose_side(
 
     # 4. 波動率閘門 (Volatility Gate)
     if binance_5m:
-        recent_prices = [float(k.get('c', btc_price)) for k in binance_5m[-5:]]
+        recent_prices = [float(k.get('close', k.get('c', btc_price))) for k in binance_5m[-5:]]
         if recent_prices:
             price_range_bps = (max(recent_prices) - min(recent_prices)) / max(min(recent_prices), 1e-9) * 10000.0
             min_vol_bps = float(getattr(SETTINGS, "min_volatility_gate_bps", 15.0) or 15.0)
