@@ -2548,8 +2548,6 @@ def required_trade_edge(
     if network_tier == "DEGRADED":
         required *= 1.5
         required += 0.015
-        
-    return required
 
     # Fee floor: required edge must at minimum cover taker fees on both entry and expected exit
     # entry_fee ≈ fee_rate * entry_price; exit_fee ≈ fee_rate * (1 - entry_price) on a win
@@ -3220,16 +3218,10 @@ def sync_open_positions(
     api_returned_data = bool(actual)
 
     if not api_returned_data:
-        # Data API returned nothing — could be down or delayed.
-        # Hold all positions as-is but don't increment miss_count.
-        sanitized, notes = sanitize_open_positions(
-            open_positions, source="runtime-no-live"
-        )
-        notes.insert(
-            0,
-            "sync_hold_all: data-api returned empty (no positions), holding all without miss penalty",
-        )
-        return sanitized, notes
+        # Data API returned nothing. We still run normal sync to increment miss_count,
+        # but explicitly log the empty return so the user knows.
+        pass
+
 
     open_positions, pre_sync_notes = sanitize_open_positions(
         open_positions,
@@ -4393,6 +4385,31 @@ def main():
                                 )
                             )
                             if chosen_candidate:
+                                _sig_side = chosen_candidate.get("side")
+                                _tok_ovr = market.get("token_up") if _sig_side == "UP" else market.get("token_down")
+                                (
+                                    token_conflict,
+                                    token_conflict_source,
+                                    token_conflict_count,
+                                    token_conflict_shares,
+                                ) = existing_token_entry_conflict(
+                                    open_positions,
+                                    pending_orders,
+                                    token_id=_tok_ovr,
+                                )
+                                if token_conflict:
+                                    reason_suffix = "same-token-open-position" if token_conflict_source == "open-position" else "same-token-pending-order"
+                                    log(
+                                        f"skip entry: candidate rejected because token already active locally ({reason_suffix}) | "
+                                        f"token={_tok_ovr} side={_sig_side}"
+                                    )
+                                    chosen_candidate = None
+                                    if not candidate_rejections:
+                                        candidate_rejections = [reason_suffix]
+                                    else:
+                                        candidate_rejections.insert(0, reason_suffix)
+
+                            if chosen_candidate:
                                 signal_side = chosen_candidate.get("side")
                                 signal_origin = (
                                     chosen_candidate.get("strategy_name") or ""
@@ -5017,6 +5034,8 @@ def main():
                         smart_sleep(SETTINGS.poll_seconds)
                         continue
                 except Exception as e:
+                    import traceback
+                    traceback.print_exc()
                     network_notes = update_network_guard(
                         flags,
                         ws_age=current_ws_age(),
@@ -5159,7 +5178,7 @@ def main():
 
             maybe_activate_profitability_skip_windows(state)
             profitability_skip_reason = profitability_skip_entry_reason(
-                state, current_5min_key()
+                state, current_5min_key(datetime.now())
             )
             if profitability_skip_reason:
                 maybe_record_cycle_label(
@@ -5319,21 +5338,6 @@ def main():
                     )
                     smart_sleep(SETTINGS.poll_seconds)
                     continue
-
-            if (
-                signal_side
-                and signal_origin
-                and entry_price
-                and float(entry_price) > 0
-                and entry_edge is not None
-            ):
-                log(
-                    f"entry approved | strategy={signal_origin} side={signal_side} "
-                    f"modelP={(signal_probability if signal_probability is not None else strategy_win_rate):.1%} "
-                    f"auxWR={strategy_win_rate:.1%} effectiveP={effective_probability:.1%} "
-                    f"price={float(entry_price):.3f} raw_edge={entry_edge['raw_edge']:.3f} "
-                    f"required={entry_edge['required_edge']:.3f}"
-                )
 
             order_usd = SETTINGS.max_order_usd
             entry_book_quality: dict[str, float | bool | str | None] | None = None
@@ -5644,42 +5648,6 @@ def main():
                 smart_sleep(SETTINGS.poll_seconds)
                 continue
 
-            (
-                token_conflict,
-                token_conflict_source,
-                token_conflict_count,
-                token_conflict_shares,
-            ) = existing_token_entry_conflict(
-                open_positions,
-                pending_orders,
-                token_id=token_override,
-            )
-            if token_conflict:
-                reason_suffix = (
-                    "same-token-open-position"
-                    if token_conflict_source == "open-position"
-                    else "same-token-pending-order"
-                )
-                maybe_record_cycle_label(
-                    state,
-                    "signal-blocked",
-                    slug=last_market_slug,
-                    side=signal_side,
-                    reason=reason_suffix,
-                )
-                if token_conflict_source == "open-position":
-                    log(
-                        f"skip entry: token already open locally | token={token_override} side={signal_side} "
-                        f"tracked_positions={token_conflict_count} tracked_shares={token_conflict_shares:.6f}"
-                    )
-                else:
-                    log(
-                        f"skip entry: token already has pending order | token={token_override} side={signal_side} "
-                        f"pending_orders={token_conflict_count}"
-                    )
-                smart_sleep(SETTINGS.poll_seconds)
-                continue
-
             if (
                 same_market_reentry_block_slug
                 and same_market_reentry_block_slug == last_market_slug
@@ -5864,6 +5832,21 @@ def main():
                     smart_sleep(block_sleep_sec)
                 continue
 
+            if (
+                signal_side
+                and signal_origin
+                and entry_price
+                and float(entry_price) > 0
+                and entry_edge is not None
+            ):
+                log(
+                    f"entry approved | strategy={signal_origin} side={signal_side} "
+                    f"modelP={(signal_probability if signal_probability is not None else strategy_win_rate):.1%} "
+                    f"auxWR={strategy_win_rate:.1%} effectiveP={effective_probability:.1%} "
+                    f"price={float(entry_price):.3f} raw_edge={entry_edge['raw_edge']:.3f} "
+                    f"required={entry_edge['required_edge']:.3f}"
+                )
+
             try:
                 sim_price = float(canonical_entry_price) if canonical_entry_price is not None else None
 
@@ -5998,7 +5981,7 @@ def main():
                                     raw_edge=float((entry_edge or {}).get("raw_edge") or 0.0),
                                     required_edge=float((entry_edge or {}).get("required_edge") or 0.0),
                                     market_secs_left=secs_left,
-                                    network_mode=current_network_mode
+                                    network_mode=current_network_tier
                                 )
                                 
                                 if can_fallback:

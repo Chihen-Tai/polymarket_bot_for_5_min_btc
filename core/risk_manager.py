@@ -28,7 +28,10 @@ class RiskManager:
         """更新交易結果，若虧損則增加連敗計數"""
         if pnl_usd < 0:
             self.consecutive_losses += 1
-            cooldown_sec = SETTINGS.COOLDOWN_AFTER_LOSS * self.consecutive_losses
+            cooldown_sec = (
+                float(getattr(SETTINGS, "cooldown_after_loss_sec", 0) or 0.0)
+                * self.consecutive_losses
+            )
             self.cooldown_until = time.time() + cooldown_sec
         else:
             self.consecutive_losses = 0

@@ -26,7 +26,7 @@ class TradeDispatcher:
             try:
                 result = func(*args, **kwargs)
                 rtt = (time.time() - start_ts) * 1000
-                LATENCY_MONITOR.record_rtt(rtt)
+                LATENCY_MONITOR.add_rtt(rtt)
                 log.info(f"Async trade completed. RTT: {rtt:.2f}ms")
                 return result
             except Exception as e:

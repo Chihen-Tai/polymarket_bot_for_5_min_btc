@@ -20,7 +20,7 @@ class EnsembleAggregator:
         Prioritizes Microstructure (OFI) for the 15m horizon.
         """
         if base_probability is None:
-            return 0.5
+            base_probability = 0.5
             
         m1_weight = 0.35  # Theoretical Weight
         m2_weight = 0.65  # Microstructure (OFI) Weight

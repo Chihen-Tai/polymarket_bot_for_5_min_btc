@@ -34,6 +34,7 @@ from core.runner import (
     validate_live_startup_requirements,
 )
 from core.risk import RiskState
+from core.risk_manager import RiskManager
 from core.runtime_paths import (
     mode_label,
     run_journal_path,
@@ -53,6 +54,11 @@ def main():
     runner_mod.SETTINGS.conservative_block_pending_orders = True
     runner_mod.SETTINGS.conservative_block_pending_confirmation = True
     runner_mod.SETTINGS.conservative_block_live_sync_protect = True
+    runner_mod.SETTINGS.cooldown_after_loss_sec = 180
+
+    risk_manager = RiskManager()
+    risk_manager.update_outcome(-1.0)
+    cooldown_remaining = risk_manager.cooldown_until - time.time()
 
     cases = [
         ("dryrun_mode_label", mode_label(dry_run=True) == "dryrun"),
@@ -80,6 +86,16 @@ def main():
         (
             "live_state_is_separate",
             runtime_state_path(dry_run=False).name == ".runtime_state-live.json",
+        ),
+        (
+            "settings_expose_live_clob_credentials_and_manual_tokens",
+            hasattr(runner_mod.SETTINGS, "clob_api_passphrase")
+            and hasattr(runner_mod.SETTINGS, "token_id_up")
+            and hasattr(runner_mod.SETTINGS, "token_id_down"),
+        ),
+        (
+            "risk_manager_uses_cooldown_after_loss_sec",
+            risk_manager.consecutive_losses == 1 and 150.0 <= cooldown_remaining <= 180.5,
         ),
     ]
 
@@ -241,7 +257,7 @@ def main():
                 token_id="pending-token",
                 shares=1.0,
                 cost_usd=1.0,
-                opened_ts=time.time() - 48.0,
+                opened_ts=time.time() - 24.0,
                 pending_confirmation=True,
                 live_miss_count=5,
             ),

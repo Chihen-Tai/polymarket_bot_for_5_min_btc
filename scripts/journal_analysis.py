@@ -1359,6 +1359,7 @@ def _finalize_pair_row(
         entry_execution_style=entry_execution_style,
         exit_execution_style=exit_execution_style,
         close_reason=close_reason,
+        matched_shares=matched_exit_shares,
     )
     fee_adjusted_actual_pnl = (
         (actual_pnl - actual_total_fees)

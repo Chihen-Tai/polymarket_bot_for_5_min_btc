@@ -143,6 +143,8 @@ def _build_candidate(
             "canonical_entry_price": float(entry_price),
             "signal_score": _clamp(float(signal_score), 0.01, 1.0),
             "signal_confidence": _clamp(float(signal_confidence), 0.0, 1.0),
+            "model_probability": _clamp(float(signal_score), 0.01, 0.99),
+            "probability_source": "fair_value_model",
             "metadata": extras or {},
         }
     )
@@ -263,19 +265,35 @@ def explain_choose_side(
 
     # 3. Sniper 核心過濾：只交易極端區域
     up_price = float(observed_up or 0.5)
+    down_price = float(observed_down or 0.5)
     
+    # 攔截空訂單簿或報價錯誤 (正常 up+down 應該在 0.9 ~ 1.1 之間)
+    if abs(up_price + down_price - 1.0) > 0.15:
+        base_result["reason"] = "empty_orderbook_anomaly"
+        return base_result
+
     # 必須不是中性區 (0.45 - 0.55 block)
     neutral_width = float(getattr(SETTINGS, "vpn_neutral_zone_width", 0.05) or 0.05)
     if abs(up_price - 0.5) <= neutral_width:
         base_result["reason"] = "neutral_zone_no_trade"
         return base_result
 
-    # 4. 波動率閘門 (Volatility Gate)
-    if binance_5m:
+    # 4. 波動率閘門 (Volatility Gate) 與 OFI Override
+    bypass_vol_gate = False
+    if ws_trades:
+        from core.indicators import compute_buy_sell_pressure
+        bv, sv = compute_buy_sell_pressure(ws_trades)
+        tv = bv + sv
+        if tv > 50000:
+            ofi = bv / max(tv, 1e-9)
+            if ofi > 0.70 or ofi < 0.30:
+                bypass_vol_gate = True
+
+    if binance_5m and not bypass_vol_gate:
         recent_prices = [float(k.get('close', k.get('c', btc_price))) for k in binance_5m[-5:]]
         if recent_prices:
             price_range_bps = (max(recent_prices) - min(recent_prices)) / max(min(recent_prices), 1e-9) * 10000.0
-            min_vol_bps = float(getattr(SETTINGS, "min_volatility_gate_bps", 15.0) or 15.0)
+            min_vol_bps = float(getattr(SETTINGS, "min_volatility_gate_bps", 8.0) or 8.0)
             if price_range_bps < min_vol_bps:
                 base_result["reason"] = f"low_volatility_gate (range={price_range_bps:.1f}bps < {min_vol_bps}bps)"
                 return base_result
@@ -283,32 +301,34 @@ def explain_choose_side(
     # 5. 承諾邊際 (Committed Edge) 與 延遲補償
     order_size = float(getattr(SETTINGS, "min_live_order_usd", 1.0))
     # We enforce assume_maker=True for the VPN profile
-    edge_up = calculate_committed_edge(fv_yes, poly_ob_up, poly_ob_down, order_size, "UP", assume_maker=SETTINGS.vpn_maker_only)
-    edge_down = calculate_committed_edge(fv_yes, poly_ob_up, poly_ob_down, order_size, "DOWN", assume_maker=SETTINGS.vpn_maker_only)
+    edge_up = calculate_committed_edge(fv_yes, poly_ob_up, poly_ob_down, order_size, "UP", assume_maker=SETTINGS.vpn_maker_only, secs_left=secs_left)
+    edge_down = calculate_committed_edge(fv_yes, poly_ob_up, poly_ob_down, order_size, "DOWN", assume_maker=SETTINGS.vpn_maker_only, secs_left=secs_left)
     
     candidates = {}
     threshold = float(SETTINGS.min_sniper_edge_bps) / 10000.0
 
     if edge_up >= threshold:
         reason = "fade_retail_panic" if up_price < SETTINGS.sniper_extreme_lower else "fade_retail_fomo"
+        up_ladder = poly_ob_up.get('ask_levels', poly_ob_up.get('asks', []))
         candidates["sniper_fade_up"] = _build_candidate(
             base_result, side="UP", strategy_key=reason,
-            entry_price=get_vwap_from_ladder(poly_ob_up.get('asks', []), order_size),
+            entry_price=get_vwap_from_ladder(up_ladder, order_size),
             signal_score=fv_yes, signal_confidence=1.0,
             extras={"sniper_edge": edge_up, "behavioral_alpha": reason, "latency_buffer": SETTINGS.latency_buffer_usd}
         )
 
     if edge_down >= threshold:
         reason = "fade_retail_panic" if (1.0 - up_price) < SETTINGS.sniper_extreme_lower else "fade_retail_fomo"
+        down_ladder = poly_ob_down.get('ask_levels', poly_ob_down.get('asks', []))
         candidates["sniper_fade_down"] = _build_candidate(
             base_result, side="DOWN", strategy_key=reason,
-            entry_price=get_vwap_from_ladder(poly_ob_down.get('asks', []), order_size),
+            entry_price=get_vwap_from_ladder(down_ladder, order_size),
             signal_score=1.0 - fv_yes, signal_confidence=1.0,
             extras={"sniper_edge": edge_down, "behavioral_alpha": reason, "latency_buffer": SETTINGS.latency_buffer_usd}
         )
 
     if not candidates:
-        base_result["reason"] = "edge_below_sniper_threshold"
+        base_result["reason"] = f"edge_below_sniper_threshold (up={edge_up:.4f}, down={edge_down:.4f} < req={threshold:.4f})"
         return base_result
 
     return _select_best_candidate(candidates, base_result)

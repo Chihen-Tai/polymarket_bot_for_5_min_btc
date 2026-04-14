@@ -1033,6 +1033,8 @@ class PolymarketExchange:
                 "best_ask_size": best_ask_size,
                 "bid_levels": bid_levels,
                 "ask_levels": ask_levels,
+                "bids": book.get("bids", []),
+                "asks": book.get("asks", []),
             }
         except Exception:
             return {}

@@ -34,8 +34,13 @@ class MicrostructureModel:
                     vol += float(level[1])
             return vol
 
-        bid_vol = parse_levels(bids)
-        ask_vol = parse_levels(asks)
+        if 'B' in bba and 'A' in bba:
+            # BBA format from Binance WS stream
+            bid_vol = float(bba['B'])
+            ask_vol = float(bba['A'])
+        else:
+            bid_vol = parse_levels(bba.get('b', []))
+            ask_vol = parse_levels(bba.get('a', []))
         
         total_vol = bid_vol + ask_vol
         if total_vol < 1e-9:

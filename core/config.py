@@ -53,7 +53,9 @@ class Settings:
     enable_sniper_mode: bool = True
     sniper_extreme_upper: float = 0.75  # Only fade extreme FOMO
     sniper_extreme_lower: float = 0.25  # Only fade extreme panic
-    min_sniper_edge_bps: float = _f("MIN_SNIPER_EDGE_BPS", 800)  # 800 bps = 8%
+    min_sniper_edge_bps: float = _f("MIN_SNIPER_EDGE_BPS", 150)  # 150 bps = 1.5%
+    min_entry_price: float = _f("MIN_ENTRY_PRICE", 0.05)
+    max_entry_price: float = _f("MAX_ENTRY_PRICE", 0.95)
 
     # --- Strict VPN Execution Gates ---
     vpn_safe_mode: bool = True
@@ -81,7 +83,7 @@ class Settings:
     
     # --- Selective Entry Gates ---
     vpn_neutral_zone_width: float = _f("VPN_NEUTRAL_ZONE_WIDTH", 0.05)
-    min_volatility_gate_bps: float = _f("MIN_VOLATILITY_GATE_BPS", 15.0)
+    min_volatility_gate_bps: float = _f("MIN_VOLATILITY_GATE_BPS", 8.0)
 
     # --- Legacy Signal Compatibility ---
     zscore_window: int = _i("ZSCORE_WINDOW", 10)
@@ -121,8 +123,11 @@ class Settings:
 
     private_key: str = os.getenv("PRIVATE_KEY", "")
     funder_address: str = os.getenv("FUNDER_ADDRESS", "")
+    token_id_up: str = os.getenv("TOKEN_ID_UP", "")
+    token_id_down: str = os.getenv("TOKEN_ID_DOWN", "")
     clob_api_key: str = os.getenv("CLOB_API_KEY", "")
     clob_api_secret: str = os.getenv("CLOB_API_SECRET", "")
+    clob_api_passphrase: str = os.getenv("CLOB_API_PASSPHRASE", "")
     enable_arbitrage: bool = _b("ENABLE_ARBITRAGE", False)
     arbitrage_max_cost: float = _f("ARBITRAGE_MAX_COST", 0.98)
     regime_opening_end_sec: float = _f("REGIME_OPENING_END_SEC", 300.0)
@@ -181,7 +186,7 @@ class Settings:
     entry_min_total_ask_multiple: float = 1.0
     entry_neutral_band_half_width: float = 0.02
     entry_neutral_edge_penalty: float = 0.01
-    entry_require_maker_edge_buffer: bool = True
+    entry_require_maker_edge_buffer: float = _f("ENTRY_REQUIRE_MAKER_EDGE_BUFFER", 0.01)
     entry_retry_attempts: int = 1
     entry_retry_backoff_sec: float = 1.0
     entry_side_conflict_enabled: bool = _b("ENTRY_SIDE_CONFLICT_ENABLED", True)

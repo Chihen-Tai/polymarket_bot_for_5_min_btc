@@ -55,45 +55,46 @@ class LatencyMonitor:
             return 0.0
         return statistics.median(self.rtts)
 
-    def get_network_quality_tier(self) -> str:
+    def get_network_quality_tier(self) -> tuple[str, str]:
         """
         Calculates the network quality tier for Japan-VPN routing.
-        Returns: NORMAL, DEGRADED, CLOSE_ONLY, BLOCKED
+        Returns: (Tier, ReasonString)
         """
         if not SETTINGS.vpn_safe_mode:
-            return "NORMAL"
+            return "NORMAL", ""
             
         median_rtt = self.get_median_rtt()
         e2e = self.get_e2e_stats()
         jitter_pct = e2e["jitter_percentile"]
         
-        # 4. BLOCKED: Literal blackout or extreme stale
-        if median_rtt > 800 or e2e["p50"] > 600 or jitter_pct > 400:
-            return "BLOCKED"
+        max_rtt = getattr(SETTINGS, "max_vpn_latency_ms", 600.0)
+        p50_block = getattr(SETTINGS, "vpn_e2e_p50_block_ms", 250.0)
+        jitter_block = getattr(SETTINGS, "vpn_e2e_jitter_block_ms", 150.0)
+
+        if median_rtt > max_rtt:
+            return "BLOCKED", f"rtt={median_rtt:.0f}ms > {max_rtt}"
+        if e2e["p50"] > p50_block:
+            return "BLOCKED", f"e2e_p50={e2e['p50']:.0f}ms > {p50_block}"
+        if jitter_pct > jitter_block:
+            return "BLOCKED", f"jitter={jitter_pct:.0f}ms > {jitter_block}"
             
-        # 3. CLOSE_ONLY: High risk of toxic fills, but can manage existing
-        if median_rtt > 600 or e2e["p50"] > 400 or jitter_pct > 250:
-            return "CLOSE_ONLY"
+        if median_rtt > max_rtt * 0.75 or e2e["p50"] > p50_block * 0.8:
+            return "CLOSE_ONLY", "sub-optimal latency bounds"
             
-        # 2. DEGRADED: Noticeable lag, requires higher edge thresholds
-        if median_rtt > 400 or e2e["p50"] > 250 or jitter_pct > 150:
-            return "DEGRADED"
-            
-        # 1. NORMAL: Within safety bounds for maker-first
-        return "NORMAL"
+        return "NORMAL", ""
 
     def get_edge_penalty(self) -> float:
-        tier = self.get_network_quality_tier()
+        tier, _ = self.get_network_quality_tier()
         if tier == "DEGRADED":
-            return SETTINGS.latency_buffer_usd * 2.0
+            return getattr(SETTINGS, "latency_buffer_usd", 0.02) * 2.0
         if tier in {"CLOSE_ONLY", "BLOCKED"}:
-            return 9.99 # Prohibitive
+            return 9.99
         return 0.0
 
     def is_blocked(self) -> tuple[bool, str]:
-        tier = self.get_network_quality_tier()
+        tier, reason = self.get_network_quality_tier()
         if tier == "BLOCKED":
-            return True, f"NetworkTier=BLOCKED (rtt={self.get_median_rtt():.0f}ms)"
+            return True, f"NetworkTier=BLOCKED ({reason})"
         return False, ""
 
 LATENCY_MONITOR = LatencyMonitor()
