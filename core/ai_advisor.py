@@ -6,8 +6,8 @@ from core.config import SETTINGS
 
 class AIAdvisor:
     def __init__(self):
-        self.api_key = SETTINGS.ai_api_key
-        self.model = SETTINGS.ai_advisor_model
+        self.api_key = getattr(SETTINGS, "ai_api_key", "")
+        self.model = getattr(SETTINGS, "ai_advisor_model", "gemini-1.5-flash")
         self.endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
         self._last_call_ts = 0
         self._cache = {}
