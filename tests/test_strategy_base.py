@@ -18,7 +18,7 @@ class TestStrategyBase(unittest.TestCase):
             side="UP",
             trigger_reason="test_reason",
             entry_price=0.5,
-            model_probability=0.6,
+            signal_score=0.6,
             confidence=0.8,
             required_edge=0.05,
             raw_edge=0.1
@@ -27,7 +27,7 @@ class TestStrategyBase(unittest.TestCase):
         self.assertEqual(result.side, "UP")
         self.assertEqual(result.trigger_reason, "test_reason")
         self.assertEqual(result.entry_price, 0.5)
-        self.assertEqual(result.model_probability, 0.6)
+        self.assertEqual(result.signal_score, 0.6)
         self.assertEqual(result.confidence, 0.8)
         self.assertEqual(result.required_edge, 0.05)
         self.assertEqual(result.raw_edge, 0.1)
@@ -43,7 +43,7 @@ class TestStrategyBase(unittest.TestCase):
             side="DOWN",
             trigger_reason="test_reason",
             entry_price=0.4,
-            model_probability=0.3,
+            signal_score=0.3,
             confidence=0.7,
             required_edge=0.02,
             raw_edge=-0.1,

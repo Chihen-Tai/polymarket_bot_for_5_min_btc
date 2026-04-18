@@ -10,7 +10,7 @@ def calculate_binary_probability(
     current_price: float,
     strike_price: float | None,
     time_to_expiry_sec: float,
-    volatility_annual: float = 0.60, # Default 60% annual vol
+    volatility_annual: float = 0.50, # Default 50% annual vol (was 60%)
 ) -> float | None:
     """
     Calculates the theoretical probability that current_price > strike_price at expiry
@@ -44,24 +44,32 @@ import statistics
 
 def calculate_realized_vol(price_history: list[float], window: int = 20) -> float:
     """
-    從價格歷史計算年化實現波動率。
-    假設輸入是 1 分鐘級別的價格。
+    Calculate annualized realized volatility from price history.
+    Assumes 1-minute price intervals.
+
+    With a 30-day window (~43200 1m candles), this typically yields
+    ~40-50% annualized vol for BTC in normal conditions, dropping the
+    old 60-70% fixed fallback significantly.
     """
-    if len(price_history) < window:
-        return 0.70  # 樣本不足時回傳預設值
-    
+    if len(price_history) < max(window, 2):
+        return 0.60  # Conservative fallback (was 0.70)
+
+    # Use the most recent `window` prices (or all if window > len)
+    prices = price_history[-window:] if len(price_history) > window else price_history
+
     # Calculate log returns
     returns = []
-    for i in range(1, len(price_history)):
-        returns.append(math.log(price_history[i] / price_history[i-1]))
-    
-    if len(returns) < 2:
-        return 0.70
+    for i in range(1, len(prices)):
+        if prices[i] > 0 and prices[i-1] > 0:
+            returns.append(math.log(prices[i] / prices[i-1]))
 
-    # 年化係數: sqrt(一年分鐘數)
+    if len(returns) < 2:
+        return 0.60
+
+    # Annualization: sqrt(minutes per year)
     stdev = statistics.stdev(returns)
     vol = stdev * math.sqrt(365 * 24 * 60)
-    return float(max(0.30, min(vol, 1.50))) # 限制在 30%-150% 之間
+    return float(max(0.20, min(vol, 1.50)))  # Floor 20%, cap 150%
 
 def get_fair_value(
     btc_price: float,
@@ -80,7 +88,7 @@ def get_fair_value(
     elif price_history:
         vol = calculate_realized_vol(price_history)
     else:
-        vol = 0.70
+        vol = 0.60
     
     # M1 Base Probability
     base_prob = calculate_binary_probability(
