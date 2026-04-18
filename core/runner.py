@@ -177,7 +177,7 @@ def market_end_ts_from_slug(slug: str | None) -> float | None:
         start_epoch = int(text.split("-")[-1])
     except Exception:
         return None
-    return float(start_epoch + 300)
+    return float(start_epoch + SETTINGS.market_duration_sec)
 
 
 def extend_live_sync_protection(
@@ -1040,6 +1040,9 @@ def session_hour_entry_block_reason() -> str:
     Reads ENTRY_BLOCKED_UTC_HOURS from settings (comma-separated ints, e.g. "1,8,13,20,21,23").
     Returns empty string if trading is allowed; non-empty reason string if blocked.
     Skipped in dry-run mode so back-tests are unaffected.
+
+    If OPERATOR_TZ is set (e.g. "Asia/Taipei"), the log message includes the
+    operator's local time for clarity, but the block list is always applied in UTC.
     """
     if bool(getattr(SETTINGS, "dry_run", False)):
         return ""
@@ -1048,13 +1051,27 @@ def session_hour_entry_block_reason() -> str:
         return ""
     try:
         from datetime import datetime, timezone
+        import os
 
         blocked = {
             int(h.strip()) for h in raw.split(",") if h.strip().lstrip("-").isdigit()
         }
         current_utc_hour = datetime.now(timezone.utc).hour
         if current_utc_hour in blocked:
-            return f"session-hour-blocked(UTC{current_utc_hour:02d})"
+            msg = f"session-hour-blocked(UTC{current_utc_hour:02d})"
+            op_tz = os.getenv("OPERATOR_TZ", "")
+            if op_tz:
+                try:
+                    from zoneinfo import ZoneInfo
+                    local_now = datetime.now(ZoneInfo(op_tz))
+                    msg += (
+                        f" — YOUR local time {local_now.strftime('%H:%M')} {op_tz}"
+                        f" is blocked because UTC {current_utc_hour:02d}:00 is in"
+                        f" the blacklist — consider if you really want this"
+                    )
+                except Exception:
+                    pass
+            return msg
     except Exception:
         pass
     return ""
@@ -2511,10 +2528,10 @@ def update_network_guard(
 
 
 def required_trade_edge(
-    entry_price: float, 
-    secs_left: float | None, 
-    history_count: int = 0, 
-    fee_rate: float = 0.0156,
+    entry_price: float,
+    secs_left: float | None,
+    history_count: int = 0,
+    fee_rate: float = 0.0,  # Was 0.0156 — maker-only pays 0% fee
     network_tier: str = "NORMAL"
 ) -> float:
     required = max(0.0, float(getattr(SETTINGS, "edge_threshold", 0.0)))
@@ -2614,7 +2631,7 @@ def summarize_entry_edge(
     entry_price: float,
     secs_left: float | None,
     history_count: int = 0,
-    fee_rate: float = 0.0156,
+    fee_rate: float = 0.0,  # Was 0.0156 — maker-only pays 0% fee
     network_tier: str = "NORMAL"
 ) -> dict:
     # 1. Neutral-Zone block (0.45 - 0.55 is toxic for fees/spread)
@@ -2682,6 +2699,7 @@ def score_entry_candidate(
     strategy_win_rate = 0.5
     strategy_trade_count = 0
     strategy_decisive_trade_count = 0
+    bayesian_lower_bound = 0.5
     if strategy_name:
         try:
             if scoreboard is None:
@@ -2692,6 +2710,15 @@ def score_entry_candidate(
             strategy_decisive_trade_count = (
                 scoreboard.get_strategy_decisive_trade_count(strategy_name)
             )
+            # Use Bayesian lower bound when enough decisive trades exist (>= 20)
+            if strategy_decisive_trade_count >= 20:
+                try:
+                    _mean, _lower = scoreboard.get_bayesian_win_rate(strategy_name)
+                    bayesian_lower_bound = _lower
+                    # Down-weight win rate by credible interval lower bound
+                    strategy_win_rate = min(strategy_win_rate, _lower + (strategy_win_rate - _lower) * 0.5)
+                except Exception:
+                    pass
         except Exception:
             raw_strategy_win_rate = 0.5
             strategy_win_rate = 0.5

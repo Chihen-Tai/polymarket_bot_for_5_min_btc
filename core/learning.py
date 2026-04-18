@@ -147,6 +147,32 @@ class StrategyScoreboard:
             "avg_pnl": sum(pnls) / len(pnls)
         }
 
+    def get_bayesian_win_rate(self, strategy_name: str) -> tuple[float, float]:
+        """
+        Bayesian posterior win rate using Beta(alpha, beta) conjugate prior.
+        Prior: Beta(1, 1) = uniform.
+        Returns (posterior_mean, credible_interval_lower_bound) where
+        lower bound is the 5th percentile of the posterior.
+        """
+        from scipy.stats import beta as beta_dist
+
+        strategy_name = self._normalized_name(strategy_name)
+        trades = self.history.get(strategy_name, [])
+        neutral_band = self._neutral_band()
+
+        # Count wins and losses (ignoring neutral trades)
+        wins = sum(1 for t in trades if t.fee_adjusted_pnl_pct > neutral_band)
+        losses = sum(1 for t in trades if t.fee_adjusted_pnl_pct < -neutral_band)
+
+        # Beta posterior: prior Beta(1,1) + data
+        alpha = 1.0 + wins
+        beta_param = 1.0 + losses
+
+        posterior_mean = alpha / (alpha + beta_param)
+        lower_bound = float(beta_dist.ppf(0.05, alpha, beta_param))
+
+        return posterior_mean, lower_bound
+
     def get_strategy_trade_count(self, strategy_name: str) -> int:
         strategy_name = self._normalized_name(strategy_name)
         return len(self.history.get(strategy_name, []))

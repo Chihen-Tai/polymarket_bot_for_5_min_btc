@@ -36,7 +36,7 @@ class TestStrategiesMigration(unittest.TestCase):
         self.assertIsInstance(res, StrategyResult)
         self.assertEqual(res.strategy_name, "model-ws_order_flow_up")
         self.assertEqual(res.side, "UP")
-        self.assertTrue(res.model_probability > 0.5)
+        self.assertTrue(res.signal_score > 0.5)
         self.assertTrue(res.confidence > 0)
         self.assertEqual(res.metadata["ofi_ratio"], 0.8)
 

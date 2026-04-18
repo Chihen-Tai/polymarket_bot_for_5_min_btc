@@ -298,7 +298,58 @@ def explain_choose_side(
                 base_result["reason"] = f"low_volatility_gate (range={price_range_bps:.1f}bps < {min_vol_bps}bps)"
                 return base_result
 
-    # 5. 承諾邊際 (Committed Edge) 與 延遲補償
+    # 5. OFI threshold gate — require minimum book imbalance (§6.2)
+    # Skip if bypass_vol_gate already triggered (extreme OFI confirmed)
+    if not bypass_vol_gate:
+        poly_ofi_up = 0.0
+        poly_ofi_down = 0.0
+        if poly_ob_up:
+            bids_up = poly_ob_up.get("bids", [])[:3]
+            asks_up = poly_ob_up.get("asks", [])[:3]
+            bid_vol_up = sum(float(b.get("size", 0)) for b in bids_up)
+            ask_vol_up = sum(float(a.get("size", 0)) for a in asks_up)
+            tv_up = bid_vol_up + ask_vol_up
+            if tv_up > 1e-9:
+                poly_ofi_up = (bid_vol_up - ask_vol_up) / tv_up
+        if poly_ob_down:
+            bids_dn = poly_ob_down.get("bids", [])[:3]
+            asks_dn = poly_ob_down.get("asks", [])[:3]
+            bid_vol_dn = sum(float(b.get("size", 0)) for b in bids_dn)
+            ask_vol_dn = sum(float(a.get("size", 0)) for a in asks_dn)
+            tv_dn = bid_vol_dn + ask_vol_dn
+            if tv_dn > 1e-9:
+                poly_ofi_down = (bid_vol_dn - ask_vol_dn) / tv_dn
+        min_ofi = float(getattr(SETTINGS, "min_poly_ofi_threshold", 0.15) or 0.15)
+        if abs(poly_ofi_up) < min_ofi and abs(poly_ofi_down) < min_ofi:
+            base_result["reason"] = f"ofi_below_threshold (up={poly_ofi_up:.3f}, dn={poly_ofi_down:.3f} < {min_ofi})"
+            return base_result
+
+    # 6. 10-minute macro trend filter — suppress direction opposing recent candle momentum (§6.2)
+    if binance_5m and len(binance_5m) >= 2 and getattr(SETTINGS, "macro_trend_filter_enabled", True):
+        last_two = binance_5m[-2:]
+        both_bearish = all(
+            float(k.get("close", k.get("c", 0))) < float(k.get("open", k.get("o", 0)))
+            for k in last_two
+        )
+        both_bullish = all(
+            float(k.get("close", k.get("c", 0))) > float(k.get("open", k.get("o", 0)))
+            for k in last_two
+        )
+        if both_bearish:
+            base_result["_macro_trend_suppress_up"] = True
+        if both_bullish:
+            base_result["_macro_trend_suppress_down"] = True
+
+    # 7. Golden entry window enforcement — only enter between T-8min and T-5min (§6.2)
+    golden_window_enabled = bool(getattr(SETTINGS, "golden_entry_window_enabled", False))
+    golden_min_sec = float(getattr(SETTINGS, "golden_entry_window_min_sec", 300.0) or 300.0)
+    golden_max_sec = float(getattr(SETTINGS, "golden_entry_window_max_sec", 480.0) or 480.0)
+    if golden_window_enabled and secs_left is not None:
+        if not (golden_min_sec <= secs_left <= golden_max_sec):
+            base_result["reason"] = f"outside_golden_entry_window (secs_left={secs_left:.0f}, window={golden_min_sec:.0f}-{golden_max_sec:.0f}s)"
+            return base_result
+
+    # 8. 承諾邊際 (Committed Edge) 與 延遲補償
     order_size = float(getattr(SETTINGS, "min_live_order_usd", 1.0))
     # We enforce assume_maker=True for the VPN profile
     edge_up = calculate_committed_edge(fv_yes, poly_ob_up, poly_ob_down, order_size, "UP", assume_maker=SETTINGS.vpn_maker_only, secs_left=secs_left)
@@ -307,7 +358,10 @@ def explain_choose_side(
     candidates = {}
     threshold = float(SETTINGS.min_sniper_edge_bps) / 10000.0
 
-    if edge_up >= threshold:
+    suppress_up = base_result.pop("_macro_trend_suppress_up", False)
+    suppress_down = base_result.pop("_macro_trend_suppress_down", False)
+
+    if edge_up >= threshold and not suppress_up:
         reason = "fade_retail_panic" if up_price < SETTINGS.sniper_extreme_lower else "fade_retail_fomo"
         up_ladder = poly_ob_up.get('ask_levels', poly_ob_up.get('asks', []))
         candidates["sniper_fade_up"] = _build_candidate(
@@ -317,7 +371,7 @@ def explain_choose_side(
             extras={"sniper_edge": edge_up, "behavioral_alpha": reason, "latency_buffer": SETTINGS.latency_buffer_usd}
         )
 
-    if edge_down >= threshold:
+    if edge_down >= threshold and not suppress_down:
         reason = "fade_retail_panic" if (1.0 - up_price) < SETTINGS.sniper_extreme_lower else "fade_retail_fomo"
         down_ladder = poly_ob_down.get('ask_levels', poly_ob_down.get('asks', []))
         candidates["sniper_fade_down"] = _build_candidate(
@@ -326,6 +380,43 @@ def explain_choose_side(
             signal_score=1.0 - fv_yes, signal_confidence=1.0,
             extras={"sniper_edge": edge_down, "behavioral_alpha": reason, "latency_buffer": SETTINGS.latency_buffer_usd}
         )
+
+    # 9. Legacy strategies (OFI, flash snipe) — gated by ENABLE_LEGACY_STRATEGIES
+    if getattr(SETTINGS, "enable_legacy_strategies", False):
+        _vel = 0.0
+        if ws_trades and len(ws_trades) >= 2:
+            t0 = float(ws_trades[0].get("timestamp", 0) or 0)
+            t1 = float(ws_trades[-1].get("timestamp", 0) or 0)
+            dt = max(t1 - t0, 1e-9)
+            p0 = float(ws_trades[0].get("price", 0) or 0)
+            p1 = float(ws_trades[-1].get("price", 0) or 0)
+            _vel = (p1 - p0) / dt
+
+        ofi_results = get_ofi_signal(
+            ws_trades or [], up_price, down_price,
+            poly_ob_up, poly_ob_down, SETTINGS,
+        )
+        for sr in ofi_results:
+            if (sr.side == "UP" and not suppress_up) or (sr.side == "DOWN" and not suppress_down):
+                candidates[f"legacy_{sr.strategy_name}"] = _build_candidate(
+                    base_result, side=sr.side, strategy_key=sr.strategy_name,
+                    entry_price=sr.entry_price, signal_score=sr.signal_score,
+                    signal_confidence=sr.confidence, extras=sr.metadata,
+                )
+
+        snipe_valid_up = up_price < SETTINGS.sniper_extreme_lower
+        snipe_valid_down = (1.0 - up_price) < SETTINGS.sniper_extreme_lower
+        flash_results = get_flash_snipe_signal(
+            _vel, up_price, down_price,
+            snipe_valid_up, snipe_valid_down, SETTINGS,
+        )
+        for sr in flash_results:
+            if (sr.side == "UP" and not suppress_up) or (sr.side == "DOWN" and not suppress_down):
+                candidates[f"legacy_{sr.strategy_name}"] = _build_candidate(
+                    base_result, side=sr.side, strategy_key=sr.strategy_name,
+                    entry_price=sr.entry_price, signal_score=sr.signal_score,
+                    signal_confidence=sr.confidence, extras=sr.metadata,
+                )
 
     if not candidates:
         base_result["reason"] = f"edge_below_sniper_threshold (up={edge_up:.4f}, down={edge_down:.4f} < req={threshold:.4f})"

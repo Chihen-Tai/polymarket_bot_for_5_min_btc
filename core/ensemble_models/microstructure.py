@@ -7,7 +7,7 @@ class MicrostructureModel:
     Outputs a probability modifier (-0.1 to +0.1) based on book skew.
     """
     
-    def __init__(self, max_skew_penalty: float = 0.05):
+    def __init__(self, max_skew_penalty: float = 0.12):
         self.max_skew_penalty = max_skew_penalty
 
     def calculate_skew_modifier(self, bba: Dict[str, Any], depth: int = 3) -> float:

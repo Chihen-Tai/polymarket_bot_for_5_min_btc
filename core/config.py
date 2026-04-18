@@ -51,9 +51,9 @@ class Settings:
     
     # --- Extreme Value Gating (15M Sniper) ---
     enable_sniper_mode: bool = True
-    sniper_extreme_upper: float = 0.75  # Only fade extreme FOMO
-    sniper_extreme_lower: float = 0.25  # Only fade extreme panic
-    min_sniper_edge_bps: float = _f("MIN_SNIPER_EDGE_BPS", 150)  # 150 bps = 1.5%
+    sniper_extreme_upper: float = _f("SNIPER_EXTREME_UPPER", 0.95)  # Was 0.75 — dead zone removed
+    sniper_extreme_lower: float = _f("SNIPER_EXTREME_LOWER", 0.05)  # Was 0.25 — dead zone removed
+    min_sniper_edge_bps: float = _f("MIN_SNIPER_EDGE_BPS", 80)  # Was 150 bps — lowered for maker-only
     min_entry_price: float = _f("MIN_ENTRY_PRICE", 0.05)
     max_entry_price: float = _f("MAX_ENTRY_PRICE", 0.95)
 
@@ -75,7 +75,7 @@ class Settings:
     max_concurrent_trades: int = 1
     cooldown_after_trade_sec: int = 900  # Lock out for 15m after trade
     cooldown_after_loss_sec: int = 1800  # Lock out for 30m after loss
-    max_consec_loss: int = 2
+    max_consec_loss: int = int(os.environ.get("MAX_CONSEC_LOSS", "10"))  # Was 2 — too tight for maker-only
 
     # --- Windows ---
     vpn_entry_min_secs_left: float = _f("VPN_ENTRY_MIN_SECS_LEFT", 120.0)
@@ -84,6 +84,11 @@ class Settings:
     # --- Selective Entry Gates ---
     vpn_neutral_zone_width: float = _f("VPN_NEUTRAL_ZONE_WIDTH", 0.05)
     min_volatility_gate_bps: float = _f("MIN_VOLATILITY_GATE_BPS", 8.0)
+    min_poly_ofi_threshold: float = _f("MIN_POLY_OFI_THRESHOLD", 0.15)
+    macro_trend_filter_enabled: bool = _b("MACRO_TREND_FILTER_ENABLED", True)
+    golden_entry_window_enabled: bool = _b("GOLDEN_ENTRY_WINDOW_ENABLED", False)
+    golden_entry_window_min_sec: float = _f("GOLDEN_ENTRY_WINDOW_MIN_SEC", 300.0)
+    golden_entry_window_max_sec: float = _f("GOLDEN_ENTRY_WINDOW_MAX_SEC", 480.0)
 
     # --- Legacy Signal Compatibility ---
     zscore_window: int = _i("ZSCORE_WINDOW", 10)
@@ -238,7 +243,7 @@ class Settings:
     profit_reversal_min_mfe_pct: float = _f("PROFIT_REVERSAL_MIN_MFE_PCT", 0.50)
     profitability_conservative_mode_enabled: bool = True
     rich_price_edge_penalty: float = _f("RICH_PRICE_EDGE_PENALTY", 0.015)
-    scoreboard_aux_weight: float = 0.2
+    scoreboard_aux_weight: float = _f("SCOREBOARD_AUX_WEIGHT", 0.3)  # Was 0.2 — increased per Phase 3
     scoreboard_entry_gate_min_decisive_trades: int = _i("SCOREBOARD_ENTRY_GATE_MIN_DECISIVE_TRADES", 5)
     scoreboard_min_win_rate: float = 0.55
     smart_stop_loss_enabled: bool = False
@@ -256,6 +261,9 @@ class Settings:
     volatility_gate_min_range_usd: float = 25.0
     ws_stale_fail_safe_streak: int = _i("WS_STALE_FAIL_SAFE_STREAK", 2)
     ws_stale_max_age_sec: float = _f("WS_STALE_MAX_AGE_SEC", 5.0)
+
+    # Legacy strategies (OFI, flash snipe) — disabled until backtested on 15m
+    enable_legacy_strategies: bool = _b("ENABLE_LEGACY_STRATEGIES", False)
 
     # Shadow Journaling (Keep for analytics)
     enable_shadow_journal_legacy: bool = _b("ENABLE_SHADOW_JOURNAL", True)
