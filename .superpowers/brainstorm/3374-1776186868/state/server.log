@@ -1,0 +1,3 @@
+{"type":"server-started","port":59911,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:59911","screen_dir":"/Applications/codes/polymarket-bot-by_openclaw/.superpowers/brainstorm/3374-1776186868/content","state_dir":"/Applications/codes/polymarket-bot-by_openclaw/.superpowers/brainstorm/3374-1776186868/state"}
+{"type":"screen-added","file":"/Applications/codes/polymarket-bot-by_openclaw/.superpowers/brainstorm/3374-1776186868/content/website-preview.html"}
+{"type":"server-stopped","reason":"owner process exited"}
