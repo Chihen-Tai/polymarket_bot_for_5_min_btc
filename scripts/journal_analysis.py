@@ -20,6 +20,7 @@ from core.journal import read_events
 EPS = 1e-9
 _SETTLEMENT_CACHE: dict[tuple[str, str], tuple[float | None, str | None]] = {}
 _ACTIVITY_CACHE: dict[tuple[str, str], list[dict]] = {}
+_SETTLEMENT_NETWORK_DEAD: bool = False  # circuit breaker: skip all fetches after first connect failure
 
 
 def _f(v: Any, default: float = 0.0) -> float:
@@ -91,6 +92,7 @@ def _market_end_dt_from_slug(slug: str | None) -> datetime | None:
 def _fetch_market_settlement(
     slug: str | None, side: str | None
 ) -> tuple[float | None, str | None]:
+    global _SETTLEMENT_NETWORK_DEAD
     slug_text = str(slug or "").strip()
     side_text = str(side or "").strip().lower()
     cache_key = (slug_text, side_text)
@@ -101,6 +103,9 @@ def _fetch_market_settlement(
     if end_dt is None or datetime.now(timezone.utc) < end_dt:
         _SETTLEMENT_CACHE[cache_key] = (None, None)
         return _SETTLEMENT_CACHE[cache_key]
+
+    if _SETTLEMENT_NETWORK_DEAD:
+        return (None, None)
 
     try:
         import requests
@@ -137,7 +142,10 @@ def _fetch_market_settlement(
         else:
             settlement_reason = "market-expired-settlement"
         _SETTLEMENT_CACHE[cache_key] = (settlement_price, settlement_reason)
-    except Exception:
+    except Exception as exc:
+        import requests as _req
+        if isinstance(exc, (_req.exceptions.ConnectionError, _req.exceptions.Timeout)):
+            _SETTLEMENT_NETWORK_DEAD = True
         _SETTLEMENT_CACHE[cache_key] = (None, None)
 
     return _SETTLEMENT_CACHE[cache_key]
