@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import math
 from random import uniform
 from typing import Any
@@ -36,6 +37,38 @@ def _to_float(v: Any, default: float = 0.0) -> float:
         return float(v)
     except Exception:
         return default
+
+
+def _normalize_timestamp_ms(value: Any) -> float | None:
+    if value in (None, "", 0, 0.0):
+        return None
+    if isinstance(value, (int, float)):
+        raw = float(value)
+        if raw > 1e12:
+            return raw
+        if raw > 1e9:
+            return raw * 1000.0
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        raw = float(text)
+    except Exception:
+        raw = None
+    if raw is not None:
+        if raw > 1e12:
+            return raw
+        if raw > 1e9:
+            return raw * 1000.0
+    try:
+        normalized = text.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp() * 1000.0
+    except Exception:
+        return None
 
 
 def _limit_order_type(order_type_cls: Any):
@@ -808,11 +841,13 @@ class PolymarketExchange:
                 )
                 results.append(
                     {
+                        "open_time": _to_float(candle[0]),
                         "open": _to_float(candle[1]),
                         "high": _to_float(candle[2]),
                         "low": _to_float(candle[3]),
                         "close": _to_float(candle[4]),
                         "volume": _to_float(candle[5]),
+                        "close_time": _to_float(candle[6]),
                         "prev_close": prev_close,
                     }
                 )
@@ -1012,6 +1047,7 @@ class PolymarketExchange:
                 "ask_levels": [(0.51, 1000.0)],
             }
         try:
+            fetched_at_ms = time.time() * 1000.0
             raw_book = self.client.get_order_book(token_id)
             book = _normalize_orderbook_summary(raw_book)
             if not isinstance(book, dict) or not book:
@@ -1023,6 +1059,8 @@ class PolymarketExchange:
             asks_vol = sum(size for _price, size in ask_levels)
             best_bid, best_bid_size = bid_levels[0] if bid_levels else (0.0, 0.0)
             best_ask, best_ask_size = ask_levels[0] if ask_levels else (0.0, 0.0)
+            raw_timestamp = book.get("timestamp") or book.get("ts")
+            clob_ts_ms = _normalize_timestamp_ms(raw_timestamp)
 
             return {
                 "bids_volume": bids_vol,
@@ -1035,6 +1073,9 @@ class PolymarketExchange:
                 "ask_levels": ask_levels,
                 "bids": book.get("bids", []),
                 "asks": book.get("asks", []),
+                "timestamp": raw_timestamp,
+                "clob_ts_ms": clob_ts_ms,
+                "fetched_at_ms": fetched_at_ms,
             }
         except Exception:
             return {}

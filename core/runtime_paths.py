@@ -19,6 +19,10 @@ def trade_journal_path(*, dry_run: bool | None = None) -> Path:
     return DATA_DIR / f"trade_journal-{mode_label(dry_run=dry_run)}.jsonl"
 
 
+def shadow_journal_csv_path() -> Path:
+    return DATA_DIR / "shadow_journal.csv"
+
+
 def run_journal_path(*, dry_run: bool | None = None) -> Path:
     return DATA_DIR / f"run_journal-{mode_label(dry_run=dry_run)}.jsonl"
 

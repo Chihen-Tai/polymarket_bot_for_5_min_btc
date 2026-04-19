@@ -55,6 +55,18 @@ class LatencyMonitor:
             return 0.0
         return statistics.median(self.rtts)
 
+    def get_effective_max_vpn_latency_ms(self) -> float:
+        base_limit = float(getattr(SETTINGS, "max_vpn_latency_ms", 600.0) or 600.0)
+        if not getattr(SETTINGS, "vpn_auto_calibrate_latency", False):
+            return base_limit
+        floor_limit = float(getattr(SETTINGS, "vpn_latency_floor_ms", 900.0) or 900.0)
+        multiplier = float(getattr(SETTINGS, "vpn_latency_multiplier", 1.2) or 1.2)
+        if not self.rtts:
+            return max(base_limit, floor_limit)
+        rtt_stats = self._get_stats(self.rtts)
+        calibrated = float(rtt_stats.get("p95", 0.0) or 0.0) * multiplier
+        return max(base_limit, floor_limit, calibrated)
+
     def get_network_quality_tier(self) -> tuple[str, str]:
         """
         Calculates the network quality tier for Japan-VPN routing.
@@ -67,7 +79,7 @@ class LatencyMonitor:
         e2e = self.get_e2e_stats()
         jitter_pct = e2e["jitter_percentile"]
         
-        max_rtt = getattr(SETTINGS, "max_vpn_latency_ms", 600.0)
+        max_rtt = self.get_effective_max_vpn_latency_ms()
         p50_block = getattr(SETTINGS, "vpn_e2e_p50_block_ms", 250.0)
         jitter_block = getattr(SETTINGS, "vpn_e2e_jitter_block_ms", 150.0)
 

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import csv
 import json
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
-from core.runtime_paths import trade_journal_path
+from core.runtime_paths import shadow_journal_csv_path, trade_journal_path
 from core.config import SETTINGS
 
 def _journal_path():
@@ -17,6 +18,21 @@ LOT_EPS_SHARES = 0.20
 LOT_EPS_COST_USD = 0.10
 STALE_HOURS = 6
 _JOURNAL_CONTEXT: dict[str, Any] = {}
+_SHADOW_CSV_FIELDS = [
+    "clob_ts",
+    "local_ts",
+    "market_slug",
+    "side",
+    "strategy_name",
+    "entry_price",
+    "model_probability",
+    "effective_probability",
+    "raw_edge",
+    "required_edge",
+    "network_block_reason",
+    "reason",
+    "regime",
+]
 
 
 def _now_iso() -> str:
@@ -58,6 +74,19 @@ def append_shadow_event(event: dict) -> dict:
     
     event["kind"] = "shadow_signal"
     return append_event(event)
+
+
+def append_shadow_csv_row(event: dict, *, path: Path | None = None) -> dict:
+    csv_path = path or shadow_journal_csv_path()
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    row = {field: event.get(field, "") for field in _SHADOW_CSV_FIELDS}
+    write_header = not csv_path.exists() or csv_path.stat().st_size == 0
+    with csv_path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_SHADOW_CSV_FIELDS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+    return row
 
 
 def read_events(limit: int = 500) -> list[dict]:

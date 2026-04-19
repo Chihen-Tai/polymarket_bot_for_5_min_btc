@@ -109,6 +109,96 @@ def _has_momentum(side: str, up_window: deque, down_window: deque, min_move: flo
     return move >= min_move
 
 
+def _market_start_epoch(market: dict) -> int | None:
+    slug = str(market.get("slug") or "").strip()
+    if not slug:
+        return None
+    try:
+        return int(slug.split("-")[-1])
+    except Exception:
+        return None
+
+
+def _kline_open_price(kline: dict) -> float | None:
+    return _sf(kline.get("open", kline.get("o")))
+
+
+def _kline_open_time_ms(kline: dict) -> float | None:
+    return _sf(kline.get("open_time", kline.get("t", kline.get("openTime"))))
+
+
+def _kline_close_time_ms(kline: dict) -> float | None:
+    return _sf(kline.get("close_time", kline.get("T", kline.get("closeTime"))))
+
+
+def compute_market_window_features(
+    *,
+    market: dict,
+    btc_price: float,
+    fair_value_yes: float,
+    binance_5m: Optional[list[dict]] = None,
+    ws_trades: Optional[list[dict]] = None,
+) -> dict:
+    window_open_price: float | None = None
+    market_start_epoch = _market_start_epoch(market)
+    candles = list(binance_5m or [])
+    if candles:
+        if market_start_epoch is not None:
+            market_start_ms = float(market_start_epoch) * 1000.0
+            for candle in candles:
+                open_time_ms = _kline_open_time_ms(candle)
+                close_time_ms = _kline_close_time_ms(candle)
+                if open_time_ms is None:
+                    continue
+                if close_time_ms is None:
+                    close_time_ms = open_time_ms + 300000.0
+                if open_time_ms <= market_start_ms < close_time_ms:
+                    window_open_price = _kline_open_price(candle)
+                    break
+            if window_open_price is None:
+                eligible = [
+                    candle
+                    for candle in candles
+                    if _kline_open_time_ms(candle) is not None
+                    and float(_kline_open_time_ms(candle)) <= market_start_ms
+                ]
+                if eligible:
+                    window_open_price = _kline_open_price(eligible[-1])
+        if window_open_price is None:
+            recent_window = candles[-3:] if len(candles) >= 3 else candles
+            if recent_window:
+                window_open_price = _kline_open_price(recent_window[0])
+
+    window_delta_pct = 0.0
+    if window_open_price and window_open_price > 0 and btc_price > 0:
+        window_delta_pct = (btc_price - window_open_price) / window_open_price
+
+    last_10s_velocity_bps = 0.0
+    if ws_trades:
+        try:
+            normalized = []
+            for trade in ws_trades:
+                ts = _sf(trade.get("ts", trade.get("timestamp")))
+                px = _sf(trade.get("p", trade.get("price")))
+                if ts is None or px is None or px <= 0:
+                    continue
+                normalized.append((ts, px))
+            if len(normalized) >= 2:
+                normalized.sort(key=lambda item: item[0])
+                latest_ts = normalized[-1][0]
+                window = [item for item in normalized if item[0] >= latest_ts - 10.0]
+                if len(window) >= 2 and window[0][1] > 0:
+                    last_10s_velocity_bps = ((window[-1][1] - window[0][1]) / window[0][1]) * 10000.0
+        except Exception:
+            last_10s_velocity_bps = 0.0
+
+    return {
+        "window_delta_pct": float(window_delta_pct),
+        "last_10s_velocity_bps": float(last_10s_velocity_bps),
+        "oracle_implied_prob": _clamp(float(fair_value_yes), 0.01, 0.99),
+    }
+
+
 def _confidence_from_signal(strength: float, trigger: float, ceiling: float) -> float:
     if ceiling <= trigger:
         return 1.0 if strength >= trigger else 0.0
@@ -262,6 +352,14 @@ def explain_choose_side(
         price_history=price_history,
         ws_bba=ws_bba
     )
+    market_features = compute_market_window_features(
+        market=market,
+        btc_price=btc_price,
+        fair_value_yes=fv_yes,
+        binance_5m=binance_5m,
+        ws_trades=ws_trades,
+    )
+    base_result.update(market_features)
 
     # 3. Sniper 核心過濾：只交易極端區域
     up_price = float(observed_up or 0.5)
@@ -280,13 +378,15 @@ def explain_choose_side(
 
     # 4. 波動率閘門 (Volatility Gate) 與 OFI Override
     bypass_vol_gate = False
+    ofi_ratio = None
     if ws_trades:
         from core.indicators import compute_buy_sell_pressure
         bv, sv = compute_buy_sell_pressure(ws_trades)
         tv = bv + sv
-        if tv > 50000:
-            ofi = bv / max(tv, 1e-9)
-            if ofi > 0.70 or ofi < 0.30:
+        if tv > 0:
+            ofi_ratio = bv / max(tv, 1e-9)
+        if tv > 50000 and ofi_ratio is not None:
+            if ofi_ratio > 0.70 or ofi_ratio < 0.30:
                 bypass_vol_gate = True
 
     if binance_5m and not bypass_vol_gate:
@@ -298,7 +398,58 @@ def explain_choose_side(
                 base_result["reason"] = f"low_volatility_gate (range={price_range_bps:.1f}bps < {min_vol_bps}bps)"
                 return base_result
 
-    # 5. 承諾邊際 (Committed Edge) 與 延遲補償
+    # 5. OFI threshold gate — require minimum book imbalance (§6.2)
+    # Skip if bypass_vol_gate already triggered (extreme OFI confirmed)
+    min_ofi = float(getattr(SETTINGS, "min_poly_ofi_threshold", 0.15) or 0.15)
+    poly_ofi_up = 0.0
+    poly_ofi_down = 0.0
+    if poly_ob_up:
+        bids_up = poly_ob_up.get("bids", [])[:3]
+        asks_up = poly_ob_up.get("asks", [])[:3]
+        bid_vol_up = sum(float(b.size or 0) if hasattr(b, "size") else float(b.get("size", 0)) for b in bids_up)
+        ask_vol_up = sum(float(a.size or 0) if hasattr(a, "size") else float(a.get("size", 0)) for a in asks_up)
+        tv_up = bid_vol_up + ask_vol_up
+        if tv_up > 1e-9:
+            poly_ofi_up = (bid_vol_up - ask_vol_up) / tv_up
+    if poly_ob_down:
+        bids_dn = poly_ob_down.get("bids", [])[:3]
+        asks_dn = poly_ob_down.get("asks", [])[:3]
+        bid_vol_dn = sum(float(b.size or 0) if hasattr(b, "size") else float(b.get("size", 0)) for b in bids_dn)
+        ask_vol_dn = sum(float(a.size or 0) if hasattr(a, "size") else float(a.get("size", 0)) for a in asks_dn)
+        tv_dn = bid_vol_dn + ask_vol_dn
+        if tv_dn > 1e-9:
+            poly_ofi_down = (bid_vol_dn - ask_vol_dn) / tv_dn
+    if not bypass_vol_gate:
+        if abs(poly_ofi_up) < min_ofi and abs(poly_ofi_down) < min_ofi:
+            base_result["reason"] = f"ofi_below_threshold (up={poly_ofi_up:.3f}, dn={poly_ofi_down:.3f} < {min_ofi})"
+            return base_result
+
+    # 6. 10-minute macro trend filter — suppress direction opposing recent candle momentum (§6.2)
+    if binance_5m and len(binance_5m) >= 2 and getattr(SETTINGS, "macro_trend_filter_enabled", True):
+        last_two = binance_5m[-2:]
+        both_bearish = all(
+            float(k.get("close", k.get("c", 0))) < float(k.get("open", k.get("o", 0)))
+            for k in last_two
+        )
+        both_bullish = all(
+            float(k.get("close", k.get("c", 0))) > float(k.get("open", k.get("o", 0)))
+            for k in last_two
+        )
+        if both_bearish:
+            base_result["_macro_trend_suppress_up"] = True
+        if both_bullish:
+            base_result["_macro_trend_suppress_down"] = True
+
+    # 7. Golden entry window enforcement — only enter between T-8min and T-5min (§6.2)
+    golden_window_enabled = bool(getattr(SETTINGS, "golden_entry_window_enabled", False))
+    golden_min_sec = float(getattr(SETTINGS, "golden_entry_window_min_sec", 300.0) or 300.0)
+    golden_max_sec = float(getattr(SETTINGS, "golden_entry_window_max_sec", 480.0) or 480.0)
+    if golden_window_enabled and secs_left is not None:
+        if not (golden_min_sec <= secs_left <= golden_max_sec):
+            base_result["reason"] = f"outside_golden_entry_window (secs_left={secs_left:.0f}, window={golden_min_sec:.0f}-{golden_max_sec:.0f}s)"
+            return base_result
+
+    # 8. 承諾邊際 (Committed Edge) 與 延遲補償
     order_size = float(getattr(SETTINGS, "min_live_order_usd", 1.0))
     # We enforce assume_maker=True for the VPN profile
     edge_up = calculate_committed_edge(fv_yes, poly_ob_up, poly_ob_down, order_size, "UP", assume_maker=SETTINGS.vpn_maker_only, secs_left=secs_left)
@@ -307,27 +458,154 @@ def explain_choose_side(
     candidates = {}
     threshold = float(SETTINGS.min_sniper_edge_bps) / 10000.0
 
-    if edge_up >= threshold:
+    suppress_up = base_result.pop("_macro_trend_suppress_up", False)
+    suppress_down = base_result.pop("_macro_trend_suppress_down", False)
+    spot_delta_threshold = max(
+        0.001,
+        float(getattr(SETTINGS, "spot_delta_guard_threshold_pct", 0.001) or 0.001),
+    )
+    fade_blocked_by_spot_delta = False
+    if ofi_ratio is not None:
+        ofi_direction = 1 if ofi_ratio > 0.5 else (-1 if ofi_ratio < 0.5 else 0)
+        if (
+            ofi_direction != 0
+            and abs(float(market_features["window_delta_pct"])) > spot_delta_threshold
+            and (float(market_features["window_delta_pct"]) * ofi_direction) > 0
+        ):
+            fade_blocked_by_spot_delta = True
+            base_result["_fade_block_reason"] = (
+                f"spot_delta_confirms_ofi (delta={market_features['window_delta_pct']:.4%}, ofi={ofi_ratio:.3f})"
+            )
+
+    if edge_up >= threshold and not suppress_up and not fade_blocked_by_spot_delta:
         reason = "fade_retail_panic" if up_price < SETTINGS.sniper_extreme_lower else "fade_retail_fomo"
         up_ladder = poly_ob_up.get('ask_levels', poly_ob_up.get('asks', []))
         candidates["sniper_fade_up"] = _build_candidate(
             base_result, side="UP", strategy_key=reason,
             entry_price=get_vwap_from_ladder(up_ladder, order_size),
             signal_score=fv_yes, signal_confidence=1.0,
-            extras={"sniper_edge": edge_up, "behavioral_alpha": reason, "latency_buffer": SETTINGS.latency_buffer_usd}
+            extras={
+                "sniper_edge": edge_up,
+                "behavioral_alpha": reason,
+                "latency_buffer": SETTINGS.latency_buffer_usd,
+                "preferred_execution_style": "maker",
+            }
         )
 
-    if edge_down >= threshold:
+    if edge_down >= threshold and not suppress_down and not fade_blocked_by_spot_delta:
         reason = "fade_retail_panic" if (1.0 - up_price) < SETTINGS.sniper_extreme_lower else "fade_retail_fomo"
         down_ladder = poly_ob_down.get('ask_levels', poly_ob_down.get('asks', []))
         candidates["sniper_fade_down"] = _build_candidate(
             base_result, side="DOWN", strategy_key=reason,
             entry_price=get_vwap_from_ladder(down_ladder, order_size),
             signal_score=1.0 - fv_yes, signal_confidence=1.0,
-            extras={"sniper_edge": edge_down, "behavioral_alpha": reason, "latency_buffer": SETTINGS.latency_buffer_usd}
+            extras={
+                "sniper_edge": edge_down,
+                "behavioral_alpha": reason,
+                "latency_buffer": SETTINGS.latency_buffer_usd,
+                "preferred_execution_style": "maker",
+            }
         )
 
+    momentum_delta_threshold = max(
+        0.001,
+        float(
+            getattr(SETTINGS, "momentum_window_delta_threshold_pct", 0.001) or 0.001
+        ),
+    )
+    momentum_entry_offset = float(
+        getattr(SETTINGS, "momentum_entry_offset", 0.01) or 0.01
+    )
+    momentum_secs_left = float(
+        getattr(SETTINGS, "momentum_t60_entry_sec", 60.0) or 60.0
+    )
+    momentum_boost = min(
+        0.05,
+        max(0.02, abs(float(market_features["window_delta_pct"])) * 20.0),
+    )
+    if secs_left is not None and secs_left <= momentum_secs_left:
+        if (
+            float(market_features["window_delta_pct"]) >= momentum_delta_threshold
+            and poly_ofi_up >= min_ofi
+        ):
+            oracle_prob = float(market_features["oracle_implied_prob"])
+            candidates["follow_momentum_t60_up"] = _build_candidate(
+                base_result,
+                side="UP",
+                strategy_key="follow_momentum_t60",
+                entry_price=_clamp(oracle_prob - momentum_entry_offset, 0.01, 0.99),
+                signal_score=_clamp(oracle_prob + momentum_boost, 0.01, 0.99),
+                signal_confidence=1.0,
+                extras={
+                    "window_delta_pct": market_features["window_delta_pct"],
+                    "last_10s_velocity_bps": market_features["last_10s_velocity_bps"],
+                    "oracle_implied_prob": oracle_prob,
+                    "book_skew_agrees": True,
+                    "preferred_execution_style": "maker",
+                },
+            )
+        elif (
+            float(market_features["window_delta_pct"]) <= -momentum_delta_threshold
+            and poly_ofi_down >= min_ofi
+        ):
+            oracle_prob = 1.0 - float(market_features["oracle_implied_prob"])
+            candidates["follow_momentum_t60_down"] = _build_candidate(
+                base_result,
+                side="DOWN",
+                strategy_key="follow_momentum_t60",
+                entry_price=_clamp(oracle_prob - momentum_entry_offset, 0.01, 0.99),
+                signal_score=_clamp(oracle_prob + momentum_boost, 0.01, 0.99),
+                signal_confidence=1.0,
+                extras={
+                    "window_delta_pct": market_features["window_delta_pct"],
+                    "last_10s_velocity_bps": market_features["last_10s_velocity_bps"],
+                    "oracle_implied_prob": oracle_prob,
+                    "book_skew_agrees": True,
+                    "preferred_execution_style": "maker",
+                },
+            )
+
+    # 10. Legacy strategies (OFI, flash snipe) — gated by ENABLE_LEGACY_STRATEGIES
+    if getattr(SETTINGS, "enable_legacy_strategies", False):
+        _vel = 0.0
+        if ws_trades and len(ws_trades) >= 2:
+            t0 = float(ws_trades[0].get("timestamp", 0) or 0)
+            t1 = float(ws_trades[-1].get("timestamp", 0) or 0)
+            dt = max(t1 - t0, 1e-9)
+            p0 = float(ws_trades[0].get("price", 0) or 0)
+            p1 = float(ws_trades[-1].get("price", 0) or 0)
+            _vel = (p1 - p0) / dt
+
+        ofi_results = get_ofi_signal(
+            ws_trades or [], up_price, down_price,
+            poly_ob_up, poly_ob_down, SETTINGS,
+        )
+        for sr in ofi_results:
+            if (sr.side == "UP" and not suppress_up) or (sr.side == "DOWN" and not suppress_down):
+                candidates[f"legacy_{sr.strategy_name}"] = _build_candidate(
+                    base_result, side=sr.side, strategy_key=sr.strategy_name,
+                    entry_price=sr.entry_price, signal_score=sr.signal_score,
+                    signal_confidence=sr.confidence, extras=sr.metadata,
+                )
+
+        snipe_valid_up = up_price < SETTINGS.sniper_extreme_lower
+        snipe_valid_down = (1.0 - up_price) < SETTINGS.sniper_extreme_lower
+        flash_results = get_flash_snipe_signal(
+            _vel, up_price, down_price,
+            snipe_valid_up, snipe_valid_down, SETTINGS,
+        )
+        for sr in flash_results:
+            if (sr.side == "UP" and not suppress_up) or (sr.side == "DOWN" and not suppress_down):
+                candidates[f"legacy_{sr.strategy_name}"] = _build_candidate(
+                    base_result, side=sr.side, strategy_key=sr.strategy_name,
+                    entry_price=sr.entry_price, signal_score=sr.signal_score,
+                    signal_confidence=sr.confidence, extras=sr.metadata,
+                )
+
     if not candidates:
+        if fade_blocked_by_spot_delta:
+            base_result["reason"] = base_result.get("_fade_block_reason") or "spot_delta_confirms_ofi"
+            return base_result
         base_result["reason"] = f"edge_below_sniper_threshold (up={edge_up:.4f}, down={edge_down:.4f} < req={threshold:.4f})"
         return base_result
 

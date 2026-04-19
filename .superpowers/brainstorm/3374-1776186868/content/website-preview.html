@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: sans-serif; background: #0f172a; color: white; padding: 24px; }
+  h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 4px; }
+  .sub { color: #94a3b8; font-size: 0.9rem; margin-bottom: 24px; }
+  .agents { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 28px; }
+  .agent { background: #1e293b; border-radius: 12px; padding: 16px; border-left: 4px solid; }
+  .agent.claude { border-color: #f97316; }
+  .agent.codex  { border-color: #6366f1; }
+  .agent.gemini { border-color: #3b82f6; }
+  .agent.copilot{ border-color: #22c55e; }
+  .agent-name { font-weight: 700; font-size: 0.95rem; margin-bottom: 4px; }
+  .agent-task { color: #94a3b8; font-size: 0.82rem; line-height: 1.4; }
+  .status { display: inline-block; font-size: 0.75rem; padding: 2px 8px; border-radius: 999px; margin-top: 6px; }
+  .done { background: #166534; color: #86efac; }
+  .fallback { background: #7c3aed; color: #ddd6fe; }
+  .preview-box { background: #1e293b; border-radius: 16px; padding: 16px; margin-bottom: 20px; }
+  .preview-box h2 { font-size: 1rem; color: #94a3b8; margin-bottom: 12px; }
+  iframe { width: 100%; height: 560px; border: none; border-radius: 8px; background: white; }
+  .open-btn { display: block; text-align: center; margin: 16px auto 0; background: #0d9488; color: white;
+    padding: 12px 32px; border-radius: 999px; text-decoration: none; font-weight: 600; width: fit-content; }
+  .open-btn:hover { background: #0f766e; }
+  .structure { background: #1e293b; border-radius: 12px; padding: 16px; font-size: 0.82rem; color: #cbd5e1; line-height: 1.8; }
+  .structure code { background: #0f172a; padding: 2px 6px; border-radius: 4px; color: #7dd3fc; }
+</style>
+</head>
+<body>
+<h1>🎓 清華大學化學系 — 網站已完成</h1>
+<p class="sub">四個 AI Agent 協作完成 · Department of Chemistry, NTHU</p>
+
+<div class="agents">
+  <div class="agent claude">
+    <div class="agent-name">🤖 Claude（協調者）</div>
+    <div class="agent-task">主框架 HTML + About 系所介紹區塊 + 整合所有 Agent 成果</div>
+    <span class="status done">✓ 完成</span>
+  </div>
+  <div class="agent codex">
+    <div class="agent-name">💜 Codex</div>
+    <div class="agent-task">導覽列 (Sticky Nav) + Hero 全屏區塊 + scroll indicator</div>
+    <span class="status fallback">⚡ 沙箱限制 → HTML 從 log 擷取</span>
+  </div>
+  <div class="agent gemini">
+    <div class="agent-name">🔵 Gemini</div>
+    <div class="agent-task">研究領域 6 張卡片 + 師資陣容 8 位教授卡片</div>
+    <span class="status done">✓ 完成</span>
+  </div>
+  <div class="agent copilot">
+    <div class="agent-name">🟢 Copilot</div>
+    <div class="agent-task">快速數字 Stats Bar + 最新消息 4 篇 + Footer 聯絡資訊</div>
+    <span class="status done">✓ 完成</span>
+  </div>
+</div>
+
+<div class="preview-box">
+  <h2>📄 網頁預覽</h2>
+  <iframe src="file:///Applications/codes/nthu-chemistry/index.html"></iframe>
+</div>
+
+<a class="open-btn" href="file:///Applications/codes/nthu-chemistry/index.html" target="_blank">
+  🌐 在新分頁開啟完整網站
+</a>
+
+<br><br>
+<div class="structure">
+  <strong style="color:white">📁 專案結構</strong><br>
+  <code>/Applications/codes/nthu-chemistry/</code><br>
+  ├── <code>index.html</code>　← 最終整合版<br>
+  ├── <code>section-nav-hero.html</code>　← Codex 輸出（從 log 擷取）<br>
+  ├── <code>section-about.html</code>　← Claude<br>
+  ├── <code>section-research-faculty.html</code>　← Gemini<br>
+  └── <code>section-stats-news-footer.html</code>　← Copilot<br>
+</div>
+</body>
+</html>

@@ -2,6 +2,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
+
 def get_chainlink_btc_price() -> Optional[float]:
     """
     獲取 Chainlink BTC/USD 聚合餵價。
@@ -9,6 +10,11 @@ def get_chainlink_btc_price() -> Optional[float]:
     """
     # TODO: 實作真正的 Chainlink Oracle 抓取 (例如透過 RPC 或特定 API)
     # 目前暫時使用占位邏輯，實務上需與 Binance 進行分歧檢查
+    return None
+
+
+def get_chainlink_oracle_age_s() -> float | None:
+    # Chainlink snapshot ingestion is not implemented yet, so freshness is unknown.
     return None
 
 def check_resolution_divergence(primary_price: float, secondary_price: float) -> tuple[bool, float]:

@@ -28,6 +28,8 @@ class BinanceWebSocket:
         self.trades = deque(maxlen=5000)
         self.recent_prices = deque(maxlen=200)
         self.liquidations = deque(maxlen=200)
+        self.last_event_latency_ms = 0.0
+        self.last_bba_event_latency_ms = 0.0
         self.ws = None
         self.thread = None
         self.running = False
@@ -38,6 +40,10 @@ class BinanceWebSocket:
             payload = json.loads(message)
             stream = payload.get("stream", "")
             data = payload.get("data", {})
+            recv_ms = time.time() * 1000.0
+            event_ms = float(data.get("E") or data.get("T") or 0.0)
+            if event_ms > 0.0:
+                self.last_event_latency_ms = max(0.0, recv_ms - event_ms)
             
             if stream.endswith("@bookTicker"):
                 if data.get("u", 0) > self.bba["u"]: # Ensure we don't process stale updates out of order
@@ -47,6 +53,8 @@ class BinanceWebSocket:
                     self.bba["A"] = float(data.get("A", 0))  # Best Ask Qty
                     self.bba["u"] = data.get("u", 0)         # Orderbook update ID
                     self.bba["ts"] = time.time()
+                    if event_ms > 0.0:
+                        self.last_bba_event_latency_ms = max(0.0, recv_ms - event_ms)
                     self.bba_history.append(self.bba.copy())
                     
                     if self.bba["b"] > 0 and self.bba["a"] > 0:
@@ -198,6 +206,17 @@ class BinanceWebSocket:
         if not self.recent_prices:
             return float('inf')
         return time.time() - self.recent_prices[-1][0]
+
+    def get_last_event_latency_ms(self) -> float:
+        if self.last_bba_event_latency_ms > 0.0:
+            return self.last_bba_event_latency_ms
+        return self.last_event_latency_ms
+
+    def get_bba_age_ms(self) -> float:
+        ts = float(self.bba.get("ts", 0.0) or 0.0)
+        if ts <= 0.0:
+            return float("inf")
+        return max(0.0, (time.time() - ts) * 1000.0)
 
     def get_recent_liquidations(self, seconds: float = 20.0) -> list[dict]:
         """Returns all liquidations that occurred within the last `seconds`."""

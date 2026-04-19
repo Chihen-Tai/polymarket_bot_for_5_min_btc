@@ -11,12 +11,49 @@ except Exception:
     def load_dotenv(*args, **kwargs):
         return False
 
+
+def _load_simple_env_file(path: Path, *, override: bool = False) -> None:
+    if not path.exists():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if (
+            len(value) >= 2
+            and value[0] == value[-1]
+            and value[0] in {"'", '"'}
+        ):
+            value = value[1:-1]
+        else:
+            comment_idx = value.find(" #")
+            if comment_idx != -1:
+                value = value[:comment_idx].rstrip()
+        if override or key not in os.environ:
+            os.environ[key] = value
+
 def load_repo_env(repo_root: Path) -> None:
-    load_dotenv(repo_root / ".env")
+    env_path = repo_root / ".env"
+    load_dotenv(env_path)
+    _load_simple_env_file(env_path)
     for name in (".env.local", ".env.secrets"):
         path = repo_root / name
         if path.exists():
             load_dotenv(path, override=True)
+            _load_simple_env_file(path, override=True)
 
 load_repo_env(Path(__file__).resolve().parent.parent)
 
@@ -51,9 +88,9 @@ class Settings:
     
     # --- Extreme Value Gating (15M Sniper) ---
     enable_sniper_mode: bool = True
-    sniper_extreme_upper: float = 0.75  # Only fade extreme FOMO
-    sniper_extreme_lower: float = 0.25  # Only fade extreme panic
-    min_sniper_edge_bps: float = _f("MIN_SNIPER_EDGE_BPS", 150)  # 150 bps = 1.5%
+    sniper_extreme_upper: float = _f("SNIPER_EXTREME_UPPER", 0.95)  # Was 0.75 — dead zone removed
+    sniper_extreme_lower: float = _f("SNIPER_EXTREME_LOWER", 0.05)  # Was 0.25 — dead zone removed
+    min_sniper_edge_bps: float = _f("MIN_SNIPER_EDGE_BPS", 80)  # Was 150 bps — lowered for maker-only
     min_entry_price: float = _f("MIN_ENTRY_PRICE", 0.05)
     max_entry_price: float = _f("MAX_ENTRY_PRICE", 0.95)
 
@@ -67,6 +104,9 @@ class Settings:
     
     # Latency Blockers
     max_vpn_latency_ms: float = _f("MAX_VPN_LATENCY_MS", 600.0)
+    vpn_auto_calibrate_latency: bool = _b("VPN_AUTO_CALIBRATE_LATENCY", False)
+    vpn_latency_multiplier: float = _f("VPN_LATENCY_MULTIPLIER", 1.2)
+    vpn_latency_floor_ms: float = _f("VPN_LATENCY_FLOOR_MS", 900.0)
     vpn_e2e_p50_block_ms: float = _f("VPN_E2E_P50_BLOCK_MS", 250.0)
     vpn_e2e_jitter_block_ms: float = _f("VPN_E2E_JITTER_BLOCK_MS", 150.0)
     latency_buffer_usd: float = 0.02 # Cost assumption buffer
@@ -75,7 +115,7 @@ class Settings:
     max_concurrent_trades: int = 1
     cooldown_after_trade_sec: int = 900  # Lock out for 15m after trade
     cooldown_after_loss_sec: int = 1800  # Lock out for 30m after loss
-    max_consec_loss: int = 2
+    max_consec_loss: int = int(os.environ.get("MAX_CONSEC_LOSS", "10"))  # Was 2 — too tight for maker-only
 
     # --- Windows ---
     vpn_entry_min_secs_left: float = _f("VPN_ENTRY_MIN_SECS_LEFT", 120.0)
@@ -84,6 +124,15 @@ class Settings:
     # --- Selective Entry Gates ---
     vpn_neutral_zone_width: float = _f("VPN_NEUTRAL_ZONE_WIDTH", 0.05)
     min_volatility_gate_bps: float = _f("MIN_VOLATILITY_GATE_BPS", 8.0)
+    min_poly_ofi_threshold: float = _f("MIN_POLY_OFI_THRESHOLD", 0.15)
+    spot_delta_guard_threshold_pct: float = _f("SPOT_DELTA_GUARD_THRESHOLD_PCT", 0.001)
+    momentum_t60_entry_sec: float = _f("MOMENTUM_T60_ENTRY_SEC", 60.0)
+    momentum_window_delta_threshold_pct: float = _f("MOMENTUM_WINDOW_DELTA_THRESHOLD_PCT", 0.001)
+    momentum_entry_offset: float = _f("MOMENTUM_ENTRY_OFFSET", 0.01)
+    macro_trend_filter_enabled: bool = _b("MACRO_TREND_FILTER_ENABLED", True)
+    golden_entry_window_enabled: bool = _b("GOLDEN_ENTRY_WINDOW_ENABLED", False)
+    golden_entry_window_min_sec: float = _f("GOLDEN_ENTRY_WINDOW_MIN_SEC", 300.0)
+    golden_entry_window_max_sec: float = _f("GOLDEN_ENTRY_WINDOW_MAX_SEC", 480.0)
 
     # --- Legacy Signal Compatibility ---
     zscore_window: int = _i("ZSCORE_WINDOW", 10)
@@ -94,8 +143,9 @@ class Settings:
     # --- Integration & Legacy Orchestration ---
     auto_market_selection: bool = _b("AUTO_MARKET_SELECTION", True)
     poll_seconds: float = _f("POLL_SECONDS", 3.0)
+    shadow_mode: bool = _b("SHADOW_MODE", False)
     dump_move_threshold: float = 0.05
-    enable_shadow_journal: bool = False
+    enable_shadow_journal: bool = _b("ENABLE_SHADOW_JOURNAL", False)
     hybrid_maker_mode_enabled: bool = False
     maker_max_reprice_attempts: int = 3
     maker_reprice_enabled: bool = False
@@ -177,6 +227,7 @@ class Settings:
     entry_blocked_utc_hours: str = os.getenv("ENTRY_BLOCKED_UTC_HOURS", "")
     entry_dual_velocity_confirm: bool = _b("ENTRY_DUAL_VELOCITY_CONFIRM", True)
     entry_execution_cost_buffer: float = 0.01
+    fee_buffer: float = _f("FEE_BUFFER", 0.02)
     entry_fee_floor_buffer: float = _f("ENTRY_FEE_FLOOR_BUFFER", 1.0)
     entry_max_actual_slippage_pct: float = _f("ENTRY_MAX_ACTUAL_SLIPPAGE_PCT", 0.18)
     entry_max_spread: float = _f("ENTRY_MAX_SPREAD", 0.10)
@@ -200,6 +251,8 @@ class Settings:
     hedge_exit_advantage_threshold: float = 0.05
     hedge_exit_enabled: bool = False
     hedge_ratio: float = 0.5
+    hedge_low_cash_policy: str = os.getenv("HEDGE_LOW_CASH_POLICY", "skip_entry").strip().lower()
+    hedge_reserve_usd: float = _f("HEDGE_RESERVE_USD", 0.50)
     heuristic_probability_weight: float = 0.5
     high_confidence_edge_extra: float = 0.015
     high_confidence_taker_fallback_enabled: bool = False
@@ -238,7 +291,7 @@ class Settings:
     profit_reversal_min_mfe_pct: float = _f("PROFIT_REVERSAL_MIN_MFE_PCT", 0.50)
     profitability_conservative_mode_enabled: bool = True
     rich_price_edge_penalty: float = _f("RICH_PRICE_EDGE_PENALTY", 0.015)
-    scoreboard_aux_weight: float = 0.2
+    scoreboard_aux_weight: float = _f("SCOREBOARD_AUX_WEIGHT", 0.3)  # Was 0.2 — increased per Phase 3
     scoreboard_entry_gate_min_decisive_trades: int = _i("SCOREBOARD_ENTRY_GATE_MIN_DECISIVE_TRADES", 5)
     scoreboard_min_win_rate: float = 0.55
     smart_stop_loss_enabled: bool = False
@@ -256,6 +309,9 @@ class Settings:
     volatility_gate_min_range_usd: float = 25.0
     ws_stale_fail_safe_streak: int = _i("WS_STALE_FAIL_SAFE_STREAK", 2)
     ws_stale_max_age_sec: float = _f("WS_STALE_MAX_AGE_SEC", 5.0)
+
+    # Legacy strategies (OFI, flash snipe) — disabled until backtested on 15m
+    enable_legacy_strategies: bool = _b("ENABLE_LEGACY_STRATEGIES", False)
 
     # Shadow Journaling (Keep for analytics)
     enable_shadow_journal_legacy: bool = _b("ENABLE_SHADOW_JOURNAL", True)

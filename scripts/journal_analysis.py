@@ -1200,6 +1200,7 @@ def build_trade_pairs(events: list[dict]) -> list[TradePairRow]:
                     status="residual",
                     opened_ts="",
                     closed_ts=str(ev.get("ts") or ""),
+                    entry_secs_left=None,
                     entry_cost_usd=0.0,
                     entry_shares=0.0,
                     matched_cost_usd=0.0,
