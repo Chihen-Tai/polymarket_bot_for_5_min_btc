@@ -108,7 +108,7 @@ def _fetch_market_settlement(
         response = requests.get(
             "https://gamma-api.polymarket.com/markets",
             params={"slug": slug_text},
-            timeout=8,
+            timeout=(3, 5),
         )
         response.raise_for_status()
         markets = response.json() or []
@@ -173,7 +173,7 @@ def _fetch_account_trade_activity(
             resp = requests.get(
                 f"{SETTINGS.data_api_host}/activity",
                 params=params,
-                timeout=8,
+                timeout=(3, 5),
             )
             resp.raise_for_status()
             batch = resp.json() or []
