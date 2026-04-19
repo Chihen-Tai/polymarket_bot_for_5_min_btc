@@ -89,15 +89,37 @@ def append_shadow_csv_row(event: dict, *, path: Path | None = None) -> dict:
     return row
 
 
+def _tail_lines(path: Path, n: int) -> list[str]:
+    """Read last n lines from a file efficiently without loading the whole file."""
+    chunk_size = 65536
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        file_size = f.tell()
+        if file_size == 0:
+            return []
+        buf = b""
+        pos = file_size
+        while pos > 0 and buf.count(b"\n") < n + 1:
+            read_size = min(chunk_size, pos)
+            pos -= read_size
+            f.seek(pos)
+            buf = f.read(read_size) + buf
+        lines = buf.split(b"\n")
+        if lines and not lines[-1]:
+            lines = lines[:-1]
+        return [ln.decode("utf-8", errors="replace") for ln in lines[-n:]]
+
+
 def read_events(limit: int = 500) -> list[dict]:
     journal_path = _journal_path()
     if not journal_path.exists():
         return []
-    lines = journal_path.read_text(encoding="utf-8").splitlines()
     if limit > 0:
-        lines = lines[-limit:]
+        raw_lines = _tail_lines(journal_path, limit)
+    else:
+        raw_lines = journal_path.read_text(encoding="utf-8").splitlines()
     out: list[dict] = []
-    for line in lines:
+    for line in raw_lines:
         try:
             out.append(json.loads(line))
         except Exception:

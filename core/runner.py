@@ -1001,7 +1001,7 @@ def refresh_recent_active_close_summary(
     state: dict | None = None, *, limit: int = 30
 ) -> dict | None:
     summary = build_recent_active_close_summary_from_events(
-        read_events(limit=0), limit=limit
+        read_events(limit=2000), limit=limit
     )
     SETTINGS.recent_active_close_summary = summary
     if isinstance(state, dict):
