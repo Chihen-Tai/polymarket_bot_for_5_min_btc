@@ -4460,12 +4460,18 @@ def main():
                     clob_ts, clob_skew_ms = latest_clob_snapshot_details(
                         poly_ob_up, poly_ob_down
                     )
+                    cycle_rtt_http_ms = float(
+                        getattr(flags, "last_api_latency_ms", 0.0) or 0.0
+                    )
+                    # Feed per-cycle HTTP latency so the VPN gate self-heals;
+                    # otherwise the deque only sees order-placement samples and
+                    # latches BLOCKED forever once a few slow orders land.
+                    if cycle_rtt_http_ms > 0.0:
+                        LATENCY_MONITOR.add_rtt(cycle_rtt_http_ms)
                     log(
                         format_cycle_metrics_line(
                             market_slug=market["slug"],
-                            rtt_http_ms=float(
-                                getattr(flags, "last_api_latency_ms", 0.0) or 0.0
-                            ),
+                            rtt_http_ms=cycle_rtt_http_ms,
                             rtt_ws_ms=BINANCE_WS.get_last_event_latency_ms(),
                             ws_age_ms=(cycle_ws_age * 1000.0)
                             if isfinite(float(cycle_ws_age))
